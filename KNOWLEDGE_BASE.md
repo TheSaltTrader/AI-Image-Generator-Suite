@@ -942,6 +942,7 @@ can combine LoRAs + RAG + a person in one pass.
   do NOT remove the reload; only the ordering and the fast option do.
   `swap_test.py` drives `Generator._run` and `_await_images` against a
   fake websocket/requests with a scripted clock.
+- **Face source is separate from the edit target (v1.53.0).** The "IMAGE EDITOR" block was rebuilt into FACE / CHARACTER + EDIT A LOADED IMAGE. The face is now `self.face_paths` (file source) or `actor_sel` (db source), chosen by `self.face_source_var` (file/db); `_on_face_source` grid_remove()s the unused rows. The swap runs only when NOT editing (`... and not self.ref_paths`), so a face-file and an edit image no longer share `ref_paths`. `_swap_face_source` reads the source; `_pick_face`/`_clear_face`/`_set_face_label` manage the file; one guide checkbox (`_on_swap_guide`) drives both `swap_use_rag_var` and `swap_use_lora_var`; Best/Fast is a radio on `swap_fast_var`. Persisted: face_source, face_paths. `_forget_deleted_refs` drops deleted face files too. The old `_actor_to_editor`/`_refdb_info` buttons are gone (methods remain, unused).
 - **Deleting a file must let go of every reference to it (v1.46.0).**
   The editor (`ref_paths`), the border maker (`border_ref_paths`) and the
   animator (`anim_image_path`) hold PATHS into `output\`; after the user

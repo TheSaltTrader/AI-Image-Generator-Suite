@@ -330,23 +330,53 @@ with tempfile.TemporaryDirectory() as td:
     ui._clear_history()
     root.update()
 
-# ---- the swap's own checkmarks and the loading sweep --------------------
-print("swap checkmarks + loading sweep")
-check("RAG / LoRAs / Fast swap checkmarks exist with their defaults",
-      ui.swap_use_rag_var.get() and ui.swap_use_lora_var.get()
-      and not ui.swap_fast_var.get())
+# ---- the simplified face/character section + the loading sweep ----------
+print("face/character section + loading sweep")
+check("the face-source chooser defaults to file, both source rows exist",
+      ui.face_source_var.get() == "file"
+      and hasattr(ui, "face_file_row") and hasattr(ui, "face_db_row"))
+check("the file row shows and the database rows are hidden for 'file'",
+      bool(ui.face_file_row.grid_info()) and not ui.face_db_row.grid_info())
+ui.face_source_var.set("db")
+ui._on_face_source()
+root.update()
+check("choosing 'database' swaps which rows show",
+      bool(ui.face_db_row.grid_info()) and not ui.face_file_row.grid_info())
+ui.face_source_var.set("file")
+ui._on_face_source()
+root.update()
+check("swap / quality / guide controls exist and are settable",
+      hasattr(ui, "swap_rag_var") and hasattr(ui, "swap_fast_var")
+      and hasattr(ui, "swap_use_rag_var") and hasattr(ui, "swap_cb")
+      and hasattr(ui, "swap_guide_cb"))
+ui.swap_rag_var.set(True); ui.swap_fast_var.set(False)
+check("swap on + Best quality read back",
+      ui.swap_rag_var.get() and not ui.swap_fast_var.get())
+# the one guide checkbox drives both RAG and LoRA guidance
 ui.swap_use_rag_var.set(False)
-ui.swap_fast_var.set(True)
-st = dict(ui._collect_ui_state())
-check("the checkmarks are remembered",
-      st.get("swap_use_rag") is False and st.get("swap_use_lora") is True
-      and st.get("swap_fast") is True, {k: st.get(k) for k in ("swap_use_rag", "swap_use_lora", "swap_fast")})
+ui._on_swap_guide()
+check("the guide checkbox ties RAG and LoRA together",
+      not ui.swap_use_rag_var.get() and not ui.swap_use_lora_var.get())
 ui.swap_use_rag_var.set(True)
-ui.swap_fast_var.set(False)
+ui._on_swap_guide()
+# a face from a file, and the source round-trips through persistence
+import tempfile as _tf
+from PIL import Image as _Im2
+_ftd = _tf.mkdtemp()
+_fp = Path(_ftd) / "face.png"; _Im2.new("RGB", (32, 32), "pink").save(_fp)
+ui.face_paths = [str(_fp)]
+ui.face_source_var.set("file")
+ui._set_face_label()
+st = dict(ui._collect_ui_state())
+check("the face source and file are remembered",
+      st.get("face_source") == "file" and st.get("face_paths") == [str(_fp)])
+check("the face label shows the file", "face.png" in ui.face_file_var.get())
+ui.face_paths = []
+ui.face_source_var.set("db")
 ui._apply_ui_state(st)
 root.update()
-check("…and restored", not ui.swap_use_rag_var.get() and ui.swap_fast_var.get())
-ui.swap_use_rag_var.set(True)
+check("…and restored (source and file)",
+      ui.face_source_var.get() == "file" and ui.face_paths == [str(_fp)])
 ui.swap_fast_var.set(False)
 ui.ui_queue.put(("progress_mode", "loading"))
 ui._poll_queue()
@@ -405,16 +435,18 @@ print("swap guard")
 real_alive = app.engine_alive
 app.engine_alive = lambda *a, **k: True
 ui._set(ui.prompt_box, "a hero on a rooftop")
+ui.ref_paths = []                       # not editing — this is a swap
 ui.swap_rag_var.set(True)
-ui.ref_paths = ["C:/nope/gone_face.png"]
-ui.ref_var.set("selection")
+ui.face_source_var.set("file")
+ui.face_paths = ["C:/nope/gone_face.png"]
+ui._set_face_label()
 ui._generate()
 root.update()
 check("a missing face stops the run with a clear message",
       "no longer exists" in ui.status_var.get()
       and "Nothing was generated" in ui.status_var.get(), ui.status_var.get())
-check("…and the editor lets the missing file go",
-      ui.ref_paths == [] and ui.ref_var.get() == "none — text only")
+check("…and the missing face file is let go",
+      ui.face_paths == [])
 check("…and the app is not left busy", not ui.busy)
 ui.swap_rag_var.set(False)
 ui._set(ui.prompt_box, "")

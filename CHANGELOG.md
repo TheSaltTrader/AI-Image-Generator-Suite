@@ -1,5 +1,18 @@
 # Changelog — Comic Book Art Creator
 
+## v1.53.0 — 2026-09-08
+- **The face/character section is simpler.** Instead of a tangle of load
+  buttons, a reference database, a person picker and several checkboxes,
+  it is now: pick a **Source — From a file or From a database** (one or
+  the other), tick **Put this face on the generated image**, choose
+  **Best or Fast** quality, and optionally **guide the base with the RAG
+  map + LoRAs** with a single checkbox. Your prompt, model, LoRAs and RAG
+  map draw the scene as usual, then the chosen face is placed on it.
+- **Editing a loaded image is now its own clearly separate section**
+  ("Edit a loaded image"), with its own Load button and a Change-amount
+  slider — no longer mixed up with the face swap. A file chosen as a
+  face and an image loaded for editing no longer collide.
+
 ## v1.52.0 — 2026-09-08
 - **The loading bar no longer looks like it is racing.** While the engine
   loads a model the bar sweeps to show it is busy; that sweep was far too

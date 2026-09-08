@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.52.0"
+APP_VERSION = "1.53.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -2756,6 +2756,7 @@ class App:
         self._addon_lock = threading.Lock()   # one add-on install at a time
         self.ragmap_path = None
         self._ragmap_load_gen = 0  # newest async map parse wins
+        self.face_paths = []       # face-from-file source (swap), NOT ref_paths
         self.actordb_path = None   # reference DB (Actor DB / Database Builder)
         self.actordb_kind = "person"   # "person" (actordb) | "character" (chardb)
         self.actor_sel = None      # selected actor (dict) or None
@@ -2782,6 +2783,7 @@ class App:
                             add="+")
         self._apply_ui_state(self.settings.get("ui", {}))
         self._refresh_models()     # disk scan — fills dropdowns before engine
+        self._on_face_source()   # show the chosen face source's rows
         self._refresh_editor_state()   # initial badge colours + button gating
         self._wire_autosave()      # every change saved as it happens
         self._schedule_persist()   # baseline save right away
@@ -3370,159 +3372,157 @@ class App:
 
         # image editor — Gemini-style instruction editing
         r = self._rule(left, r)
-        ed_head = ttk.Label(left, text="IMAGE EDITOR (optional)",
+        # ---------- FACE / CHARACTER: put a person on the generated image ----------
+        fc_head = ttk.Label(left, text="FACE / CHARACTER (optional)",
                             style="Head.TLabel")
-        ed_head.grid(row=r, sticky=W, pady=(8, 0)); r += 1
+        fc_head.grid(row=r, sticky=W, pady=(10, 0)); r += 1
+        self._tip(fc_head,
+                  "Put a specific person on the picture your prompt makes. "
+                  "Choose a face from a file OR from a people database, tick "
+                  "the swap, and Generate: your prompt (with the model, LoRAs "
+                  "and RAG map) draws the scene, then that face is placed on "
+                  "the person in it. Both pictures are kept.")
+
+        # source: a file, or a people database — one or the other
+        self.face_source_var = StringVar(value="file")
+        srcrow = ttk.Frame(left); srcrow.grid(row=r, sticky=W, pady=(2, 0)); r += 1
+        ttk.Label(srcrow, text="Source:", style="Dim.TLabel").pack(side="left")
+        ttk.Radiobutton(srcrow, text="From a file", value="file",
+                        variable=self.face_source_var,
+                        command=self._on_face_source).pack(side="left", padx=(6, 0))
+        ttk.Radiobutton(srcrow, text="From a database", value="db",
+                        variable=self.face_source_var,
+                        command=self._on_face_source).pack(side="left", padx=(10, 0))
+
+        # --- file source ---
+        self.face_file_row = ttk.Frame(left)
+        self.face_file_row.grid(row=r, sticky=NSEW, pady=2); r += 1
+        self.face_file_row.columnconfigure(1, weight=1)
+        ttk.Button(self.face_file_row, text="\U0001f5bc Browse\u2026", width=11,
+                   command=self._pick_face).grid(row=0, column=0)
+        self.face_file_var = StringVar(value="no file chosen")
+        ttk.Label(self.face_file_row, textvariable=self.face_file_var,
+                  style="Dim.TLabel", wraplength=210).grid(row=0, column=1,
+                                                           sticky=W, padx=6)
+        ttk.Button(self.face_file_row, text="\u2715", width=3,
+                   command=self._clear_face).grid(row=0, column=2)
+
+        # --- database source (pick the DB, then a person) ---
+        self.face_db_row = ttk.Frame(left)
+        self.face_db_row.grid(row=r, sticky=NSEW, pady=2); r += 1
+        self.face_db_row.columnconfigure(1, weight=1)
+        ttk.Button(self.face_db_row, text="\U0001f4c7 Database\u2026", width=13,
+                   command=self._pick_actordb).grid(row=0, column=0)
+        self.actordb_var = StringVar(value="none")
+        ttk.Label(self.face_db_row, textvariable=self.actordb_var,
+                  style="Dim.TLabel", wraplength=180).grid(row=0, column=1,
+                                                           sticky=W, padx=6)
+        ttk.Button(self.face_db_row, text="\U0001f5d1", width=3,
+                   command=self._clear_actordb).grid(row=0, column=2)
+        _pr = ttk.Frame(self.face_db_row)
+        _pr.grid(row=1, column=0, columnspan=3, sticky=NSEW, pady=(2, 0))
+        _pr.columnconfigure(1, weight=1)
+        ttk.Button(_pr, text="\U0001f464 Person\u2026", width=13,
+                   command=self._pick_actor).grid(row=0, column=0)
+        self.actor_var = StringVar(value="no person selected")
+        ttk.Label(_pr, textvariable=self.actor_var, style="Dim.TLabel",
+                  wraplength=150).grid(row=0, column=1, sticky=W, padx=6)
+        self.actor_thumb_lab = ttk.Label(_pr)
+        self.actor_thumb_lab.grid(row=0, column=2, padx=(0, 4))
+
+        # --- the swap + its options ---
+        self.swap_rag_var = BooleanVar(value=True)
+        self.swap_cb = ttk.Checkbutton(
+            left, text="Put this face on the generated image",
+            variable=self.swap_rag_var, command=self._refresh_editor_state)
+        self.swap_cb.grid(row=r, sticky=W, pady=(4, 0)); r += 1
+        self._tip(self.swap_cb,
+                  "On: after the prompt draws the scene, the chosen face is "
+                  "placed on the person in it (a two-step generation; both "
+                  "the plain and the face-swapped picture are kept). Off: "
+                  "the face is ignored and only the prompt is used.")
+
+        qrow = ttk.Frame(left); qrow.grid(row=r, sticky=W, padx=(18, 0)); r += 1
+        ttk.Label(qrow, text="Quality:", style="Dim.TLabel").pack(side="left")
+        self.swap_fast_var = BooleanVar(value=False)
+        ttk.Radiobutton(qrow, text="Best (Qwen)", value=False,
+                        variable=self.swap_fast_var).pack(side="left", padx=(6, 0))
+        ttk.Radiobutton(qrow, text="Fast (Kontext)", value=True,
+                        variable=self.swap_fast_var).pack(side="left", padx=(10, 0))
+        self._tip(qrow,
+                  "Best (Qwen) gives the most reliable likeness but its "
+                  "28 GB model loads from disk for each swap batch (minutes "
+                  "on a hard drive). Fast (Flux Kontext) fits alongside the "
+                  "drawing model so nothing reloads, but the face may need a "
+                  "few Variations to land.")
+
+        # one checkbox drives both RAG and LoRA guidance for the base
+        self.swap_use_rag_var = BooleanVar(value=True)
+        self.swap_use_lora_var = BooleanVar(value=True)
+        self.swap_guide_cb = ttk.Checkbutton(
+            left, text="Also guide the base with the RAG map + LoRAs",
+            variable=self.swap_use_rag_var, command=self._on_swap_guide)
+        self.swap_guide_cb.grid(row=r, sticky=W, padx=(18, 0), pady=(0, 2)); r += 1
+        self._tip(self.swap_guide_cb,
+                  "On: the scene the swap draws is guided by your loaded RAG "
+                  "map and ticked LoRAs (above), so it matches your style. "
+                  "Off: the base is drawn from the prompt alone.")
+
+        # ---------- EDIT A LOADED IMAGE: a separate feature ----------
+        ed_head = ttk.Label(left, text="EDIT A LOADED IMAGE (optional)",
+                            style="Head.TLabel")
+        ed_head.grid(row=r, sticky=W, pady=(12, 0)); r += 1
         self._tip(ed_head,
-                  "Load image(s) and your prompt edits them — change things, "
-                  "remove text, move characters into new scenes. While an "
-                  "image is loaded the app is in edit mode: presets, LoRAs and "
-                  "RAG maps are OFF (the images + your instruction drive the "
-                  "result), shown by the red LoRA/RAG badges top-right. Clear "
-                  "the image to return to normal generation.")
+                  "Load an image and your prompt edits it \u2014 remove text, "
+                  "change the background, restage a character. While an image "
+                  "is loaded, presets, LoRAs and RAG are off (the image plus "
+                  "your instruction drive the result).")
         rrow = ttk.Frame(left); rrow.grid(row=r, sticky=NSEW, pady=2); r += 1
         rrow.columnconfigure(1, weight=1)
-        load_btn = ttk.Button(rrow, text="🖼 Load…", width=9,
-                              command=self._pick_ref)
-        load_btn.grid(row=0, column=0)
-        self._tip(load_btn,
-                  "Load image file(s) to edit with your prompt. A loaded image "
-                  "can also be the face for the 🔀 image-swap checkbox "
-                  "below.")
-        self.ref_var = StringVar(value="none — text only")
+        ttk.Button(rrow, text="\U0001f5bc Load\u2026", width=9,
+                   command=self._pick_ref).grid(row=0, column=0)
+        self.ref_var = StringVar(value="none \u2014 text only")
         ttk.Label(rrow, textvariable=self.ref_var, style="Dim.TLabel",
-                  wraplength=160).grid(row=0, column=1, sticky=W, padx=6)
+                  wraplength=150).grid(row=0, column=1, sticky=W, padx=6)
         self.editor_use_btn = ttk.Button(
             rrow, text="Use selected", width=12,
             command=self._use_selected_for_editor)
         self.editor_use_btn.grid(row=0, column=2, padx=(0, 4))
-        self.editor_use_btn.state(["disabled"])   # until history has images
+        self.editor_use_btn.state(["disabled"])
         self._tip(self.editor_use_btn,
-                  "Edit the picture currently selected in the gallery — the "
+                  "Edit the picture currently selected in the gallery \u2014 the "
                   "prompt becomes the edit instruction.")
-        clr_btn = ttk.Button(rrow, text="✕", width=3, command=self._clear_ref)
-        clr_btn.grid(row=0, column=3)
-        self._tip(clr_btn, "Clear the loaded image and leave edit mode "
-                           "(LoRAs and RAG turn back on).")
-        # Reference database — a user-made SQLite of people (built with the
-        # Actor DB Builder tool); the chosen person's photo is more context
-        # for the model: it joins the editor's reference images when
-        # editing, and face-guides plain SDXL generations via IP-Adapter
-        refdb = ttk.Frame(left); refdb.grid(row=r, sticky=NSEW, pady=(2, 0))
-        r += 1
-        refdb.columnconfigure(1, weight=1)
-        db_btn = ttk.Button(refdb, text="📇 Reference DB…", width=16,
-                            command=self._pick_actordb)
-        db_btn.grid(row=0, column=0)
-        self._tip(db_btn,
-                  "Load a people database you built with the Actor DB Builder "
-                  "tool (a portable SQLite of names and photos). Nothing ships "
-                  "with the app.")
-        self.actordb_var = StringVar(value="none")
-        ttk.Label(refdb, textvariable=self.actordb_var, style="Dim.TLabel",
-                  wraplength=220).grid(row=0, column=1, sticky=W, padx=6)
-        dbrm_btn = ttk.Button(refdb, text="🗑 Remove", width=10,
-                              command=self._clear_actordb)
-        dbrm_btn.grid(row=0, column=2)
-        self._tip(dbrm_btn, "Unload the reference database.")
-        info_btn = ttk.Button(refdb, text="ℹ", width=3,
-                              command=self._refdb_info)
-        info_btn.grid(row=0, column=3)
-        self._tip(info_btn, "Explain which extras apply in each mode.")
-        prow = ttk.Frame(left); prow.grid(row=r, sticky=NSEW, pady=(2, 0))
-        r += 1
-        prow.columnconfigure(1, weight=1)
-        person_btn = ttk.Button(prow, text="👤 Person…", width=16,
-                                command=self._pick_actor)
-        person_btn.grid(row=0, column=0)
-        self._tip(person_btn,
-                  "Pick a person from the loaded database. Their photo guides "
-                  "the face in plain SDXL generation (with your LoRAs and RAG "
-                  "still on), joins the editor when editing, or is the face "
-                  "for the 🔀 image-swap checkbox (when no image is "
-                  "loaded).")
-        self.actor_var = StringVar(value="no person selected")
-        ttk.Label(prow, textvariable=self.actor_var, style="Dim.TLabel",
-                  wraplength=150).grid(row=0, column=1, sticky=W, padx=6)
-        self.actor_thumb_lab = ttk.Label(prow)
-        self.actor_thumb_lab.grid(row=0, column=2, padx=(0, 4))
-        toed_btn = ttk.Button(prow, text="➡ To editor", width=11,
-                              command=self._actor_to_editor)
-        toed_btn.grid(row=0, column=3)
-        self._tip(toed_btn,
-                  "Load ALL of this person's photos as editor references "
-                  "for a person-only edit (enters edit mode). Fills up to "
-                  "the editor's image limit — 4 for Kontext, 3 for Qwen.")
-        srow = ttk.Frame(left); srow.grid(row=r, sticky=NSEW, pady=(2, 0))
-        r += 1
-        self.swap_rag_var = BooleanVar(value=False)
-        self.swap_cb = ttk.Checkbutton(
-            srow, text="🔀 Use RAG & LoRA for image swap",
-            variable=self.swap_rag_var,
-            command=self._refresh_editor_state)
-        self.swap_cb.grid(row=0, column=0, sticky=W)
-        self._tip(self.swap_cb,
-                  "Two-step generation. Step 1: your prompt + preset + LoRAs "
-                  "+ RAG map generate the styled picture as usual. Step 2: "
-                  "the face from your loaded image(s) (🖼 Load… — several "
-                  "photos of the same person sharpen the likeness; the 👤 "
-                  "Person is used if nothing is loaded) is applied to the "
-                  "person in it — via Qwen Image Edit when installed (most "
-                  "reliable), else Flux Kontext. Both pictures are kept. "
-                  "While this is ticked, loaded images are the FACE — not "
-                  "edit targets. Honors Variations: N = N base+swap pairs.")
-        # what the swap's base uses, and which swap engine — each its own
-        # checkmark (user request). The reload the user noticed is the
-        # 28 GB Qwen swap model evicting the drawing model and being read
-        # back from disk; Fast swap uses Kontext, which fits alongside.
-        swopts = ttk.Frame(left)
-        swopts.grid(row=r, sticky=NSEW, padx=(18, 0), pady=(0, 2)); r += 1
-        self.swap_use_rag_var = BooleanVar(value=True)
-        self.swap_use_lora_var = BooleanVar(value=True)
-        self.swap_fast_var = BooleanVar(value=False)
-        sw_rag = ttk.Checkbutton(swopts, text="RAG map guides the base",
-                                 variable=self.swap_use_rag_var,
-                                 command=self._refresh_editor_state)
-        sw_rag.grid(row=0, column=0, sticky=W)
-        sw_lora = ttk.Checkbutton(swopts, text="LoRAs on the base",
-                                  variable=self.swap_use_lora_var,
-                                  command=self._refresh_editor_state)
-        sw_lora.grid(row=0, column=1, sticky=W, padx=(12, 0))
-        sw_fast = ttk.Checkbutton(swopts, text="Fast swap — Flux Kontext, no "
-                                                "28 GB reload (likeness may "
-                                                "take a few tries)",
-                                  variable=self.swap_fast_var)
-        sw_fast.grid(row=1, column=0, columnspan=2, sticky=W)
-        self._tip(sw_rag, "Untick to draw the swap's base without the RAG "
-                          "map's example images.")
-        self._tip(sw_lora, "Untick to draw the swap's base without the "
-                           "ticked LoRAs.")
-        self._tip(sw_fast,
-                  "The Qwen swap gives the best likeness, but its 28 GB "
-                  "model cannot stay loaded next to the drawing model on a "
-                  "32 GB card, so it is read back from disk for every swap "
-                  "batch (minutes from a hard drive). Flux Kontext (11 GB) "
-                  "fits alongside, so nothing reloads — the face may need a "
-                  "few Variations to land. A batch now draws every base "
-                  "first and swaps afterwards, so Qwen loads once per batch "
-                  "either way.")
-        erow = ttk.Frame(left); erow.grid(row=r, sticky=NSEW, pady=(0, 4)); r += 1
+        ttk.Button(rrow, text="\u2715", width=3,
+                   command=self._clear_ref).grid(row=0, column=3)
+
+        self.change_var = DoubleVar(value=60)
+        chrow = ttk.Frame(left); chrow.grid(row=r, sticky=NSEW, pady=(2, 0)); r += 1
+        ttk.Label(chrow, text="Change amount", style="Dim.TLabel").pack(side="left")
+        ch_scale = ttk.Scale(chrow, from_=10, to=100, variable=self.change_var,
+                             length=150)
+        ch_scale.pack(side="left", padx=6)
+        self.change_lab = ttk.Label(chrow, text="60%", width=5, style="Dim.TLabel")
+        self.change_lab.pack(side="left")
+        self.change_var.trace_add("write", lambda *_a: self.change_lab.config(
+            text=f"{int(self.change_var.get())}%"))
+        self._tip(ch_scale,
+                  "How strongly the edit transforms the loaded image \u2014 low "
+                  "keeps it close, high changes it more.")
+
+        erow = ttk.Frame(left); erow.grid(row=r, sticky=NSEW, pady=(2, 4)); r += 1
         erow.columnconfigure(1, weight=1)
-        ttk.Label(erow, text="Editor", style="Dim.TLabel").grid(row=0,
-                                                                column=0)
+        ttk.Label(erow, text="Editor", style="Dim.TLabel").grid(row=0, column=0)
         self.editor_var = StringVar()
         self._editor_display = {}
         self.editor_dd = ttk.Combobox(erow, textvariable=self.editor_var,
-                                      state="readonly",
-                                      exportselection=False)
+                                      state="readonly", exportselection=False)
         self.editor_dd.grid(row=0, column=1, padx=(4, 0), sticky="ew")
         self.editor_dd.bind("<<ComboboxSelected>>",
                             lambda _e: self._on_editor_pick())
         self._refresh_editor_list()
         self._tip(self.editor_dd,
-                  "Which editor engine handles edits and swaps: Flux Kontext "
-                  "(best at keeping identity/style) or Qwen Image Edit. Swaps "
-                  "always use Kontext.")
+                  "Which engine edits a loaded image: Flux Kontext (best at "
+                  "keeping identity and style) or Qwen Image Edit.")
         self.editor_canvas_var = BooleanVar(value=True)
         canvas_cb = ttk.Checkbutton(left, text="Output at Canvas size",
                                     variable=self.editor_canvas_var)
@@ -3530,6 +3530,7 @@ class App:
         self._tip(canvas_cb,
                   "On: the edited/swapped result is rendered at the Canvas "
                   "size above. Off: it keeps the source image's own size.")
+
         self.change_var = DoubleVar(value=60)   # border-ref influence
 
         # generate
@@ -5476,6 +5477,8 @@ class App:
             "tab": (self.left_tabs.index("current")
                     if hasattr(self, "left_tabs") else 0),
             "ragmap_path": self.ragmap_path,
+            "face_source": self.face_source_var.get(),
+            "face_paths": self.face_paths,
             "actordb_path": self.actordb_path,
             "actor_imdb": (self.actor_sel or {}).get("imdb_id"),
             "actor_photo": getattr(self, "actor_photo_i", 0),
@@ -5566,10 +5569,15 @@ class App:
             self.batch_var.set(st.get("batch", 1))
             self.transparent_var.set(st.get("transparent", False))
             self.upscale_var.set(st.get("upscale", False))
-            self.swap_rag_var.set(st.get("swap_rag", False))
+            self.face_source_var.set(st.get("face_source", "file"))
+            self.face_paths = [p for p in (st.get("face_paths") or [])
+                               if Path(p).exists()]
+            self._set_face_label()
+            self.swap_rag_var.set(st.get("swap_rag", True))
             self.swap_use_rag_var.set(st.get("swap_use_rag", True))
             self.swap_use_lora_var.set(st.get("swap_use_lora", True))
             self.swap_fast_var.set(st.get("swap_fast", False))
+            self._on_face_source()
             # the probe runs in the background, so remember the wanted
             # model and select it once the list arrives
             self._want_ollama_model = st.get("ollama_model", "") or ""
@@ -5626,7 +5634,8 @@ class App:
                     self.anim_motion_var, self.anim_gif_var,
                     self.anim_zip_var, self.anim_sheet_var,
                     self.anim_video_var, self.ollama_var,
-                    self.swap_rag_var, self.swap_use_rag_var,
+                    self.swap_rag_var, self.face_source_var,
+                    self.swap_use_rag_var,
                     self.swap_use_lora_var, self.swap_fast_var):
             var.trace_add("write", self._schedule_persist)
         for box in (self.prompt_box, self.negative_box, self.style_box,
@@ -6483,6 +6492,54 @@ class App:
     # takes 3 images total; Kontext chains up to 4 — 2 keeps both happy)
     SWAP_MAX_FACES = 2
 
+    def _on_face_source(self, *_a):
+        """Show the file row or the database rows for the chosen source."""
+        db = self.face_source_var.get() == "db"
+        if hasattr(self, "face_file_row"):
+            if db:
+                self.face_file_row.grid_remove()
+                self.face_db_row.grid()
+            else:
+                self.face_db_row.grid_remove()
+                self.face_file_row.grid()
+        self._refresh_editor_state()
+        self._schedule_persist()
+
+    def _on_swap_guide(self, *_a):
+        """One checkbox drives both RAG and LoRA guidance of the swap base."""
+        self.swap_use_lora_var.set(self.swap_use_rag_var.get())
+        self._refresh_editor_state()
+
+    def _pick_face(self):
+        paths = filedialog.askopenfilenames(filetypes=[
+            ("Images", "*.png;*.jpg;*.jpeg;*.webp;*.bmp"),
+            ("All files", "*.*")])
+        if paths:
+            self.face_paths = list(paths)
+            self.face_source_var.set("file")
+            self._on_face_source()
+            self._set_face_label()
+            self.status_var.set("Face image loaded — tick the swap and "
+                                "Generate to put it on the picture.")
+            self._refresh_editor_state()
+            self._schedule_persist()
+
+    def _clear_face(self):
+        self.face_paths = []
+        self._set_face_label()
+        self._refresh_editor_state()
+        self._schedule_persist()
+
+    def _set_face_label(self):
+        if not hasattr(self, "face_file_var"):
+            return
+        if not self.face_paths:
+            self.face_file_var.set("no file chosen")
+        else:
+            first = Path(self.face_paths[0]).name
+            self.face_file_var.set(first if len(self.face_paths) == 1 else
+                                   f"{len(self.face_paths)} files ({first}, …)")
+
     def _swap_face_source(self):
         """The face photo(s) for an image-swap run, as a list: every loaded
         editor image (several photos of the same person sharpen the
@@ -6490,8 +6547,8 @@ class App:
         Empty list if neither. A future multi-photo Actor DB only needs
         `_actor_ref_paths` to return more entries — everything downstream
         already takes the list."""
-        if self.ref_paths:
-            return list(self.ref_paths[:self.SWAP_MAX_FACES])
+        if self.face_source_var.get() == "file":
+            return list(self.face_paths[:self.SWAP_MAX_FACES])
         if self.actor_sel:
             return self._actor_ref_paths()[:self.SWAP_MAX_FACES]
         return []
@@ -6528,8 +6585,9 @@ class App:
         # target — LoRAs/RAG still drive the base generation
         swap_mode = hasattr(self, "swap_rag_var") \
             and self.swap_rag_var.get() \
-            and (bool(self.ref_paths) or bool(self.actor_sel))
-        editing = bool(self.ref_paths) and not swap_mode
+            and (bool(getattr(self, "face_paths", [])) or bool(self.actor_sel)) \
+            and not bool(self.ref_paths)
+        editing = bool(self.ref_paths)
         model = self._model_raw()
         fam = model_family(model) if model else ""
         sdxl = bool(fam) and fam not in ("flux", "schnell")
@@ -6580,7 +6638,7 @@ class App:
         swap_editor = "kontext"
         if isinstance(swap_face, str):
             swap_face = [swap_face]
-        if swap_face is None and self.swap_rag_var.get():
+        if swap_face is None and self.swap_rag_var.get() and not self.ref_paths:
             swap_face = self._swap_face_source()
             missing = [p for p in swap_face if not Path(p).exists()]
             if missing:
@@ -6590,15 +6648,13 @@ class App:
                 self.status_var.set(
                     "The face image "
                     + ", ".join(Path(p).name for p in missing)
-                    + " no longer exists (deleted from the gallery?) — load "
-                      "another with 🖼 Load… or Use selected. Nothing was "
-                      "generated.")
+                    + " no longer exists — choose another face (🖼 Browse… "
+                      "or 👤 Person…). Nothing was generated.")
                 return
             if not swap_face:
                 self.status_var.set(
-                    "Image-swap is ticked but there is no face — load one "
-                    "with 🖼 Load… or pick a 👤 Person. Generating "
-                    "normally.")
+                    "The swap is ticked but no face is chosen — 🖼 Browse… "
+                    "for a file or pick a 👤 Person. Generating normally.")
             else:
                 # Fast swap: Kontext, which fits next to the drawing model
                 qwen_fits = (self._editor_tier("qwen") != "block"
@@ -6640,7 +6696,7 @@ class App:
             full_prompt = prompt
         else:
             full_prompt = f"{prompt}, {style}" if style else prompt
-        editing = bool(self.ref_paths) and not swap_face
+        editing = bool(self.ref_paths)
         editor = self._editor_engine()
         model = self._model_raw()
         if editing:
@@ -7398,6 +7454,12 @@ class App:
                          "another with 🖼 Load… or Use selected."
                          if not self.ref_paths else
                          "One of the editor's loaded images was among them.")
+            self._refresh_editor_state()
+        if any(str(p) in goneset for p in getattr(self, "face_paths", [])):
+            self.face_paths = [p for p in self.face_paths
+                               if str(p) not in goneset]
+            self._set_face_label()
+            notes.append("The chosen face image was among them.")
             self._refresh_editor_state()
         if any(str(p) in goneset for p in self.border_ref_paths):
             self.border_ref_paths = [p for p in self.border_ref_paths
