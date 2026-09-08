@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.53.0"
+APP_VERSION = "1.54.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -3401,9 +3401,6 @@ class App:
         ttk.Button(self.face_file_row, text="\U0001f5bc Browse\u2026", width=11,
                    command=self._pick_face).grid(row=0, column=0)
         self.face_file_var = StringVar(value="no file chosen")
-        ttk.Label(self.face_file_row, textvariable=self.face_file_var,
-                  style="Dim.TLabel", wraplength=210).grid(row=0, column=1,
-                                                           sticky=W, padx=6)
         ttk.Button(self.face_file_row, text="\u2715", width=3,
                    command=self._clear_face).grid(row=0, column=2)
 
@@ -3430,6 +3427,17 @@ class App:
         self.actor_thumb_lab = ttk.Label(_pr)
         self.actor_thumb_lab.grid(row=0, column=2, padx=(0, 4))
 
+        # what is actually being used, listed
+        ttk.Label(left, text="Using:", style="Dim.TLabel").grid(row=r, sticky=W)
+        r += 1
+        self.face_list = Listbox(left, height=3, bg=BG3, fg=FG, relief="flat",
+                                 highlightthickness=0, activestyle="none",
+                                 font=("Segoe UI", 9), exportselection=False)
+        self.face_list.grid(row=r, sticky="ew", pady=(0, 2)); r += 1
+        self._tip(self.face_list,
+                  "The face image(s) or person that will be placed on the "
+                  "generated picture.")
+
         # --- the swap + its options ---
         self.swap_rag_var = BooleanVar(value=True)
         self.swap_cb = ttk.Checkbutton(
@@ -3442,31 +3450,27 @@ class App:
                   "the plain and the face-swapped picture are kept). Off: "
                   "the face is ignored and only the prompt is used.")
 
-        qrow = ttk.Frame(left); qrow.grid(row=r, sticky=W, padx=(18, 0)); r += 1
-        ttk.Label(qrow, text="Quality:", style="Dim.TLabel").pack(side="left")
+        # quality is always Best (Qwen) now \u2014 no on-screen option
         self.swap_fast_var = BooleanVar(value=False)
-        ttk.Radiobutton(qrow, text="Best (Qwen)", value=False,
-                        variable=self.swap_fast_var).pack(side="left", padx=(6, 0))
-        ttk.Radiobutton(qrow, text="Fast (Kontext)", value=True,
-                        variable=self.swap_fast_var).pack(side="left", padx=(10, 0))
-        self._tip(qrow,
-                  "Best (Qwen) gives the most reliable likeness but its "
-                  "28 GB model loads from disk for each swap batch (minutes "
-                  "on a hard drive). Fast (Flux Kontext) fits alongside the "
-                  "drawing model so nothing reloads, but the face may need a "
-                  "few Variations to land.")
 
-        # one checkbox drives both RAG and LoRA guidance for the base
+        # exactly two checkboxes: use LoRA and/or RAG to guide the base the
+        # swap draws (either, both, or neither)
         self.swap_use_rag_var = BooleanVar(value=True)
         self.swap_use_lora_var = BooleanVar(value=True)
-        self.swap_guide_cb = ttk.Checkbutton(
-            left, text="Also guide the base with the RAG map + LoRAs",
-            variable=self.swap_use_rag_var, command=self._on_swap_guide)
-        self.swap_guide_cb.grid(row=r, sticky=W, padx=(18, 0), pady=(0, 2)); r += 1
-        self._tip(self.swap_guide_cb,
-                  "On: the scene the swap draws is guided by your loaded RAG "
-                  "map and ticked LoRAs (above), so it matches your style. "
-                  "Off: the base is drawn from the prompt alone.")
+        grow = ttk.Frame(left)
+        grow.grid(row=r, sticky=W, padx=(18, 0), pady=(0, 2)); r += 1
+        ttk.Label(grow, text="Guide the base with:",
+                  style="Dim.TLabel").pack(side="left")
+        gl = ttk.Checkbutton(grow, text="LoRA", variable=self.swap_use_lora_var,
+                             command=self._refresh_editor_state)
+        gl.pack(side="left", padx=(6, 0))
+        gr = ttk.Checkbutton(grow, text="RAG", variable=self.swap_use_rag_var,
+                             command=self._refresh_editor_state)
+        gr.pack(side="left", padx=(8, 0))
+        self._tip(gl, "Apply your ticked LoRAs to the picture the swap "
+                      "draws. Untick to draw it without them.")
+        self._tip(gr, "Let your loaded RAG map guide the picture the swap "
+                      "draws. Untick to draw it without it.")
 
         # ---------- EDIT A LOADED IMAGE: a separate feature ----------
         ed_head = ttk.Label(left, text="EDIT A LOADED IMAGE (optional)",
@@ -3523,15 +3527,8 @@ class App:
         self._tip(self.editor_dd,
                   "Which engine edits a loaded image: Flux Kontext (best at "
                   "keeping identity and style) or Qwen Image Edit.")
+        # the result always renders at the Canvas size (no option)
         self.editor_canvas_var = BooleanVar(value=True)
-        canvas_cb = ttk.Checkbutton(left, text="Output at Canvas size",
-                                    variable=self.editor_canvas_var)
-        canvas_cb.grid(row=r, sticky=W); r += 1
-        self._tip(canvas_cb,
-                  "On: the edited/swapped result is rendered at the Canvas "
-                  "size above. Off: it keeps the source image's own size.")
-
-        self.change_var = DoubleVar(value=60)   # border-ref influence
 
         # generate
         gorow = ttk.Frame(left); gorow.grid(row=r, sticky=NSEW,
@@ -5523,7 +5520,7 @@ class App:
                                  f"{len(self.ref_paths)} images ({first}, …)")
             # editor intentionally NOT restored: Flux Kontext is always
             # the default at launch (per-session changes still allowed)
-            self.editor_canvas_var.set(st.get("editor_canvas", True))
+            self.editor_canvas_var.set(True)   # always canvas now
             brefs = st.get("border_refs", [])
             self.border_ref_paths = [p for p in brefs if Path(p).exists()]
             if self.border_ref_paths:
@@ -6502,6 +6499,7 @@ class App:
             else:
                 self.face_db_row.grid_remove()
                 self.face_file_row.grid()
+        self._refresh_face_list()
         self._refresh_editor_state()
         self._schedule_persist()
 
@@ -6539,6 +6537,25 @@ class App:
             first = Path(self.face_paths[0]).name
             self.face_file_var.set(first if len(self.face_paths) == 1 else
                                    f"{len(self.face_paths)} files ({first}, …)")
+        self._refresh_face_list()
+
+    def _refresh_face_list(self):
+        """The 'Using:' list — the face file(s) for a file source, or the
+        chosen person for a database source."""
+        if not hasattr(self, "face_list"):
+            return
+        self.face_list.delete(0, END)
+        if self.face_source_var.get() == "file":
+            if self.face_paths:
+                for p in self.face_paths:
+                    self.face_list.insert(END, Path(p).name)
+            else:
+                self.face_list.insert(END, "(no image chosen — Browse…)")
+        else:
+            if self.actor_sel:
+                self.face_list.insert(END, self.actor_var.get())
+            else:
+                self.face_list.insert(END, "(no person chosen — Person…)")
 
     def _swap_face_source(self):
         """The face photo(s) for an image-swap run, as a list: every loaded
@@ -6604,6 +6621,8 @@ class App:
         """After anything that changes the editor's inputs: enable/disable the
         editor buttons and repaint the mode badges."""
         has_gallery = bool(self.session)
+        if hasattr(self, "face_list"):
+            self._refresh_face_list()
         if hasattr(self, "editor_use_btn"):
             self.editor_use_btn.state(
                 ["!disabled"] if has_gallery else ["disabled"])

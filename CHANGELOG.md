@@ -1,5 +1,16 @@
 # Changelog — Comic Book Art Creator
 
+## v1.54.0 — 2026-09-08
+- **Fewer controls in the face/character section, as requested.** Under
+  the swap there are now just two checkboxes — **LoRA** and **RAG** —
+  which you can tick together, singly, or not at all to guide the base
+  the swap draws. The separate quality toggle is gone (best quality is
+  always used).
+- **A "Using:" list** shows exactly which image or person the swap will
+  place on the picture, whether you chose it from a file or a database.
+- **The result always renders at the Canvas size**, so the "Output at
+  Canvas size" option has been removed.
+
 ## v1.53.0 — 2026-09-08
 - **The face/character section is simpler.** Instead of a tangle of load
   buttons, a reference database, a person picker and several checkboxes,

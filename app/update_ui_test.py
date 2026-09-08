@@ -345,20 +345,22 @@ check("choosing 'database' swaps which rows show",
 ui.face_source_var.set("file")
 ui._on_face_source()
 root.update()
-check("swap / quality / guide controls exist and are settable",
-      hasattr(ui, "swap_rag_var") and hasattr(ui, "swap_fast_var")
-      and hasattr(ui, "swap_use_rag_var") and hasattr(ui, "swap_cb")
-      and hasattr(ui, "swap_guide_cb"))
+check("swap + two guide checkboxes exist and are settable",
+      hasattr(ui, "swap_rag_var") and hasattr(ui, "swap_cb")
+      and hasattr(ui, "swap_use_rag_var") and hasattr(ui, "swap_use_lora_var")
+      and not hasattr(ui, "swap_guide_cb"))
 ui.swap_rag_var.set(True); ui.swap_fast_var.set(False)
 check("swap on + Best quality read back",
       ui.swap_rag_var.get() and not ui.swap_fast_var.get())
-# the one guide checkbox drives both RAG and LoRA guidance
-ui.swap_use_rag_var.set(False)
-ui._on_swap_guide()
-check("the guide checkbox ties RAG and LoRA together",
-      not ui.swap_use_rag_var.get() and not ui.swap_use_lora_var.get())
+# two independent guide checkboxes: LoRA and RAG (either/both/neither)
+ui.swap_use_lora_var.set(True); ui.swap_use_rag_var.set(False)
+check("LoRA and RAG guide the base independently",
+      ui.swap_use_lora_var.get() and not ui.swap_use_rag_var.get())
 ui.swap_use_rag_var.set(True)
-ui._on_swap_guide()
+check("no quality radio / no canvas option; always Best + canvas",
+      hasattr(ui, "swap_fast_var") and not ui.swap_fast_var.get()
+      and ui.editor_canvas_var.get())
+check("the Using list exists", hasattr(ui, "face_list"))
 # a face from a file, and the source round-trips through persistence
 import tempfile as _tf
 from PIL import Image as _Im2
