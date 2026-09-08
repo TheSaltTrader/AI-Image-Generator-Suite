@@ -43,7 +43,7 @@ from PIL.PngImagePlugin import PngInfo
 import self_update
 import engine_files
 
-APP_VERSION = "1.37.0"
+APP_VERSION = "1.38.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -1892,10 +1892,12 @@ def load_ragmap(path):
         # retrieval words, once — a map can hold hundreds of thousands of
         # entries, and re-tokenising every one on every Generate click
         # stalled the UI for seconds
-        e["_words"] = frozenset(re.findall(
+        e["_words"] = frozenset(sys.intern(w) for w in re.findall(
             r"[a-z0-9]+", (" ".join(e["keywords"]) + " "
                            + e.get("caption", "")).lower()))
     # embeddings-only: the builder said so, or there are embeds and no images
+    # the inverted index retrieval uses instead of walking every entry
+    data["_index"] = _build_rag_index(data.get("entries", []))
     data["_embeds_only"] = (str(data.get("mode", "")).lower() == "embeddings-only"
                             or (has_embed and not has_image))
 
@@ -1946,6 +1948,30 @@ def ragmap_lora(ragmap, installed=None):
     return ""
 
 
+def _build_rag_index(entries):
+    """Inverted index word -> np.int32 array of entry indices, plus a
+    has-reference mask, so retrieval touches only the entries that share
+    a word with the prompt and ranks them in numpy. Built once, off the
+    UI thread, by load_ragmap. None without numpy — retrieval then walks
+    every entry as before."""
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+    post = {}
+    has_ref = np.zeros(len(entries), dtype=bool)
+    for i, e in enumerate(entries):
+        if e.get("_path") or e.get("_ipadpt"):
+            has_ref[i] = True
+        for w in e.get("_words", ()):
+            lst = post.get(w)
+            if lst is None:
+                post[w] = lst = []
+            lst.append(i)
+    vocab = {w: np.asarray(lst, dtype=np.int32) for w, lst in post.items()}
+    return (vocab, has_ref, np)
+
+
 def ragmap_retrieve(ragmap, prompt, k=None, require_image=True):
     """Return the top-k entries whose keywords/caption best match the
     prompt words (falls back to the first k valid entries if nothing
@@ -1960,8 +1986,28 @@ def ragmap_retrieve(ragmap, prompt, k=None, require_image=True):
         return []
     k = k or int(ragmap.get("top_k") or 4)
     words = set(re.findall(r"[a-z0-9]+", (prompt or "").lower()))
+    entries = ragmap.get("entries", [])
+    index = ragmap.get("_index")
+    if index is not None:
+        # score only the entries sharing a word with the prompt, rank in
+        # numpy: the per-entry Python walk below took 5.5 s per Generate
+        # (on the UI thread) on a 481k-entry map. Same answers: score =
+        # shared-word count, ties in original order, excluded entries out.
+        vocab, has_ref, np = index
+        counts = np.zeros(len(entries), dtype=np.int32)
+        for w in words:
+            hit = vocab.get(w)
+            if hit is not None:
+                counts[hit] += 1
+        if require_image:
+            counts = np.where(has_ref, counts, -1)
+        order = np.argsort(-counts, kind="stable")
+        if require_image:
+            order = order[counts[order] >= 0]
+        cands = [(int(i), entries[i]) for i in order[:max(k * 50, 200)]]
+        return _rag_diverse(cands, ragmap.get("_emb"), k)
     scored = []
-    for i, e in enumerate(ragmap.get("entries", [])):
+    for i, e in enumerate(entries):
         if require_image and not (e.get("_path") or e.get("_ipadpt")):
             continue
         ewords = e.get("_words")

@@ -1,5 +1,14 @@
 # Changelog — Comic Book Art Creator
 
+## v1.38.0 — 2026-09-08
+- **Generate no longer pauses on a big RAG map.** Picking the example
+  images for a prompt walked every entry of the map each time — on a map
+  with 481,000 entries that was 5.5 seconds of frozen window per
+  Generate. The map now builds a word index while it loads (in the
+  background, as of v1.37), and retrieval looks up only the entries that
+  share a word with your prompt. Same choices as before, measured
+  identical across dozens of prompts, in a few milliseconds.
+
 ## v1.37.0 — 2026-09-08
 - **No more "Not responding" while a RAG map loads.** A map can be
   hundreds of megabytes of JSON plus a multi-gigabyte embeddings file,

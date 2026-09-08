@@ -267,7 +267,8 @@ wired into the real App window, engine stubbed out, automatic and manual
 startup paths, the RAG map parsed off the UI thread, the relaunch and
 close hand-overs), `app\startup_test.py` (12 checks — the relaunched
 copy waits for the copy that started it; a real child process holds the
-real mutex), `app\engine_files_test.py` (65 checks, 11 enumerated
+real mutex), `app\ragmap_test.py` (15 checks — the retrieval index gives
+the walk's exact answers on a 60k-entry map, fast), `app\engine_files_test.py` (65 checks, 11 enumerated
 subjects — the engine swap against throw-away folders and a local HTTP
 server), and `app\rag_lora_e2e_test.py` (32 checks on a LIVE engine —
 LoRA / RAG / embeds / combined / Flux renders fetched back and compared;
@@ -769,10 +770,17 @@ can combine LoRAs + RAG + a person in one pass.
   runs `on_done` only for the NEWEST generation, so a later pick
   supersedes an earlier parse. `_validate_ragmap` compares the file's
   `(mtime, size)` (`rag["_sig"]`) and only re-parses (async) when the
-  file changed. `load_ragmap` precomputes `e["_words"]` so
-  `ragmap_retrieve` (UI thread, every Generate) does not re-tokenise
-  hundreds of thousands of entries. Rule: anything that scales with a
-  user's data goes through `ui_queue`, never inline in a handler.
+  file changed. `load_ragmap` precomputes `e["_words"]` (interned) and
+  **`_build_rag_index`** (v1.38.0: word → `np.int32` entry indices +
+  a has-reference mask); `ragmap_retrieve` scores only the entries
+  sharing a word with the prompt and ranks with a stable `argsort`, so
+  ties keep original order and excluded entries sink — the per-entry
+  walk it replaces took **5.5 s per Generate on the UI thread** on the
+  user's 481,177-entry map (0.9 ms vs 48.7 ms on 60k in
+  `ragmap_test.py`, answers identical across dozens of prompts). The
+  walk stays as the no-numpy fallback. Rule: anything that scales with a
+  user's data goes through `ui_queue`, never inline in a handler — and
+  never assume a map has four entries.
 - **Shutting the engine down is seconds of PowerShell** (`kill_engine`
   enumerates every process). `_on_close` withdraws the window first and
   does it in a thread, then posts `("quit", None)` (the handler destroys
