@@ -1,5 +1,16 @@
 # Changelog — Comic Book Art Creator
 
+## v1.42.0 — 2026-09-08
+- **The copy started by an older version's update now restarts itself
+  cleanly, always.** v1.41 recognised an inherited program folder only
+  when it was more than a minute old; an update that completed in
+  seventeen seconds slipped under that, and the new copy broke the same
+  way (the "failed to remove temp directory" box is the old copy
+  noticing). A copy started by any update from before this version now
+  starts over on its own, in its own folder, before doing anything else.
+- **The GPU badge has a blue bar** next to its percentage, matching the
+  VRAM meter.
+
 ## v1.41.0 — 2026-09-08
 - **The copy started after an update no longer breaks minutes later.**
   The program unpacks itself into a temporary folder when it starts. The

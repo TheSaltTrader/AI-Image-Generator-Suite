@@ -807,7 +807,14 @@ can combine LoRAs + RAG + a person in one pass.
   extraction`) re-execs itself with a clean env (`CBAC_REEXEC=1` stops a
   loop) and `os._exit(0)`s — that is what rescues the copy a pre-v1.41
   relaunch started. `%TEMP%\_MEI*` folders whose `numpy\_core` is missing
-  are the fingerprint.
+  are the fingerprint. **v1.42.0: the age net was not enough** — a v1.41
+  auto-update completed 17 s after the old copy started, and the new copy
+  died the same way the day it was meant to fix. The certain signal:
+  `--after-update` WITHOUT the `--clean` marker a v1.42+ relaunch adds =
+  started by an older copy = inherited folder → `_needs_clean_restart()`
+  re-execs at once (args + `--clean`). Age stays as a second net. The
+  bootloader's "Failed to remove temporary directory" box on the OLD pid is
+  that copy failing to delete the folder the new copy still uses.
 - **`app.log` (v1.39.0) — `app\applog.py`.** A `--windowed` exe has no
   console, so until v1.39 an exception in a worker thread or a Tk
   callback vanished and the user reported "it said cannot import name"

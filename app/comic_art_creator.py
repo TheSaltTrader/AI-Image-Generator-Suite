@@ -55,13 +55,31 @@ def _foreign_extraction(meipass, now=None, age=60):
 
 
 _REEXEC_FLAG = "CBAC_REEXEC"
-if getattr(sys, "frozen", False) \
-        and os.environ.get(_REEXEC_FLAG) != "1" \
-        and _foreign_extraction(getattr(sys, "_MEIPASS", "")):
+
+
+def _needs_clean_restart(argv, environ, meipass):
+    """True when this frozen copy must start over in a clean environment.
+
+    The certain signal: we were started by an OLDER copy's relaunch —
+    --after-update without the --clean marker a v1.42+ relaunch adds — so
+    we inherited its PyInstaller folder. A v1.41 auto-update completed 17
+    seconds after the old copy started, under the folder-age net below,
+    and the new copy died the same way the day it was meant to fix. The
+    age check stays as a second net. Never twice (the flag)."""
+    if environ.get(_REEXEC_FLAG) == "1":
+        return False
+    if "--after-update" in argv and "--clean" not in argv:
+        return True
+    return _foreign_extraction(meipass)
+
+
+if getattr(sys, "frozen", False) and _needs_clean_restart(
+        sys.argv, os.environ, getattr(sys, "_MEIPASS", "")):
     _env = _clean_child_env()
     _env[_REEXEC_FLAG] = "1"          # the fresh copy must never loop
-    subprocess.Popen([sys.executable] + sys.argv[1:], env=_env,
-                     cwd=os.getcwd())
+    subprocess.Popen([sys.executable] + sys.argv[1:]
+                     + ([] if "--clean" in sys.argv else ["--clean"]),
+                     env=_env, cwd=os.getcwd())
     os._exit(0)
 
 from ctypes import wintypes
@@ -82,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.41.0"
+APP_VERSION = "1.42.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -423,7 +441,12 @@ def wait_for_previous_instance(pids=(), timeout=30, alive=None, probe=None,
         if not already or time.time() >= deadline:
             return h, already
         if pids and not any(alive(p) for p in pids):
-            return h, already    # the leavers left; someone else holds it
+            # the leavers are gone — but a process drops off tasklist a
+            # moment before the kernel closes its handles, so look once
+            # more before concluding that someone else holds the mutex
+            release_single_instance()
+            time.sleep(0.5)
+            return probe()
         if tick:
             try:
                 tick()
@@ -2772,6 +2795,9 @@ class App:
         s.configure("Tip.TLabel", background="#33334a", foreground=FG,
                     padding=(8, 5), relief="solid", borderwidth=1)
         # green = the feature will apply to the next generation, red = it won't
+        s.configure("Gpu.Horizontal.TProgressbar", background="#3b82f6",
+                    troughcolor=BG2, bordercolor=BG3, lightcolor="#3b82f6",
+                    darkcolor="#3b82f6")
         s.configure("BadgeOn.TLabel", background=ACCENT2, foreground="#0d0d12",
                     font=("Segoe UI", 9, "bold"), padding=(9, 3))
         s.configure("BadgeOff.TLabel", background=ACCENT, foreground="white",
@@ -3622,9 +3648,14 @@ class App:
             value="GPU —%" if self.vram_gb is not None else "")
         self.gpu_badge = ttk.Label(vrow, textvariable=self.gpu_var,
                                    style="Dim.TLabel")
-        self.gpu_badge.pack(side="left", padx=(0, 14))
+        self.gpu_badge.pack(side="left", padx=(0, 6))
         self._tip(self.gpu_badge, "How busy the GPU is right now "
                                   "(nvidia-smi, every 3 seconds).")
+        self.gpu_bar = ttk.Progressbar(vrow, mode="determinate", length=120,
+                                       maximum=100,
+                                       style="Gpu.Horizontal.TProgressbar")
+        self.gpu_bar.pack(side="left", padx=(0, 16))
+        self._tip(self.gpu_bar, "GPU busy, 0-100%.")
         self.vram_label_var = StringVar(
             value="VRAM — MB" if self.vram_gb is not None
             else "no NVIDIA GPU")
@@ -5395,8 +5426,8 @@ class App:
             release_single_instance()
             try:
                 subprocess.Popen([str(newexe), "--after-update",
-                                  str(os.getpid())], cwd=str(PROJECT),
-                                 env=_clean_child_env())
+                                  str(os.getpid()), "--clean"],
+                                 cwd=str(PROJECT), env=_clean_child_env())
             except OSError as e:
                 self.ui_queue.put(("status", f"Could not start the new "
                                              f"version: {e} — run "
@@ -6465,6 +6496,7 @@ class App:
                         f"VRAM {used:,} / {total:,} MB")
                     self.gpu_var.set(f"GPU {util}%" if util is not None
                                      else "GPU —%")
+                    self.gpu_bar["value"] = util if util is not None else 0
                 elif kind == "models_changed":
                     self._refresh_models()
                 elif kind == "model_added":

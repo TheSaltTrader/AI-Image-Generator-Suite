@@ -88,6 +88,8 @@ root.update()
 check("a reading fills the VRAM meter", ui.vram_label_var.get() == "VRAM 1,000 / 2,000 MB",
       ui.vram_label_var.get())
 check("…and the GPU badge", ui.gpu_var.get() == "GPU 37%", ui.gpu_var.get())
+check("…and the blue GPU bar", hasattr(ui, "gpu_bar") and int(ui.gpu_bar["value"]) == 37
+      and "Gpu" in str(ui.gpu_bar.cget("style")), (ui.gpu_bar["value"], ui.gpu_bar.cget("style")))
 ui.ui_queue.put(("vram_live", 1000, 2000))
 ui._poll_queue()
 root.update()

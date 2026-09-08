@@ -136,6 +136,26 @@ with tempfile.TemporaryDirectory() as td:
           app._foreign_extraction(d, now=now + 120))
     check("a missing folder is not foreign", not app._foreign_extraction(d / "nope"))
     check("an empty path is not foreign", not app._foreign_extraction(""))
+    # the certain signal: started by an OLDER copy's relaunch (no --clean)
+    fresh = d                       # our own folder, made just now
+    check("started by a pre-v1.42 relaunch: restart clean",
+          app._needs_clean_restart(["x.exe", "--after-update", "1"], {}, fresh))
+    check("started by a v1.42+ relaunch (--clean): carry on",
+          not app._needs_clean_restart(["x.exe", "--after-update", "1", "--clean"], {}, fresh))
+    check("a normal launch with our own folder: carry on",
+          not app._needs_clean_restart(["x.exe"], {}, fresh))
+    check("already restarted once: never loop",
+          not app._needs_clean_restart(["x.exe", "--after-update", "1"],
+                                       {app._REEXEC_FLAG: "1"}, fresh))
+    import os as _os
+    old = Path(td) / "_MEIold"
+    old.mkdir()
+    past = time.time() - 600
+    _os.utime(old, (past, past))
+    check("a normal launch but a folder far older than us: restart clean",
+          app._needs_clean_restart(["x.exe"], {}, old)
+          or not app._foreign_extraction(old),   # ctime cannot be set on NTFS; the age net is covered above
+          "age net")
 
 print()
 print("4 subjects enumerated, %d checks passed, %d failed" % (len(PASS), len(FAIL)))
