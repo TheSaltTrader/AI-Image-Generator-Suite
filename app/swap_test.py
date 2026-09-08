@@ -181,8 +181,64 @@ check("elapsed time is reported while loading",
       any("elapsed" in str(m[1]) for m in msgs if m[0] == "status"),
       [m[1] for m in msgs if m[0] == "status"])
 
+print("composite")
+import random as _rnd
+from PIL import ImageDraw as _ID
+W, H = 512, 768
+
+
+def photo(seed, head=None, noise=0):
+    """A 'photoreal' base: soft gradient + grain; optional head blob colour."""
+    rng = _rnd.Random(seed)
+    img = Image.new("RGB", (W, H))
+    px = img.load()
+    for y in range(H):
+        for x in range(W):
+            v = 90 + (x * 60) // W + (y * 40) // H
+            px[x, y] = (v + rng.randint(-noise, noise), v + rng.randint(-noise, noise),
+                        v + rng.randint(-noise, noise))
+    if head:
+        _ID.Draw(img).ellipse([176, 120, 336, 300], fill=head)
+    return img
+
+
+# (a) a stylised base with a strongly changed head: composite, base kept
+base = photo(1, head=(200, 170, 150))
+swapped = photo(1, head=(40, 60, 200))                 # very different head
+stats = {}
+out = cac.swap_composite(base, swapped, stats=stats)
+check("a clearly changed head is composited, not discarded",
+      stats.get("used") == "composite" and stats["mask"] > 0.02, stats)
+bl, ol = base.convert("L").load(), out.convert("L").load()
+check("…keeping the base's exact pixels outside the head",
+      all(abs(bl[x, y] - ol[x, y]) < 2 for x, y in ((20, 20), (490, 740), (256, 700))))
+check("…and taking the swap's pixels inside it", abs(ol[256, 210] - swapped.convert("L").load()[256, 210]) < 3)
+
+# (b) the reported case: a photoreal base the swap model re-rendered all
+# over (global grain), with a subtle face change — the old rule's bar
+# (2.4x mean) rose above the face; the raw swap must be used, not the base
+base2 = photo(2, head=(200, 170, 150))
+subtle = photo(3, head=(196, 160, 150), noise=18)      # global noise, slight face
+stats = {}
+out2 = cac.swap_composite(base2, subtle, stats=stats)
+check("a subtle swap on a re-rendered base is not thrown away",
+      stats.get("used") == "raw", stats)
+check("…so the result is the swap, not the base",
+      abs(out2.convert("L").load()[256, 210] - subtle.convert("L").load()[256, 210]) < 3
+      and abs(out2.convert("L").load()[256, 210] - base2.convert("L").load()[256, 210]) > 0)
+
+# (c) the cap: a noisy re-render with a REAL new head still keeps the head
+noisy = photo(4, head=(40, 60, 200), noise=30)
+stats = {}
+out3 = cac.swap_composite(base2, noisy, stats=stats)
+check("the threshold is capped so a noisy re-render cannot hide a real head",
+      stats.get("thr") <= cac.SWAP_THR_CAP and stats.get("used") == "composite"
+      and stats["mask"] > 0.02, stats)
+check("stats carry the numbers for the log",
+      all(k in stats for k in ("mean", "thr", "mask", "used")))
+
 print()
-print("3 subjects enumerated, %d checks passed, %d failed" % (len(PASS), len(FAIL)))
+print("4 subjects enumerated, %d checks passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAILED: " + f)
 sys.exit(1 if FAIL else 0)

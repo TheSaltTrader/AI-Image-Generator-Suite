@@ -1,5 +1,21 @@
 # Changelog — Comic Book Art Creator
 
+## v1.50.0 — 2026-09-08
+- **A face swap on a RAG-guided base no longer comes back as the base.**
+  After a swap, only the region that differs strongly from the base is
+  merged back, so the rest keeps the base's exact pixels. The bar for
+  "differs strongly" was relative to the picture's average change, and a
+  photoreal base that the swap model re-renders all over pushed that bar
+  above the face change itself — the merge found no head and returned
+  the base, so the selected image looked unused. The bar is now capped,
+  and when no head-sized region is found the swap itself is kept instead
+  of the base. Each swap logs its numbers (average change, threshold,
+  head share, which result was used).
+- **Less VRAM pressure for the swap:** the engine's cache is freed as
+  well as its models before the swap model loads.
+- If a progress bar is ever found with stacked sweep timers again, the
+  log says so.
+
 ## v1.49.0 — 2026-09-08
 - **The progress bar no longer races on after a batch.** Each time a
   model load told the bar to sweep, the toolkit started another timer

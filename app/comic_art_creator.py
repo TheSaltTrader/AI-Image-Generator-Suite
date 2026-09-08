@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.49.0"
+APP_VERSION = "1.50.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -1575,14 +1575,27 @@ SWAP_GUIDANCE = 3.0
 # capability for future use.)
 
 
-def swap_composite(base, swapped, feather=25):
+SWAP_THR_CAP = 40.0        # a globally re-rendered base must not push the
+SWAP_MIN_MASK = 0.015      # face out of reach; below this mask share the
+#                            composite found no head — keep the raw swap
+
+
+def swap_composite(base, swapped, feather=25, stats=None):
     """Merge a face-swap result back onto its base: keep `swapped` only
     where it genuinely differs (the reworked head and any truly changed
     areas), restore the base's exact pixels — reflections, lighting,
     fine detail — everywhere else. A wide morphological opening removes
     the thin ribbons caused by slight silhouette drift between the two
-    renders, so outlines don't ghost. Returns the merged image; on any
-    failure the raw `swapped` comes back unchanged."""
+    renders, so outlines don't ghost.
+
+    Two guards (v1.50): the threshold is relative to the mean change but
+    CAPPED, because a photoreal base that the swap model re-renders all
+    over (a RAG-guided picture, typically) raised the bar above the face
+    change itself; and when the mask still covers less than SWAP_MIN_MASK
+    of the picture no head was found, so the raw swap is returned rather
+    than the base — the swap looked "never used" before. `stats`, when a
+    dict is given, receives mean / thr / mask / used for the log.
+    On any failure the raw `swapped` comes back unchanged."""
     try:
         import numpy as np
         b = np.asarray(base.convert("RGB"), dtype=np.float32)
@@ -1592,16 +1605,29 @@ def swap_composite(base, swapped, feather=25):
         dimg = Image.fromarray(np.uint8(np.clip(diff, 0, 255)))
         diff = np.asarray(dimg.filter(ImageFilter.GaussianBlur(feather // 2)),
                           dtype=np.float32)
-        thr = max(16.0, 2.4 * float(diff.mean()))
+        mean = float(diff.mean())
+        thr = min(max(16.0, 2.4 * mean), SWAP_THR_CAP)
         hard = Image.fromarray(np.uint8((diff >= thr) * 255))
         k = max(9, (min(base.size) // 32) | 1)
         hard = hard.filter(ImageFilter.MinFilter(k))
         hard = hard.filter(ImageFilter.MaxFilter(k + 4))
+        mask_frac = float((np.asarray(hard) > 0).mean())
+        if stats is not None:
+            stats.update(mean=round(mean, 1), thr=round(thr, 1),
+                         mask=round(mask_frac, 4))
+        if mask_frac < SWAP_MIN_MASK:
+            if stats is not None:
+                stats["used"] = "raw"
+            return swapped.convert("RGB").resize(base.size)
         soft = hard.filter(ImageFilter.GaussianBlur(feather))
         m = np.asarray(soft, dtype=np.float32)[..., None] / 255.0
         out = b * (1.0 - m) + s * m
+        if stats is not None:
+            stats["used"] = "composite"
         return Image.fromarray(np.uint8(np.clip(out, 0, 255)))
     except Exception:
+        if stats is not None:
+            stats["used"] = "raw-error"
         return swapped
 # Qwen Image Edit is natively multi-image (image1/image2) and transfers
 # identity far more reliably than Kontext's chained references — it is the
@@ -2457,7 +2483,8 @@ class Generator:
                 self._swap_freed = True
                 try:
                     requests.post(f"{ENGINE_URL}/free",
-                                  json={"unload_models": True}, timeout=10)
+                                  json={"unload_models": True,
+                                        "free_memory": True}, timeout=10)
                 except Exception:
                     pass
             size = tuple(out_size) if out_size \
@@ -2492,7 +2519,14 @@ class Generator:
                 # merge the swap back onto the base so reflections,
                 # lighting and detail outside the reworked area keep the
                 # base's actual pixels instead of a re-rendered copy
-                return swap_composite(up, self._fetch_image(out[0]))
+                stats = {}
+                merged = swap_composite(up, self._fetch_image(out[0]),
+                                        stats=stats)
+                applog.log("face swap (%s): mean change %s, threshold %s, "
+                           "head mask %.1f%%, used %s"
+                           % (label, stats.get("mean"), stats.get("thr"),
+                              100 * stats.get("mask", 0), stats.get("used")))
+                return merged
         except Exception as e:
             applog.exception("face swap failed")
             self.q.put(("status", f"Face swap skipped ({e}); kept the base "
@@ -4055,10 +4089,15 @@ class App:
         except Exception:
             pass
         try:
+            stray = 0
             for aid in self.root.tk.call("after", "info"):
                 info = str(self.root.tk.call("after", "info", aid))
                 if "Autoincrement" in info and key in info:
                     self.root.tk.call("after", "cancel", aid)
+                    stray += 1
+            if stray > 1:
+                applog.log("progress bar %s: cancelled %d stacked sweep "
+                           "timer(s)" % (key, stray))
         except Exception:
             pass
         bar.configure(mode="determinate")

@@ -900,6 +900,20 @@ can combine LoRAs + RAG + a person in one pass.
   `root.after` and `invoke()`-ing its button — `event_generate("<Return>")`
   on an unmapped toplevel hung the suite; keep a watchdog `after` that
   destroys the box.
+- **"The selected image is never used" with RAG on = the composite threw
+  the swap away (v1.50.0).** `swap_composite` masks where |base−swap|
+  ≥ `max(16, 2.4×mean)` after a blur and a wide opening. A photoreal,
+  RAG-guided base gets re-rendered all over by Qwen (mean high → bar
+  high) while the face change is subtle → empty mask → the BASE came back;
+  a stylised base's new face differs strongly → kept. Now `thr =
+  min(max(16, 2.4×mean), SWAP_THR_CAP=40)`, and a mask under
+  `SWAP_MIN_MASK=1.5%` returns the RAW swap ("used raw"); `stats` (mean,
+  thr, mask, used) go to app.log per swap — read them before guessing.
+  Also `/free` now passes `free_memory: true` before a swap. `swap_test`
+  covers a strong head (composite), a subtle swap on a noisy re-render
+  (raw), and a noisy re-render with a real head (cap keeps it). The user
+  had deleted every output, so the pairs could not be compared — hence
+  the numbers in the log from now on.
 - **The swap "hang" was a 163-second Qwen load (v1.48.0).** app.log +
   the engine history proved the swap SUCCEEDED; the user saw a bar parked
   at 100% and read it as hung. Qwen (19 GB fp8 + 8.7 GB text encoder)
