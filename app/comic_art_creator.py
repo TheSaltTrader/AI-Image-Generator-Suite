@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.44.0"
+APP_VERSION = "1.45.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -1908,7 +1908,7 @@ def lora_trigger(name):
     return trig
 
 
-def load_ragmap(path):
+def load_ragmap(path, progress=None):
     """Load a RAG map paired with a trained LoRA. Two layouts are read:
 
       * this app's flat map — cbac-ragmap/1:
@@ -1925,6 +1925,8 @@ def load_ragmap(path):
     whose images didn't travel still contributes captions, one whose LoRA
     isn't installed still guides with its images."""
     mp = _ragmap_file(path)
+    if progress:
+        progress("reading", 0, 0)
     data = json.loads(mp.read_text(encoding="utf-8"))
     base = mp.resolve().parent
     data["_file"], data["_base"] = str(mp), str(base)
@@ -1956,7 +1958,11 @@ def load_ragmap(path):
 
     has_embed = False
     has_image = False
-    for e in data.get("entries", []):
+    entries = data.get("entries", [])
+    total = len(entries)
+    for n_i, e in enumerate(entries):
+        if progress and n_i % 5000 == 0:
+            progress("resolving", n_i, total)
         img_name = e.get("image", "")
         if img_name:
             ip = Path(img_name)
@@ -1989,6 +1995,8 @@ def load_ragmap(path):
                            + e.get("caption", "")).lower()))
     # embeddings-only: the builder said so, or there are embeds and no images
     # the inverted index retrieval uses instead of walking every entry
+    if progress:
+        progress("indexing", 0, 0)
     data["_index"] = _build_rag_index(data.get("entries", []))
     data["_embeds_only"] = (str(data.get("mode", "")).lower() == "embeddings-only"
                             or (has_embed and not has_image))
@@ -2012,6 +2020,8 @@ def load_ragmap(path):
 
     # optional CLIP embeddings — nested {"embeddings": {"file":..,"key":..}}
     # or the flat embeddings_file/embeddings_key pair
+    if progress:
+        progress("embeddings", 0, 0)
     data["_emb"] = None
     spec = data.get("embeddings")
     if not isinstance(spec, dict):
@@ -3114,8 +3124,21 @@ class App:
         self.lora_strength.trace_add(
             "write", lambda *_a: self.lora_strength_lab.config(
                 text=f"{self.lora_strength.get():.2f}"))
-        # RAG map — pairs example images with a LoRA; retrieves the closest
-        # ones as visual guidance (IP-Adapter) at generation time
+        # ---------- RAG map: its own section under the LoRAs ----------
+        # pairs example images (or private embeddings) with a LoRA; at
+        # generation the closest examples guide the picture (IP-Adapter)
+        rag_head = ttk.Label(left, text="RAG MAP (example images that guide "
+                                        "the picture)",
+                             style="Head.TLabel", wraplength=400,
+                             justify="left")
+        rag_head.grid(row=r, sticky=W, pady=(10, 0)); r += 1
+        self._tip(rag_head,
+                  "A RAG map pairs example images (or private embeddings) "
+                  "with a LoRA. For each prompt the closest examples guide "
+                  "the picture through IP-Adapter on SDXL models; on Flux "
+                  "their captions are added to the prompt as text. Each "
+                  "Generate draws a fresh set of examples; the images of "
+                  "one Generate share that set.")
         ragrow = ttk.Frame(left); ragrow.grid(row=r, sticky=NSEW, pady=(2, 0))
         r += 1
         ragrow.columnconfigure(1, weight=1)
@@ -3136,6 +3159,18 @@ class App:
         ragrm_btn.grid(row=0, column=2)
         self._tip(ragrm_btn, "Stop using the RAG map (the map file is left "
                              "alone).")
+        # progress while a map loads — a large map takes minutes, off the
+        # UI thread; without this the only sign was the label's "loading…"
+        self.rag_prog = ttk.Progressbar(left, mode="determinate", length=400,
+                                        style="Gpu.Horizontal.TProgressbar")
+        self.rag_prog.grid(row=r, sticky="ew", pady=(4, 0)); r += 1
+        self.rag_prog.grid_remove()
+        self.rag_prog_var = StringVar(value="")
+        self.rag_prog_lab = ttk.Label(left, textvariable=self.rag_prog_var,
+                                      style="Dim.TLabel", wraplength=400,
+                                      justify="left")
+        self.rag_prog_lab.grid(row=r, sticky=W); r += 1
+        self.rag_prog_lab.grid_remove()
 
         # size + settings
         cs_head = ttk.Label(left, text="CANVAS & SETTINGS", style="Head.TLabel")
@@ -3858,10 +3893,13 @@ class App:
         self.status_var.set(f"Loading RAG map {Path(path).name}"
                             + (f" ({mb:.0f} MB)" if mb >= 1 else "")
                             + " — you can keep working.")
+        self._ragmap_loading = (Path(path).name, mb)
+        self._rag_progress(gen, "reading", 0, 0)
 
         def work():
             try:
-                rag = load_ragmap(path)
+                rag = load_ragmap(path, progress=lambda ph, d, t: self.ui_queue.put(
+                    ("ragmap_progress", gen, ph, d, t)))
                 self.ui_queue.put(("ragmap_loaded", gen, path, rag, None,
                                    on_done))
             except Exception as e:
@@ -3870,6 +3908,36 @@ class App:
                                    on_done))
 
         threading.Thread(target=work, daemon=True).start()
+
+    def _rag_progress(self, gen, phase, done, total):
+        """Paint the RAG-map loading bar — for the newest load only."""
+        if gen != self._ragmap_load_gen or not hasattr(self, "rag_prog"):
+            return
+        name, mb = getattr(self, "_ragmap_loading", ("RAG map", 0))
+        size = f" ({mb:.0f} MB)" if mb >= 1 else ""
+        self.rag_prog.grid()
+        self.rag_prog_lab.grid()
+        if phase == "resolving" and total:
+            self.rag_prog.stop()
+            self.rag_prog.configure(mode="determinate", maximum=total,
+                                    value=done)
+            self.rag_prog_var.set(
+                f"Loading {name}: checking references {done:,} / {total:,} "
+                f"({done * 100 // total}%)")
+        else:
+            text = {"reading": f"reading and parsing the map file{size}",
+                    "embeddings": "reading the embeddings",
+                    "indexing": "building the word index"}.get(phase, phase)
+            self.rag_prog.configure(mode="indeterminate")
+            self.rag_prog.start(12)
+            self.rag_prog_var.set(f"Loading {name}: {text}…")
+
+    def _rag_progress_done(self):
+        if hasattr(self, "rag_prog"):
+            self.rag_prog.stop()
+            self.rag_prog.grid_remove()
+            self.rag_prog_lab.grid_remove()
+            self.rag_prog_var.set("")
 
     def _ragmap_restored(self, path, rag, err):
         """The map remembered from last session (or one re-parsed because
@@ -6649,9 +6717,12 @@ class App:
                         threading.Thread(target=self._download_updates,
                                          args=(ups, eng),
                                          daemon=True).start()
+                elif kind == "ragmap_progress":
+                    self._rag_progress(*msg[1:5])
                 elif kind == "ragmap_loaded":
                     gen, path, rag, err, on_done = msg[1:6]
                     if gen == self._ragmap_load_gen:
+                        self._rag_progress_done()
                         on_done(path, rag, err)
                     # an older request was superseded by a newer pick: drop
                 elif kind == "quit":

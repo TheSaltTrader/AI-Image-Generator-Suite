@@ -868,6 +868,23 @@ can combine LoRAs + RAG + a person in one pass.
   the live session. `_delete_paths(paths)` is the one deletion routine
   (disk + session + tags + reselect); `_delete_current` routes to
   `_delete_tagged` when anything is tagged.
+- **RAG map loading reports phases (v1.45.0).** `load_ragmap(path,
+  progress=None)` calls `progress(phase, done, total)`: "reading" (one
+  `json.loads`, no finer grain possible), "resolving" every 5000 entries
+  with a count (the per-entry `is_file()` walk is the other big cost),
+  "indexing", then "embeddings" (that is the code's order — the test
+  asserts it). `_load_ragmap_async` posts `("ragmap_progress",
+  gen, phase, done, total)`; `_rag_progress` paints `self.rag_prog`
+  (determinate for resolving, indeterminate otherwise) and ignores a
+  superseded gen; `_rag_progress_done` on `ragmap_loaded`. The bar and
+  its label are `grid_remove()`d at rest — test with `grid_info()`, not
+  `winfo_ismapped()` (always 0 on a withdrawn root). The RAG controls are
+  their own section (heading "RAG MAP …") under the LoRAs.
+- **Variations share one draw of references — by design.** Retrieval
+  runs once per Generate click (in `_generate`), so a batch is one person
+  in several poses and the next click is a new person. The user asked to
+  keep it that way (2026-09-08); per-image retrieval would need the draw
+  moved into the Generator loop with per-image uploads.
 - **RAG retrieval is a seeded draw, not a fixed top-k (v1.44.0).** User
   report: "one prompt gives the same person in different poses". The
   index/walk both rank, then `_rag_shuffle(cands, k, rng)` reorders the

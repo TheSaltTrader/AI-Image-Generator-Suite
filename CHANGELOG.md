@@ -1,5 +1,18 @@
 # Changelog — Comic Book Art Creator
 
+## v1.45.0 — 2026-09-08
+- **The RAG map has its own section**, right under the LoRAs on the
+  Image generation tab, with its own heading and explanation instead of
+  a row tucked into the LoRA controls.
+- **A progress bar while a map loads.** A large map takes minutes; the
+  bar shows the phase (reading the file, checking references with a
+  percentage, reading the embeddings, building the word index) and
+  disappears when the map is ready. Loading still runs in the
+  background, so you can keep working.
+- Note on variations: the images of one Generate share one set of
+  references (one person, in different poses); the next Generate draws
+  a fresh set. That is by design and unchanged.
+
 ## v1.44.0 — 2026-09-08
 - **Tag several images and delete just those.** Ctrl+click or right-click
   a thumbnail (or select it and press **☑ Tag**) to tag it; tagged

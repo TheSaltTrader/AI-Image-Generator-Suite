@@ -165,10 +165,23 @@ check("the walk path draws the same way as the index for one seed",
       walk_draw == ids(cac.ragmap_retrieve(rag, p, rng=random.Random(3))),
       (walk_draw, ids(cac.ragmap_retrieve(rag, p, rng=random.Random(3)))))
 
+print("loading progress")
+phases = []
+cac.load_ragmap(mp, progress=lambda ph, d, t: phases.append((ph, d, t)))
+names = [p[0] for p in phases]
+check("phases arrive in order: reading, resolving…, indexing, embeddings",
+      names[0] == "reading" and names[-2] == "indexing" and names[-1] == "embeddings"
+      and all(n == "resolving" for n in names[1:-2]), names[:3] + names[-3:])
+res = [p for p in phases if p[0] == "resolving"]
+check("resolving reports a running count out of the total",
+      res and res[0][1] == 0 and all(t == N for _p, _d, t in res)
+      and res[-1][1] == (N - 1) // 5000 * 5000, res[:2])
+check("without a callback nothing changes", cac.load_ragmap(mp)["name"] == "big")
+
 import shutil
 shutil.rmtree(td, ignore_errors=True)
 print()
-print("4 subjects enumerated, %d checks passed, %d failed" % (len(PASS), len(FAIL)))
+print("5 subjects enumerated, %d checks passed, %d failed" % (len(PASS), len(FAIL)))
 for f_ in FAIL:
     print("  FAILED: " + f_)
 sys.exit(1 if FAIL else 0)

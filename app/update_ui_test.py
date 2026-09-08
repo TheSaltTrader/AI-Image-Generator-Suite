@@ -132,6 +132,50 @@ check("…and restored", ui.left_tabs.index("current") == 1)
 ui.left_tabs.select(0)
 root.update()
 
+# ---- the RAG map section and its loading bar ----------------------------
+print("RAG section + loading bar")
+
+
+def _walk(w):
+    yield w
+    for c in w.winfo_children():
+        yield from _walk(c)
+
+
+from tkinter import ttk as _ttkm
+heads = [w for w in _walk(ui._page_gen)
+         if isinstance(w, _ttkm.Label) and str(w.cget("text")).startswith("RAG MAP")]
+check("a RAG MAP heading exists on the Image generation tab", len(heads) == 1)
+lora_head = [w for w in _walk(ui._page_gen)
+             if isinstance(w, _ttkm.Label) and str(w.cget("text")).startswith("LORAS")]
+check("…below the LoRA heading",
+      lora_head and int(lora_head[0].grid_info().get("row", -1))
+      < int(heads[0].grid_info().get("row", 99)))
+check("the loading bar is hidden at rest", not ui.rag_prog.grid_info())
+gen = ui._ragmap_load_gen
+ui._ragmap_loading = ("big.ragmap.json", 925.0)
+ui.ui_queue.put(("ragmap_progress", gen, "reading", 0, 0))
+ui._poll_queue()
+root.update()
+check("reading: the bar shows, indeterminate, with the size",
+      bool(ui.rag_prog.grid_info()) and str(ui.rag_prog.cget("mode")) == "indeterminate"
+      and "925 MB" in ui.rag_prog_var.get(), ui.rag_prog_var.get())
+ui.ui_queue.put(("ragmap_progress", gen, "resolving", 5000, 10000))
+ui._poll_queue()
+root.update()
+check("checking references: a real percentage",
+      str(ui.rag_prog.cget("mode")) == "determinate" and int(ui.rag_prog["value"]) == 5000
+      and "50%" in ui.rag_prog_var.get(), ui.rag_prog_var.get())
+ui.ui_queue.put(("ragmap_progress", gen - 1, "resolving", 9000, 10000))
+ui._poll_queue()
+root.update()
+check("progress from a superseded load is ignored", int(ui.rag_prog["value"]) == 5000)
+ui.ui_queue.put(("ragmap_loaded", gen, "x", None, RuntimeError("no"), lambda *a: None))
+ui._poll_queue()
+root.update()
+check("the bar hides when the load ends", not ui.rag_prog.grid_info()
+      and ui.rag_prog_var.get() == "")
+
 # ---- tagging images for deletion ---------------------------------------
 print("tag and delete")
 from PIL import Image as _Img
