@@ -78,6 +78,21 @@ check("the version is shown next to it",
       any(app.APP_VERSION in str(w.cget("text"))
           for w in ui.upd_btn.master.winfo_children()
           if "text" in w.keys()))
+# the top-right bar: a GPU % badge next to the meter, which is named VRAM
+check("the meter is named VRAM", "VRAM" in ui.vram_label_var.get()
+      or "no NVIDIA" in ui.vram_label_var.get(), ui.vram_label_var.get())
+check("a GPU badge exists", hasattr(ui, "gpu_badge") and ui.gpu_badge.winfo_exists())
+ui.ui_queue.put(("vram_live", 1000, 2000, 37))
+ui._poll_queue()
+root.update()
+check("a reading fills the VRAM meter", ui.vram_label_var.get() == "VRAM 1,000 / 2,000 MB",
+      ui.vram_label_var.get())
+check("…and the GPU badge", ui.gpu_var.get() == "GPU 37%", ui.gpu_var.get())
+ui.ui_queue.put(("vram_live", 1000, 2000))
+ui._poll_queue()
+root.update()
+check("a reading without utilisation leaves the badge blank, not broken",
+      ui.gpu_var.get() == "GPU —%", ui.gpu_var.get())
 
 # ---- the startup path: a queued app_update opens the window -------------
 # automatic mode (the default): the download starts on its own, the app

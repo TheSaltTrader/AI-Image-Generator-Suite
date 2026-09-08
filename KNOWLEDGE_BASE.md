@@ -789,6 +789,25 @@ can combine LoRAs + RAG + a person in one pass.
   `_relaunch_after_update` does the same. Both arm a 20 s
   `_force_quit` so a stuck shutdown can never leave a hidden window
   running.
+- **NEVER spawn a frozen exe with an inherited environment (v1.41.0).**
+  PyInstaller 6.21's onefile bootloader passes `_PYI_APPLICATION_HOME_DIR`,
+  `_PYI_ARCHIVE_FILE`, `_PYI_PARENT_PROCESS_LEVEL`, `_PYI_SPLASH_IPC` to
+  its child, and the Python child keeps them in `os.environ`. A frozen exe
+  started from the app (`_relaunch_after_update`, Setup.exe) inherits them
+  and RUNS FROM OUR `_MEIxxxx` FOLDER instead of extracting its own; when
+  we exit, our bootloader deletes that folder as far as the other copy's
+  open DLLs allow (the "Warning" window on the old pid is that failed
+  cleanup), and every LATER import in the new copy fails: `cannot import
+  name …`, `[WinError 3] … _MEI416282\numpy\_core` (the RAG index),
+  `certifi\cacert.pem` (the update check). Diagnosed from app.log the first
+  time it existed. Fix: `_clean_child_env()` (drops `_PYI_*`/`_MEIPASS*`)
+  on every Popen of an exe (relaunch, Setup.exe, and the engine/helper env
+  for hygiene), plus a guard at the top of the module: a frozen copy whose
+  `sys._MEIPASS` folder is >60 s older than the process (`_foreign_
+  extraction`) re-execs itself with a clean env (`CBAC_REEXEC=1` stops a
+  loop) and `os._exit(0)`s — that is what rescues the copy a pre-v1.41
+  relaunch started. `%TEMP%\_MEI*` folders whose `numpy\_core` is missing
+  are the fingerprint.
 - **`app.log` (v1.39.0) — `app\applog.py`.** A `--windowed` exe has no
   console, so until v1.39 an exception in a worker thread or a Tk
   callback vanished and the user reported "it said cannot import name"

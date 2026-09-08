@@ -114,8 +114,31 @@ else:
     check("release_single_instance really lets go", not again)
     app.release_single_instance()
 
+print("clean child environment")
+# a spawned frozen exe must not inherit PyInstaller's own variables, or it
+# runs from OUR temporary folder and breaks when we exit
+env = {"PATH": "x", "_PYI_APPLICATION_HOME_DIR": "C:\\\\Temp\\\\_MEI1",
+       "_PYI_ARCHIVE_FILE": "a.exe", "_PYI_PARENT_PROCESS_LEVEL": "1",
+       "_PYI_SPLASH_IPC": "0", "_MEIPASS2": "old", "HF_HOME": "h"}
+clean = app._clean_child_env(env)
+check("every PyInstaller variable is stripped",
+      not any(k.startswith("_PYI_") or k.startswith("_MEI") for k in clean),
+      clean)
+check("everything else is kept", clean == {"PATH": "x", "HF_HOME": "h"}, clean)
+check("the helper environment starts clean",
+      not any(k.startswith("_PYI_") for k in app._contained_env()))
+with tempfile.TemporaryDirectory() as td:
+    d = Path(td) / "_MEIfresh"
+    d.mkdir()
+    now = d.stat().st_ctime
+    check("a folder made just now is ours", not app._foreign_extraction(d, now=now + 5))
+    check("a folder a minute older than us belongs to another copy",
+          app._foreign_extraction(d, now=now + 120))
+    check("a missing folder is not foreign", not app._foreign_extraction(d / "nope"))
+    check("an empty path is not foreign", not app._foreign_extraction(""))
+
 print()
-print("3 subjects enumerated, %d checks passed, %d failed" % (len(PASS), len(FAIL)))
+print("4 subjects enumerated, %d checks passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAILED: " + f)
 sys.exit(1 if FAIL else 0)

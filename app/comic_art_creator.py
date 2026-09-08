@@ -27,6 +27,43 @@ import time
 import uuid
 import zipfile
 import queue as queue_mod
+
+
+# A copy started by ANOTHER frozen copy (the relaunch after an update, or
+# Setup.exe started from the app) inherits that copy's PyInstaller
+# variables (_PYI_APPLICATION_HOME_DIR & co.) and runs from ITS temporary
+# folder. When the starter exits, its bootloader deletes that folder — as
+# much of it as the running copy's open files allow — and every import
+# from then on fails: "cannot import name …", WinError 3 on numpy\_core,
+# "no cacert.pem". Two defences: children get a clean environment, and a
+# copy that finds itself in a folder older than it is starts over.
+def _clean_child_env(env=None):
+    """The environment for a child process: PyInstaller's own variables
+    stripped, so a spawned frozen exe extracts and owns its own folder."""
+    return {k: v for k, v in (os.environ if env is None else env).items()
+            if not (k.startswith("_PYI_") or k.startswith("_MEIPASS"))}
+
+
+def _foreign_extraction(meipass, now=None, age=60):
+    """True when the PyInstaller folder predates this process by more than
+    `age` seconds — it belongs to the copy that started us."""
+    try:
+        return (time.time() if now is None else now) \
+            - os.stat(meipass).st_ctime > age
+    except (OSError, TypeError):
+        return False
+
+
+_REEXEC_FLAG = "CBAC_REEXEC"
+if getattr(sys, "frozen", False) \
+        and os.environ.get(_REEXEC_FLAG) != "1" \
+        and _foreign_extraction(getattr(sys, "_MEIPASS", "")):
+    _env = _clean_child_env()
+    _env[_REEXEC_FLAG] = "1"          # the fresh copy must never loop
+    subprocess.Popen([sys.executable] + sys.argv[1:], env=_env,
+                     cwd=os.getcwd())
+    os._exit(0)
+
 from ctypes import wintypes
 from datetime import datetime
 from io import BytesIO
@@ -45,7 +82,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.40.0"
+APP_VERSION = "1.41.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -66,9 +103,11 @@ self_update.configure(PROJECT, APP_DIR)
 applog.configure(PROJECT / "app.log")
 applog.install_hooks()
 applog.wrap_messagebox(_tk_messagebox)
-applog.log("start v%s frozen=%s python=%s exe=%s" % (
+applog.log("start v%s frozen=%s python=%s exe=%s%s" % (
     APP_VERSION, bool(getattr(sys, "frozen", False)),
-    sys.version.split()[0], sys.executable))
+    sys.version.split()[0], sys.executable,
+    " (restarted clean: the first copy had inherited another copy's "
+    "program folder)" if os.environ.get(_REEXEC_FLAG) == "1" else ""))
 
 
 def engine_python():
@@ -92,7 +131,7 @@ EXTRA_PATHS_YAML = PROJECT / "extra_model_paths.yaml"
 def _contained_env():
     """Environment that keeps every helper's downloads/caches inside the
     project folder (nothing lands in the user profile or %LOCALAPPDATA%)."""
-    env = dict(os.environ)
+    env = _clean_child_env()
     env["U2NET_HOME"] = str(MODELS / "rembg")      # rembg BG-removal model
     env["HF_HOME"] = str(MODELS / "hf_cache")      # any HuggingFace caching
     env["PIP_NO_CACHE_DIR"] = "1"
@@ -2619,15 +2658,20 @@ class App:
         while True:
             try:
                 r = subprocess.run(
-                    ["nvidia-smi", "--query-gpu=memory.used,memory.total",
+                    ["nvidia-smi", "--query-gpu=memory.used,memory.total,"
+                                   "utilization.gpu",
                      "--format=csv,noheader,nounits"],
                     capture_output=True, text=True, timeout=10,
                     creationflags=NO_WINDOW)
                 if r.returncode == 0 and r.stdout.strip():
-                    used, total = [int(x.strip()) for x in
-                                   r.stdout.strip().splitlines()[0]
-                                   .split(",")]
-                    self.ui_queue.put(("vram_live", used, total))
+                    parts = [x.strip() for x in
+                             r.stdout.strip().splitlines()[0].split(",")]
+                    used, total = int(parts[0]), int(parts[1])
+                    try:
+                        util = int(parts[2])
+                    except (IndexError, ValueError):
+                        util = None
+                    self.ui_queue.put(("vram_live", used, total, util))
             except Exception:
                 pass
             time.sleep(3)
@@ -2654,7 +2698,7 @@ class App:
                     "this app will find it automatically afterwards "
                     "(hit ↻ or restart).")
             if messagebox.askyesno("Setup required", msg):
-                subprocess.Popen([str(setup_exe)])
+                subprocess.Popen([str(setup_exe)], env=_clean_child_env())
         else:
             messagebox.showinfo(
                 "Setup required",
@@ -2778,7 +2822,12 @@ class App:
         def _wheel_router(e):
             # children swallow wheel events; route them to the panel
             # whenever the pointer is anywhere inside the left canvas
-            w = self.root.winfo_containing(e.x_root, e.y_root)
+            try:
+                w = self.root.winfo_containing(e.x_root, e.y_root)
+            except Exception:
+                # a Combobox's open list ("popdown") is a Tk-internal
+                # window the Python side cannot name — KeyError
+                return None
             while w is not None:
                 if w is self.lora_list:
                     return None      # its own scrollbar handles it
@@ -3569,11 +3618,22 @@ class App:
                   "will guide the next generation on an SDXL model. Red while "
                   "editing a loaded image, when no map is loaded, or on a Flux "
                   "model (RAG image guidance needs SDXL).")
+        self.gpu_var = StringVar(
+            value="GPU —%" if self.vram_gb is not None else "")
+        self.gpu_badge = ttk.Label(vrow, textvariable=self.gpu_var,
+                                   style="Dim.TLabel")
+        self.gpu_badge.pack(side="left", padx=(0, 14))
+        self._tip(self.gpu_badge, "How busy the GPU is right now "
+                                  "(nvidia-smi, every 3 seconds).")
         self.vram_label_var = StringVar(
-            value="GPU — MB" if self.vram_gb is not None
+            value="VRAM — MB" if self.vram_gb is not None
             else "no NVIDIA GPU")
-        ttk.Label(vrow, textvariable=self.vram_label_var,
-                  style="Dim.TLabel").pack(side="left", padx=(0, 8))
+        vram_lab = ttk.Label(vrow, textvariable=self.vram_label_var,
+                             style="Dim.TLabel")
+        vram_lab.pack(side="left", padx=(0, 8))
+        self._tip(vram_lab, "GPU memory in use / total (nvidia-smi, every "
+                            "3 seconds). The engine keeps the last model "
+                            "loaded, so this stays high between jobs.")
         self.vram_bar = ttk.Progressbar(vrow, mode="determinate",
                                         length=220)
         self.vram_bar.pack(side="left")
@@ -5228,6 +5288,16 @@ class App:
 
     # -------------------------------------------------- model updates
     def _check_updates_bg(self):
+        """The startup housekeeping + update check, in a worker thread. A
+        failure here (no network, a broken certificate bundle) used to
+        kill the thread silently; now it is logged and said."""
+        try:
+            self._check_updates_bg_inner()
+        except Exception as e:
+            applog.exception("update check failed")
+            self.ui_queue.put(("status", f"Update check failed: {e}"))
+
+    def _check_updates_bg_inner(self):
         # clear the exes an earlier update renamed aside — they could not be
         # deleted while that update was running, but nothing holds them now
         try:
@@ -5325,7 +5395,8 @@ class App:
             release_single_instance()
             try:
                 subprocess.Popen([str(newexe), "--after-update",
-                                  str(os.getpid())], cwd=str(PROJECT))
+                                  str(os.getpid())], cwd=str(PROJECT),
+                                 env=_clean_child_env())
             except OSError as e:
                 self.ui_queue.put(("status", f"Could not start the new "
                                              f"version: {e} — run "
@@ -6386,11 +6457,14 @@ class App:
                     self._refresh_models()   # recolor with engine's number
                     self._refresh_editor_list()
                 elif kind == "vram_live":
-                    _, used, total = msg
+                    used, total = msg[1], msg[2]
+                    util = msg[3] if len(msg) > 3 else None
                     self.vram_bar["maximum"] = total
                     self.vram_bar["value"] = used
                     self.vram_label_var.set(
-                        f"GPU {used:,} / {total:,} MB")
+                        f"VRAM {used:,} / {total:,} MB")
+                    self.gpu_var.set(f"GPU {util}%" if util is not None
+                                     else "GPU —%")
                 elif kind == "models_changed":
                     self._refresh_models()
                 elif kind == "model_added":

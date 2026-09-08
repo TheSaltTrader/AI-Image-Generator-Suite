@@ -1,5 +1,23 @@
 # Changelog — Comic Book Art Creator
 
+## v1.41.0 — 2026-09-08
+- **The copy started after an update no longer breaks minutes later.**
+  The program unpacks itself into a temporary folder when it starts. The
+  copy launched by an update was inheriting the *previous* copy's folder
+  instead of unpacking its own, and when the previous copy exited it
+  deleted that folder from under the new one. Anything the app loaded
+  later then failed: "cannot import name", "cannot find the path …
+  numpy", a RAG map that could not be read, an update check that could
+  not find its certificates. Now a copy the app starts always unpacks its
+  own folder, and a copy that finds itself in someone else's folder
+  restarts cleanly on its own. (The log made this findable — thank you.)
+- **A GPU badge.** The top-right bar now shows how busy the GPU is
+  (`GPU 37%`) next to the memory meter, which is now labelled **VRAM**.
+- The start-up update check no longer dies silently when the network or
+  certificate check fails; it says so in the status bar and the log.
+- Scrolling the mouse wheel while a dropdown list is open no longer logs
+  an error.
+
 ## v1.40.0 — 2026-09-08
 - **Reopening the app right after closing it no longer asks about a
   second copy.** Since v1.37 the window disappears the moment you close
