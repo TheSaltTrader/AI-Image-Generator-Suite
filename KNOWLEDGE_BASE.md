@@ -782,6 +782,7 @@ can combine LoRAs + RAG + a person in one pass.
   and pass plain data in; `root.after(...)` back is fine.
 - `_poll_queue` wraps each message in its own try/except and reschedules
   in a `finally`. One exception in a handler used to kill the UI loop.
+- **Sweep speed + cancel (v1.52.0).** `_sweep(bar, on, interval=45)` — the sweep interval was 12–15 ms (frantic, read as "racing"); 45 ms is calm. `_await_images` now posts `("progress_mode","steps")` on a CANCEL return, so a sweep started for a model load stops at once rather than only at the batch's `done`. The full RAG+LoRA base → Qwen swap pipeline was validated live on 8189: base-with vs base-without RAG mean-diff 70, swap head-mask 13% at the capped threshold, the face landing on the same body/pose/style; the swap took 136 s on an SSD (the user's models are on an H: HDD — slower). The swap WORKS; the user was cancelling during the multi-minute load.
 - **Never call `Progressbar.start()` twice (v1.49.0).** ttk's `start`
   schedules a NEW `ttk::progressbar::Autoincrement` timer chain on every
   call and remembers only the newest id; `stop` cancels only that one.

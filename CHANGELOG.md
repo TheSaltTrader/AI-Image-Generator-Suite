@@ -1,5 +1,21 @@
 # Changelog — Comic Book Art Creator
 
+## v1.52.0 — 2026-09-08
+- **The loading bar no longer looks like it is racing.** While the engine
+  loads a model the bar sweeps to show it is busy; that sweep was far too
+  fast and read as a glitch, especially during the multi-minute face-swap
+  model load. It now sweeps at a calm, normal pace.
+- **Cancelling during a model load stops the sweep at once**, instead of
+  leaving it running until the batch ends.
+- **Validated the face swap end to end.** On a test engine a RAG map and
+  LoRAs guided the base picture (confirmed different from an unguided
+  one), and the Qwen swap then placed the chosen face on it while keeping
+  the pose, costume, background and art style. The swap takes about two
+  minutes because the 28 GB swap model loads from disk — on a hard
+  drive it is slower still. If face swaps feel stuck, they are loading,
+  not frozen; the Fast swap option avoids the big load, and moving the
+  models folder to an SSD makes it far quicker.
+
 ## v1.51.0 — 2026-09-08
 - **The update window asks before downloading.** At startup it opens on
   its own with the release notes and waits: **Download and install**,

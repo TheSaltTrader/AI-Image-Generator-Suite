@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.51.0"
+APP_VERSION = "1.52.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -2598,6 +2598,11 @@ class Generator:
         last_tick = 0.0
         while True:
             if CANCEL.is_set():
+                # a sweep started for a model load must not be left running
+                # when the user cancels mid-load — stop it here, not only
+                # at the batch's final "done"
+                if loading_since is not None:
+                    self.q.put(("progress_mode", "steps"))
                 return []
             if time.time() > deadline:
                 raise TimeoutError("the engine stopped responding")
@@ -4068,7 +4073,7 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _sweep(self, bar, on, interval=15):
+    def _sweep(self, bar, on, interval=45):
         """Start or stop a progress bar's sweep exactly once.
 
         ttk's start() schedules a NEW timer chain on every call and keeps
@@ -4117,7 +4122,7 @@ class App:
             self.ready_var.set("Still loading — please wait: "
                                + "; ".join(self._pending.values()))
             self.ready_frame.grid()
-            self._sweep(self.ready_bar, True, 12)
+            self._sweep(self.ready_bar, True, 45)
         else:
             self._sweep(self.ready_bar, False)
             self.ready_frame.grid_remove()
@@ -4144,7 +4149,7 @@ class App:
             text = {"reading": f"reading and parsing the map file{size}",
                     "embeddings": "reading the embeddings",
                     "indexing": "building the word index"}.get(phase, phase)
-            self._sweep(self.rag_prog, True, 12)
+            self._sweep(self.rag_prog, True, 45)
             self.rag_prog_var.set(f"Loading {name}: {text}…")
 
     def _rag_progress_done(self):
