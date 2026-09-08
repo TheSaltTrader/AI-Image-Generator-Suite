@@ -1,4 +1,4 @@
-r"""Comic Book Art Creator — local, unrestricted comic art studio.
+r"""AI Image Generator Suite — local, unrestricted image studio.
 
 A desktop frontend for a headless ComfyUI engine. Everything runs on the
 local GPU; nothing leaves the machine.
@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.60.0"
+APP_VERSION = "2.0.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -282,6 +282,20 @@ def engine_alive(timeout=2):
         return False
 
 
+_ENGINE_PROC = None   # the last engine we spawned, so a crash is detectable
+
+
+def engine_log_tail(n=12):
+    """The last few lines of engine.log, to show WHY the engine did not come
+    up instead of only saying it didn't. Empty string if unreadable."""
+    try:
+        lines = (PROJECT / "engine.log").read_text(
+            encoding="utf-8", errors="replace").splitlines()
+        return "\n".join(ln for ln in lines[-n:] if ln.strip()).strip()
+    except Exception:
+        return ""
+
+
 def start_engine():
     """Spawn headless ComfyUI with our model paths and scratch output dir."""
     # (re)write the model-paths config with THIS machine's absolute path,
@@ -303,10 +317,13 @@ def start_engine():
            "--output-directory", str(RAW_OUT),
            "--disable-auto-launch"]
     log = open(PROJECT / "engine.log", "w", encoding="utf-8", errors="replace")
-    subprocess.Popen(cmd, cwd=str(ENGINE_DIR), stdout=log,
-                     stderr=subprocess.STDOUT, creationflags=NO_WINDOW,
-                     env=_contained_env())
+    global _ENGINE_PROC
+    _ENGINE_PROC = subprocess.Popen(cmd, cwd=str(ENGINE_DIR), stdout=log,
+                                    stderr=subprocess.STDOUT,
+                                    creationflags=NO_WINDOW,
+                                    env=_contained_env())
     _mark_engine_owned()
+    return _ENGINE_PROC
 
 
 ENGINE_OWNER_FILE = PROJECT / "engine_owner.json"
@@ -2221,7 +2238,7 @@ def _rag_diverse(cands, emb, k):
 # running, the button explains what it is once and everything else works
 # exactly as before. No new Python dependency — plain HTTP over requests.
 ENHANCE_SYSTEM = (
-    "You rewrite prompts for a comic-book art image generator. Reply with "
+    "You rewrite prompts for an AI image generator. Reply with "
     "ONE line: the rewritten prompt as comma-separated visual phrases. No "
     "preamble, no quotes, no explanation, no line breaks. Keep every "
     "subject, character and action the user named, and add only visual "
@@ -2231,6 +2248,23 @@ ENHANCE_SYSTEM = (
 _ENHANCE_LEAD = re.compile(
     r"^\s*(sure|certainly|of course|here(?:'s| is| you go)|okay|ok|"
     r"(?:enhanced|rewritten|improved|final)?\s*prompt)\b[^:]{0,40}:\s*", re.I)
+
+# The built-in offline enhancer needs no Ollama and no network: it keeps
+# the user's words and adds composition + quality phrasing tuned to the
+# target model family. It is always available, so the Enhance dropdown is
+# never empty. A local Ollama model (when present) does a smarter rewrite.
+BUILTIN_ENHANCER = "Built-in (offline)"
+_ENHANCE_QUALITY = {
+    "flux":    "sharp focus, fine detail, natural lighting, high dynamic range",
+    "schnell": "sharp focus, fine detail, natural lighting",
+    "turbo":   "sharp focus, crisp detail, balanced lighting",
+    "anime":   "clean lineart, vibrant colours, expressive shading, "
+               "detailed background",
+    "sdxl":    "highly detailed, sharp focus, dramatic lighting, rich "
+               "colour, intricate detail, professional composition",
+}
+_ENHANCE_EXTRAS = ("dynamic composition", "depth of field",
+                   "volumetric lighting", "cinematic")
 
 
 def _ollama_url():
@@ -2281,6 +2315,31 @@ def ollama_enhance(text, model, style="", timeout=120):
                            f"Install it with:  ollama pull {model}")
     r.raise_for_status()
     return _clean_enhanced(r.json().get("response", ""), text)
+
+
+def builtin_enhance(text, style="", family="sdxl"):
+    """Expand a short prompt into a fuller one with NO external model:
+    keep the user's words, fold in the house style, then add composition
+    and quality phrasing suited to the target model family. Skips any
+    phrase already present. Never adds text, logos or watermarks.
+    Returns "" only when there is nothing to work with."""
+    base = " ".join((text or "").split()).strip().rstrip(",")
+    if not base:
+        return ""
+    have = base.lower()
+    parts = [base]
+    st = (style or "").strip().rstrip(",")
+    if st and st.lower() not in have:
+        parts.append(st)
+        have += " " + st.lower()
+    quality = _ENHANCE_QUALITY.get(family, _ENHANCE_QUALITY["sdxl"])
+    for phrase in list(_ENHANCE_EXTRAS) + [q.strip() for q in
+                                           quality.split(",")]:
+        w = phrase.strip()
+        if w and w.lower() not in have:
+            parts.append(w)
+            have += " " + w.lower()
+    return ", ".join(p for p in parts if p)
 
 
 def make_collage(paths, w, h):
@@ -2755,7 +2814,7 @@ class Tooltip:
 class App:
     def __init__(self, root):
         self.root = root
-        root.title(f"Comic Book Art Creator v{APP_VERSION}")
+        root.title(f"AI Image Generator Suite v{APP_VERSION}")
         root.geometry("1500x940")
         root.minsize(1200, 780)
         self.presets = json.loads(PRESETS_FILE.read_text(encoding="utf-8"))["presets"]
@@ -2977,20 +3036,26 @@ class App:
                     insertbackground=FG, relief="flat", padx=8, pady=6,
                     font=(UI_FONT, 10), undo=True)
 
-    def _arm_panel_wheel(self):
-        """Put the PanelWheel tag first on every widget of the three pages,
-        so the wheel over the panel scrolls the panel before the widget
-        under the pointer can react."""
+    def _arm_wheel(self, root):
+        """Put the PanelWheel tag first on a subtree — used both for the whole
+        panel at startup and for widgets built later (the Using thumbnails),
+        so the wheel keeps scrolling the panel over anything on it."""
         def walk(w):
             yield w
             for c in w.winfo_children():
                 yield from walk(c)
+        for w in walk(root):
+            tags = w.bindtags()
+            if tags and tags[0] != "PanelWheel":
+                w.bindtags(("PanelWheel",) + tags)
+
+    def _arm_panel_wheel(self):
+        """Put the PanelWheel tag first on every widget of the panel pages,
+        so the wheel over the panel scrolls the panel before the widget
+        under the pointer can react."""
         for page in (self._page_gen, self._page_anim, self._page_border,
                      self._page_edit):
-            for w in walk(page):
-                tags = w.bindtags()
-                if tags and tags[0] != "PanelWheel":
-                    w.bindtags(("PanelWheel",) + tags)
+            self._arm_wheel(page)
 
     def _scroll_page(self, notebook, title):
         """One tab: a canvas with a vertical scrollbar holding a padded
@@ -3119,17 +3184,18 @@ class App:
                                       command=self._enhance_prompt)
         self.enhance_btn.grid(row=0, column=0)
         self._tip(self.enhance_btn,
-                  "Rewrite your prompt into a richer one using a local Ollama "
-                  "model (optional — only works if you have Ollama running; "
-                  "nothing is installed or sent online).")
-        self.ollama_var = StringVar()
+                  "Rewrite your basic prompt into a fuller, more detailed one. "
+                  "Works offline with the built-in enhancer; if you run a "
+                  "local Ollama model you can pick it for a smarter rewrite. "
+                  "Nothing is installed or sent online.")
+        self.ollama_var = StringVar(value=BUILTIN_ENHANCER)
         self.ollama_dd = ttk.Combobox(erow, textvariable=self.ollama_var,
                                       state="readonly", exportselection=False,
-                                      values=[], width=18)
+                                      values=[BUILTIN_ENHANCER], width=18)
         self.ollama_dd.grid(row=0, column=1, sticky="ew", padx=6)
         self._tip(self.ollama_dd,
-                  "Which local Ollama model does the enhancing. Empty if no "
-                  "Ollama is detected.")
+                  "Which enhancer to use: the built-in offline one (always "
+                  "available), or a local Ollama model if you have one.")
         self.undo_enhance_btn = ttk.Button(erow, text="↩", width=3,
                                            command=self._undo_enhance)
         self.undo_enhance_btn.grid(row=0, column=2)
@@ -3501,13 +3567,12 @@ class App:
 
         ttk.Label(cb, text="Using:", style="Dim.TLabel").grid(row=cr, sticky=W)
         cr += 1
-        self.face_list = Listbox(cb, height=3, bg=BG3, fg=FG, relief="flat",
-                                 highlightthickness=0, activestyle="none",
-                                 font=(UI_FONT, 9), exportselection=False)
-        self.face_list.grid(row=cr, sticky="ew", pady=(0, 2)); cr += 1
-        self._tip(self.face_list,
+        self.face_using = ttk.Frame(cb)
+        self.face_using.grid(row=cr, sticky="ew", pady=(0, 2)); cr += 1
+        self._face_thumb_imgs = []      # keep PhotoImage refs from being GC'd
+        self._tip(self.face_using,
                   "The face image(s) or person that will be placed on the "
-                  "generated picture.")
+                  "generated picture — shown here as small samples.")
 
         self.swap_fast_var = BooleanVar(value=False)
         self.swap_use_rag_var = BooleanVar(value=True)
@@ -5270,46 +5335,50 @@ class App:
 
     def _on_ollama_found(self, models):
         self._ollama_models = models
-        self.ollama_dd["values"] = models
-        if models:
-            want = self._want_ollama_model
-            self.ollama_var.set(want if want in models else models[0])
-        else:
-            self.ollama_var.set("")
+        vals = [BUILTIN_ENHANCER] + list(models)
+        self.ollama_dd["values"] = vals
+        want = getattr(self, "_want_ollama_model", "") or ""
+        if want and want in vals:
+            self.ollama_var.set(want)
+        elif models and not self.ollama_var.get():
+            self.ollama_var.set(models[0])
+        elif self.ollama_var.get() not in vals:
+            self.ollama_var.set(BUILTIN_ENHANCER)
 
     def _enhance_prompt(self):
-        """Rewrite the prompt with a local Ollama model. Explains itself
-        once if Ollama isn't there — it is never required or installed."""
-        if not getattr(self, "_ollama_models", None):
-            # re-probe first: they may have started Ollama since launch
-            found = ollama_models()
-            if found:
-                self._on_ollama_found(found)
-            else:
-                messagebox.showinfo(
-                    "Prompt enhancer (optional)",
-                    "This button expands a short prompt into a fuller one "
-                    "using Ollama — a free local LLM runner that keeps "
-                    "everything on your machine.\n\nIt isn't running here, "
-                    "and this app never installs it. If you want it: get "
-                    "Ollama from ollama.com, run  ollama pull llama3.2  "
-                    "(or any model), then press ✨ Enhance again.\n\n"
-                    "Everything else in the app works without it.")
-                return
+        """Rewrite the prompt into a fuller one. Uses the built-in offline
+        enhancer by default; a local Ollama model when one is chosen. It
+        always works — Ollama is never required or installed."""
         text = self._get(self.prompt_box).strip()
         if not text:
             self.status_var.set("Type a prompt first, then press ✨ Enhance.")
             return
-        model = self.ollama_var.get() or self._ollama_models[0]
+        model = self.ollama_var.get() or BUILTIN_ENHANCER
+        if model != BUILTIN_ENHANCER \
+                and not getattr(self, "_ollama_models", None):
+            # a remembered Ollama model but Ollama is not up now: re-probe,
+            # and fall back to the built-in enhancer if it still is not there
+            found = ollama_models()
+            if found:
+                self._on_ollama_found(found)
+                model = self.ollama_var.get() or BUILTIN_ENHANCER
+            else:
+                model = BUILTIN_ENHANCER
         self.enhance_btn.state(["disabled"])
-        self.status_var.set(f"Enhancing the prompt with {model}…")
+        label = ("the built-in enhancer" if model == BUILTIN_ENHANCER
+                 else model)
+        self.status_var.set(f"Enhancing the prompt with {label}…")
         style = self._get(self.style_box)
+        fam = model_family(self._model_raw() or "") or "sdxl"
         threading.Thread(target=self._run_enhance,
-                         args=(text, model, style), daemon=True).start()
+                         args=(text, model, style, fam), daemon=True).start()
 
-    def _run_enhance(self, text, model, style):
+    def _run_enhance(self, text, model, style, family="sdxl"):
         try:
-            better = ollama_enhance(text, model, style)
+            if model == BUILTIN_ENHANCER:
+                better = builtin_enhance(text, style, family)
+            else:
+                better = ollama_enhance(text, model, style)
             self.ui_queue.put(("enhanced", text, better))
         except Exception as e:
             self.ui_queue.put(("enhance_err", str(e)))
@@ -6290,22 +6359,51 @@ class App:
         if not engine_alive():
             self.ui_queue.put(("status", "Starting local engine (first start "
                                          "takes a minute)…"))
+            proc = None
             try:
-                start_engine()
+                proc = start_engine()
             except Exception as e:
                 self.ui_queue.put(("pending", "engine", None))
                 self.ui_queue.put(("error", f"Could not start engine: {e}"))
                 return
-            for _ in range(180):
+            crashed = False
+            for i in range(180):
                 if engine_alive():
                     break
+                # a first start on a hard drive is slow, but if the engine
+                # PROCESS has exited it has crashed — don't sit through the
+                # whole six-minute wait for something already dead
+                if proc is not None and proc.poll() is not None:
+                    crashed = True
+                    break
+                if i and i % 5 == 0:      # ~every 10s: show it is still trying
+                    self.ui_queue.put((
+                        "status",
+                        f"Starting local engine — {i * 2}s so far. A first "
+                        "start, or a fresh IP-Adapter/engine install, can "
+                        "take a few minutes…"))
                 time.sleep(2)
             else:
                 if self._repair_engine_files(from_log=True):
                     return          # the repair started the engine again
+                tail = engine_log_tail()
                 self.ui_queue.put(("pending", "engine", None))
-                self.ui_queue.put(("error", "Engine did not come up — see "
-                                            "engine.log in the project folder."))
+                self.ui_queue.put((
+                    "error", "The engine did not come up in time — see "
+                    "engine.log in the project folder."
+                    + ("\n\nLast engine.log lines:\n" + tail if tail else "")))
+                return
+            if crashed:
+                if self._repair_engine_files(from_log=True):
+                    return          # the repair started a working engine
+                tail = engine_log_tail()
+                self.ui_queue.put(("pending", "engine", None))
+                self.ui_queue.put((
+                    "error", "The engine stopped while starting. This often "
+                    "means a just-installed add-on (IP-Adapter) or engine "
+                    "update did not load — see engine.log in the project "
+                    "folder."
+                    + ("\n\nLast engine.log lines:\n" + tail if tail else "")))
                 return
         # a stale engine from an old session may have been started with
         # wrong model paths: if it can't see models that exist on disk,
@@ -6927,18 +7025,37 @@ class App:
                                    f"{len(self.face_paths)} files ({first}, …)")
         self._refresh_face_list()
 
+    def _face_thumb_image(self, src, px=56):
+        """A small square-ish PhotoImage from a file path or raw image bytes;
+        None on any failure. Refs are kept in self._face_thumb_imgs so Tk
+        does not garbage-collect them out of their labels."""
+        try:
+            img = Image.open(src if isinstance(src, (str, Path))
+                             else BytesIO(src)).convert("RGB")
+            img.thumbnail((px, px), Image.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            self._face_thumb_imgs.append(photo)
+            return photo
+        except Exception:
+            return None
+
     def _refresh_face_list(self):
-        """The 'Using:' list — the face file(s) for a file source, or the
-        chosen person for a database source."""
-        if not hasattr(self, "face_list"):
+        """The 'Using:' strip — small thumbnail samples of the face image(s)
+        for a file source, or the chosen person's kept photos, each with a
+        short caption. This is what will be placed on the generated image."""
+        if not hasattr(self, "face_using"):
             return
-        self.face_list.delete(0, END)
+        for w in self.face_using.winfo_children():
+            w.destroy()
+        self._face_thumb_imgs = []
+        samples = []          # (source, caption); source is a path or bytes
+        note = None
         if self.face_source_var.get() == "file":
             if self.face_paths:
-                for p in self.face_paths:
-                    self.face_list.insert(END, Path(p).name)
+                for p in self.face_paths[:self.SWAP_MAX_FACES]:
+                    samples.append((p, Path(p).name))
             else:
-                self.face_list.insert(END, "(no image chosen — Browse…)")
+                note = "(no image chosen — Browse…)"
         else:
             if self.actor_sel:
                 name = getattr(self, "_actor_base_label", "") \
@@ -6947,15 +7064,35 @@ class App:
                 ex = self._excluded_set()
                 kept = [i for i in range(len(blobs)) if i not in ex] \
                     or list(range(len(blobs)))
-                if len(blobs) <= 1:
-                    self.face_list.insert(END, name)
+                if not blobs:
+                    note = name
                 else:
-                    self.face_list.insert(END, f"{name} — {len(kept)} of "
-                                          f"{len(blobs)} photos")
                     for i in kept[:self.SWAP_MAX_FACES]:
-                        self.face_list.insert(END, f"   photo {i + 1}")
+                        cap = name if len(kept) == 1 else f"photo {i + 1}"
+                        samples.append((blobs[i], cap))
+                    if len(kept) > self.SWAP_MAX_FACES:
+                        note = f"+{len(kept) - self.SWAP_MAX_FACES} more sent"
             else:
-                self.face_list.insert(END, "(no person chosen — Person…)")
+                note = "(no person chosen — Person…)"
+        col = 0
+        for src, cap in samples:
+            cell = ttk.Frame(self.face_using)
+            cell.grid(row=0, column=col, padx=(0, 8), sticky="n"); col += 1
+            img = self._face_thumb_image(src, 56)
+            if img is not None:
+                ttk.Label(cell, image=img).grid(row=0, column=0)
+            else:
+                ttk.Label(cell, text="(no preview)",
+                          style="Dim.TLabel").grid(row=0, column=0)
+            ttk.Label(cell, text=cap, style="Dim.TLabel", wraplength=76,
+                      justify="center", font=(UI_FONT, 8)).grid(row=1, column=0)
+        if note:
+            ttk.Label(self.face_using, text=note, style="Dim.TLabel",
+                      font=(UI_FONT, 9)).grid(row=1, column=0, columnspan=99,
+                                              sticky=W, pady=(2, 0))
+        # thumbnails are built after startup — keep the wheel scrolling the
+        # panel when the pointer is over them
+        self._arm_wheel(self.face_using)
 
     def _swap_face_source(self):
         """The face photo(s) for an image-swap run, as a list: every loaded
@@ -7045,7 +7182,7 @@ class App:
         has_gallery = bool(self.session)
         if hasattr(self, "clone_body"):
             self._apply_clone_enabled()
-        if hasattr(self, "face_list"):
+        if hasattr(self, "face_using"):
             self._refresh_face_list()
         if hasattr(self, "editor_use_btn"):
             self.editor_use_btn.state(
@@ -8665,7 +8802,7 @@ def main():
         # replaced is on its way out too. Wait for either — with a small
         # window that says so — before asking about a second copy.
         leaving = previous_instance_pids()
-        root.title("Comic Book Art Creator")
+        root.title("AI Image Generator Suite")
         root.geometry("480x110")
         _wait = ttk.Label(root, text="Waiting for the previous copy to "
                                      "finish closing…", padding=(24, 38))
@@ -8678,7 +8815,8 @@ def main():
         from tkinter import messagebox as _mb
         if not _mb.askyesno(
                 "Already running",
-                "Comic Book Art Creator appears to be already running.\n\n"
+                "AI Image Generator Suite appears to be already "
+                "running.\n\n"
                 "Running a second copy can make generations and progress go "
                 "to the wrong window, and both share one engine.\n\n"
                 "Open another window anyway?"):

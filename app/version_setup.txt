@@ -12,12 +12,12 @@ VSVersionInfo(
   kids=[
     StringFileInfo([
       StringTable('040904B0', [
-        StringStruct('CompanyName', 'Comic Book Art Creator'),
-        StringStruct('FileDescription', 'Comic Book Art Creator - Setup'),
+        StringStruct('CompanyName', 'AI Image Generator Suite'),
+        StringStruct('FileDescription', 'AI Image Generator Suite - Setup'),
         StringStruct('FileVersion', '1.20.0.0'),
         StringStruct('InternalName', 'Setup'),
         StringStruct('OriginalFilename', 'Setup.exe'),
-        StringStruct('ProductName', 'Comic Book Art Creator'),
+        StringStruct('ProductName', 'AI Image Generator Suite'),
         StringStruct('ProductVersion', '1.20.0.0')])
       ]),
     VarFileInfo([VarStruct('Translation', [1033, 1200])])

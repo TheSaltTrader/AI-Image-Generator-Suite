@@ -358,12 +358,11 @@ ui.swap_rag_var.set(False)
 ui._on_clone_toggle()
 root.update()
 check("unticking the swap greys the clone body",
-      "disabled" in ui.face_list.cget("state")
-      or str(ui.face_list.cget("state")) == "disabled")
+      ui.photo_excl_btn.instate(["disabled"]))
 ui.swap_rag_var.set(True)
 ui._on_clone_toggle()
 root.update()
-check("re-ticking re-enables it", str(ui.face_list.cget("state")) == "normal")
+check("re-ticking re-enables it", ui.photo_excl_btn.instate(["!disabled"]))
 check("the Edit tab has a Common-edits menu", hasattr(ui, "edit_menu_btn")
       and hasattr(ui, "_edit_menu"))
 ui._pick_edit_action("remove the watermark")
@@ -384,7 +383,8 @@ ui.swap_use_rag_var.set(True)
 check("no quality radio / no canvas option; always Best + canvas",
       hasattr(ui, "swap_fast_var") and not ui.swap_fast_var.get()
       and ui.editor_canvas_var.get())
-check("the Using list exists", hasattr(ui, "face_list"))
+check("the Using strip exists (thumbnail samples)",
+      hasattr(ui, "face_using") and hasattr(ui, "_face_thumb_image"))
 # a face from a file, and the source round-trips through persistence
 import tempfile as _tf
 from PIL import Image as _Im2
@@ -403,6 +403,11 @@ ui._apply_ui_state(st)
 root.update()
 check("…and restored (source and file)",
       ui.face_source_var.get() == "file" and ui.face_paths == [str(_fp)])
+ui._refresh_face_list()
+root.update()
+check("the Using strip shows a thumbnail sample of the face file",
+      len(ui._face_thumb_imgs) >= 1 and len(ui.face_using.winfo_children()) >= 1,
+      (len(ui._face_thumb_imgs), len(ui.face_using.winfo_children())))
 ui.swap_fast_var.set(False)
 ui.ui_queue.put(("progress_mode", "loading"))
 ui._poll_queue()
@@ -555,6 +560,38 @@ ui.lora_list.delete(0, "end")
 ui._set(ui.prompt_box, "")
 ui._set(ui.edit_prompt_box, "")
 ui._refresh_mode_badges()
+
+# ---- the prompt enhancer always has a model to pick (built-in offline) ---
+print("prompt enhancer (built-in offline)")
+check("a built-in offline enhancer exists and is the default option",
+      app.BUILTIN_ENHANCER in ui.ollama_dd["values"]
+      and ui.ollama_var.get() != "", (ui.ollama_dd["values"], ui.ollama_var.get()))
+_enh = app.builtin_enhance("a knight on a cliff", "oil painting", "sdxl")
+check("the built-in enhancer keeps the user's words and adds detail",
+      "a knight on a cliff" in _enh and "oil painting" in _enh
+      and len(_enh) > len("a knight on a cliff, oil painting"), _enh)
+check("the built-in enhancer returns nothing for an empty prompt",
+      app.builtin_enhance("", "", "sdxl") == "")
+# even when no Ollama is found, the built-in option stays selectable
+ui._on_ollama_found([])
+root.update()
+check("with no Ollama the built-in option is still there and chosen",
+      app.BUILTIN_ENHANCER in ui.ollama_dd["values"]
+      and ui.ollama_var.get() == app.BUILTIN_ENHANCER)
+# a full round-trip through _run_enhance using the built-in path
+ui._set(ui.prompt_box, "a red car")
+ui.ollama_var.set(app.BUILTIN_ENHANCER)
+ui._run_enhance("a red car", app.BUILTIN_ENHANCER, "", "sdxl")
+ui._poll_queue()
+root.update()
+check("Enhance rewrites the prompt in place with the built-in enhancer",
+      "a red car" in ui._get(ui.prompt_box)
+      and len(ui._get(ui.prompt_box)) > len("a red car"),
+      ui._get(ui.prompt_box))
+ui._undo_enhance()
+check("Undo puts the original wording back",
+      ui._get(ui.prompt_box).strip() == "a red car")
+ui._set(ui.prompt_box, "")
 
 # ---- settings: theme + menu size ----------------------------------------
 print("settings (theme + size)")

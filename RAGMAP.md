@@ -1,7 +1,7 @@
 # RAG map format (`.ragmap.json`)
 
 A **RAG map** pairs a trained LoRA with a set of example images. When you
-load one in the Comic Book Art Creator's first section, the app retrieves
+load one in the AI Image Generator Suite's first section, the app retrieves
 the example images most relevant to your prompt and feeds them as
 **visual guidance (IP-Adapter)** while it generates — so the output stays
 faithful to the LoRA's subject/style. It also auto-applies the paired

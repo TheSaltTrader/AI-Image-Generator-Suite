@@ -1,4 +1,4 @@
-r"""Comic Book Art Creator - self-contained setup (Setup.exe).
+r"""AI Image Generator Suite - self-contained setup (Setup.exe).
 
 Bootstraps everything on a bare 64-bit Windows 10/11 machine - no Python,
 no git, no anything pre-installed:
@@ -310,7 +310,7 @@ class SetupApp:
     def __init__(self, root):
         from tkinter import ttk, Text, StringVar, BooleanVar
         self.root = root
-        root.title("Comic Book Art Creator - Setup")
+        root.title("AI Image Generator Suite - Setup")
         root.geometry("720x520")
         root.configure(bg=BG)
         root.minsize(600, 420)

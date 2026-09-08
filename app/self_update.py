@@ -1,4 +1,4 @@
-r"""Self-update for Comic Book Art Creator — GitHub release -> this install.
+r"""Self-update for AI Image Generator Suite — GitHub release -> this install.
 
 The app checks its GitHub releases at startup (and on demand from the
 "Check for updates" button). When a newer release exists an update window
@@ -54,9 +54,9 @@ from tkinter import ttk
 import requests
 
 RELEASES_API = ("https://api.github.com/repos/TheSaltTrader/"
-                "Comic-Book-Art-Generator/releases/latest")
+                "AI-Image-Generator-Suite/releases/latest")
 RELEASES_PAGE = ("https://github.com/TheSaltTrader/"
-                 "Comic-Book-Art-Generator/releases/latest")
+                 "AI-Image-Generator-Suite/releases/latest")
 
 APP_EXE = "ComicArtCreator.exe"
 SETUP_EXE = "Setup.exe"
@@ -532,7 +532,7 @@ class UpdateWindow(Toplevel):
         pad.columnconfigure(0, weight=1)
         r = 0
 
-        ttk.Label(pad, text="Comic Book Art Creator " + upd.tag,
+        ttk.Label(pad, text="AI Image Generator Suite " + upd.tag,
                   style="Head.TLabel").grid(row=r, column=0, sticky="w")
         r += 1
         sub = "You have v" + current_version

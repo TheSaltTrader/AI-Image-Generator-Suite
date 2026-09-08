@@ -1,4 +1,4 @@
-# Security review — Comic Book Art Creator v1.0.0
+# Security review — AI Image Generator Suite (formerly Comic Book Art Creator) v1.0.0
 
 Scope: `app\comic_art_creator.py`, `setup.ps1`, launcher scripts, and the
 runtime architecture (Tkinter frontend + headless ComfyUI engine on

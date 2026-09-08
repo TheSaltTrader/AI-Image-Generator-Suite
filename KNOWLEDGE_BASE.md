@@ -969,6 +969,51 @@ the run.
   `actor_excluded` (sets -> sorted lists), restored BEFORE `_set_actor`
   so the view reflects it. `_refresh_actor_view` shows "photo i/N
   (dropped) · K sent"; the Using list lists the kept photos.
+- **Rename to AI Image Generator Suite (v2.0.0).** The product name changed
+  everywhere the USER sees it — window titles (`comic_art_creator.py`),
+  `version_app.txt`/`version_setup.txt` (ProductName/FileDescription/
+  CompanyName), the updater/setup window labels, README/CHANGELOG/KB
+  titles — and the GitHub repo was renamed to `AI-Image-Generator-Suite`.
+  DELIBERATELY LEFT UNCHANGED for auto-update safety: the exe filename
+  `ComicArtCreator.exe` (self_update `APP_EXE`), the single-instance mutex
+  `Global\\ComicBookArtCreator_singleton`, and `InternalName`/
+  `OriginalFilename`. WHY: `install_staged` on already-deployed v1.x builds
+  looks for `ComicArtCreator.exe` inside the release zip and writes it to
+  `_PROJECT/ComicArtCreator.exe`; a renamed exe in the v2.0 zip would make
+  every existing user's update fail ("release zip has no ComicArtCreator.exe")
+  and could let two differently-named copies run at once. GitHub 301-redirects
+  the old repo's `releases/latest` API to the new name, so v1.x installers
+  (which still hold the old `RELEASES_API`) reach v2.0; v2.0's constants point
+  at the new repo directly. LESSON: rebrand the identity, not the update
+  contract — the filename an installed updater already looks for is frozen.
+- **Built-in offline prompt enhancer (v2.0.0).** `✨ Enhance` was Ollama-only,
+  so with no Ollama the model dropdown was empty and the button dead-ended in
+  a "get Ollama" popup. `BUILTIN_ENHANCER = "Built-in (offline)"` is now always
+  the first dropdown value and the default; `builtin_enhance(text, style,
+  family)` (a pure function, tested) keeps the user's words, folds in the
+  style, and appends composition + `_ENHANCE_QUALITY[family]` phrasing,
+  skipping anything already present. `_run_enhance` branches built-in vs
+  `ollama_enhance`; `_enhance_prompt` never bails for lack of Ollama and passes
+  `model_family(self._model_raw())`. Ollama models still appear after the
+  built-in and give a smarter rewrite when present.
+- **"Using:" is a thumbnail strip, not a Listbox (v2.0.0).** `self.face_using`
+  (a `ttk.Frame`) replaced the text `face_list` Listbox. `_refresh_face_list`
+  destroys and rebuilds small (56px) thumbnail cells via `_face_thumb_image`
+  (opens a path OR raw DB bytes with PIL; refs kept in `self._face_thumb_imgs`
+  or Tk garbage-collects them out of the labels). GOTCHA: widgets built after
+  startup miss the panel's mouse-wheel tag — `_arm_panel_wheel` only tags the
+  tree once at build time. Factored out `_arm_wheel(subtree)` and call it at
+  the end of `_refresh_face_list`, or the "every widget carries PanelWheel
+  first" rule breaks over the new thumbnails.
+- **Engine start-up: detect a crash, don't just wait it out (v2.0.0).**
+  `_boot_engine`'s wait was a silent `for _ in range(180): if engine_alive()`
+  — six minutes of nothing, whether the engine was slow or already dead. A
+  fresh IP-Adapter install + `kill_engine`/restart that fails to come up
+  looked identical to a slow first load. `start_engine` now stashes the
+  `Popen` in `_ENGINE_PROC` and returns it; the wait checks `proc.poll()` and
+  breaks immediately on a crash, posts an elapsed-seconds status every ~10s,
+  and both the timeout and crash paths surface `engine_log_tail()` (the last
+  engine.log lines) so the reason is visible instead of "see engine.log."
 - **A loaded Edit image must not put the whole app in edit mode
   (v1.60.0).** THE ROOT CAUSE behind "LoRA and RAG still not enabling."
   Once editing moved to its own tab (v1.56), `_generate` and

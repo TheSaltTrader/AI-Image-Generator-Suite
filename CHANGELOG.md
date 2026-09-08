@@ -1,4 +1,29 @@
-# Changelog — Comic Book Art Creator
+# Changelog — AI Image Generator Suite
+
+## v2.0.0 — 2026-09-08
+- **New name: AI Image Generator Suite.** The app is now a general-purpose
+  local image studio. The window title, installer and About all carry the
+  new name, and the project moved to a new GitHub home. Existing installs
+  update to v2.0 in place as usual — the updater and your settings carry
+  over untouched (the program file on disk is still `ComicArtCreator.exe`
+  internally, so nothing about your install path or shortcuts changes).
+- **✨ Enhance now works out of the box.** The prompt enhancer used to need
+  a local Ollama install, so with none running the dropdown was empty and
+  the button did nothing useful. There is now a **Built-in (offline)**
+  enhancer that always works: it keeps your words, folds in the style, and
+  adds composition and quality phrasing suited to the model you picked. If
+  you do run a local Ollama model you can still choose it for a smarter
+  rewrite. The dropdown is never empty.
+- **Face / Character "Using:" shows the actual images.** Instead of a text
+  list, the Using area now shows small thumbnail samples of the face
+  image(s) or the chosen person's kept photos, so you can see at a glance
+  exactly what will be placed on the generated picture.
+- **Clearer, faster engine start-up.** When the engine is starting (a first
+  run, or right after an IP-Adapter or engine install) the status now shows
+  how long it has been waiting instead of looking frozen. If the engine
+  process actually stops while starting, the app now says so right away —
+  with the last lines of `engine.log` — instead of waiting out the full
+  timeout.
 
 ## v1.60.0 — 2026-09-08
 - **A loaded Edit image no longer switches off LoRA and RAG.** Now that

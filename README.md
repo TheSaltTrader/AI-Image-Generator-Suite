@@ -1,6 +1,6 @@
-# Comic Book Art Creator
+# AI Image Generator Suite
 
-**v1.21.0** — a fully local, unrestricted comic-book art studio for your GPU.
+**v2.0.0** — a fully local, unrestricted AI image studio for your GPU.
 Nothing leaves your machine — no accounts, no filters, no cloud.
 Compatible with 64-bit **Windows 10 and 11** — **no Python, git, or any
 other software required**; everything the app needs lives in its own
