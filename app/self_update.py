@@ -4,12 +4,14 @@ The app checks its GitHub releases at startup (and on demand from the
 "Check for updates" button). When a newer release exists an update window
 opens showing what changed. Two modes:
 
-* automatic (the default, since v1.36): the download starts as soon as the
-  window opens and is verified, and THEN the user is asked — Install and
-  restart, Not now (nothing changes; asked again next launch), or Skip
-  this version. Since v1.47 nothing is swapped until the user says so:
-  "always give an option to skip the upgrade for this time". An install
-  that is never updated is how the bugs a release fixed live on.
+* automatic (the default, since v1.36): the window opens on its own at
+  startup and ASKS FIRST — Download and install, Not now (nothing
+  downloaded; asked again next launch), or Skip this version. Only after
+  a yes does it download, verify and install, and then it asks once more
+  before restarting (Restart now / Later — the new version starts next
+  launch). Since v1.51 nothing is even downloaded without a yes ("wait
+  for confirmation before downloading"). An install that is never updated
+  is how the bugs a release fixed live on.
 * manual (the checkbox in the window turns automatic off, and the Check for
   updates button always uses it): nothing is downloaded until the user
   presses Update now; Skip this version and Continue are offered.
@@ -491,11 +493,11 @@ class UpdateWindow(Toplevel):
     quiet until there is a newer one still; Continue just closes and leaves
     the install alone.
 
-    Automatic mode (auto=True, the startup default): the download begins
-    as the window opens and the main window stays usable; once the release
-    is downloaded and verified the user is ASKED — Install and restart,
-    Not now (nothing installed; asked again next launch), or Skip this
-    version. Nothing on disk changes until Install and restart.
+    Automatic mode (auto=True, the startup default): the window opens on
+    its own and asks — Download and install, Not now (nothing downloaded;
+    asked again next launch), or Skip this version. After a yes it
+    downloads, verifies and installs (the main window stays usable), then
+    asks Restart now / Later. Nothing is downloaded without the yes.
 
     A checkbox in both modes turns automatic updates on or off.
     """
@@ -588,9 +590,8 @@ class UpdateWindow(Toplevel):
         btns = ttk.Frame(pad)
         btns.grid(row=r, column=0, sticky="ew", pady=(14, 0))
         self.update_btn = ttk.Button(
-            btns, text="Install and restart" if self.auto else "Update now",
-            style="Go.TButton",
-            command=self._restart if self.auto else self._start)
+            btns, text="Download and install" if self.auto else "Update now",
+            style="Go.TButton", command=self._start)
         self.update_btn.pack(side="left")
         # every mode offers both ways out: this time, or this version
         self.skip_btn = ttk.Button(btns, text="Skip this version",
@@ -610,7 +611,8 @@ class UpdateWindow(Toplevel):
                 pass          # a grab is a nicety, never a reason to fail
         self.update_btn.focus_set()
         if self.auto:
-            self._start()
+            self.msg_var.set("Download and install it now? Not now keeps v"
+                             + current_version + " and asks again next time.")
 
     def _centre(self, parent):
         try:
@@ -675,9 +677,9 @@ class UpdateWindow(Toplevel):
     def _start(self):
         self._busy = True
         self.update_btn.state(["disabled"])
-        self.cont_btn.configure(text="Not now")
-        self.msg_var.set("Downloading — you can keep working; nothing "
-                         "changes until you say so." if self.auto
+        self.skip_btn.state(["disabled"])
+        self.cont_btn.configure(text="Cancel")
+        self.msg_var.set("Downloading — you can keep working." if self.auto
                          else "Starting…")
         threading.Thread(target=self._worker, daemon=True).start()
 
@@ -705,11 +707,29 @@ class UpdateWindow(Toplevel):
         threading.Thread(target=work, daemon=True).start()
 
     def _installed(self, newexe):
+        """Automatic mode: installed after the user's yes — now ask about
+        the restart (the running app is untouched until then)."""
         self._busy = False
         clear_skip()
         self._newexe = newexe
-        self.msg_var.set("Installed " + self.upd.tag + ". Restarting…")
-        self.on_relaunch(newexe, self.upd.tag)
+        self.msg_var.set("Installed " + self.upd.tag + ". Restart now to "
+                         "use it — or Later, and the new version starts the "
+                         "next time you open the app.")
+        self.update_btn.configure(text="Restart now", command=self._relaunch)
+        self.update_btn.state(["!disabled"])
+        self.cont_btn.configure(text="Later")
+        self.cont_btn.state(["!disabled"])
+        self.update_btn.focus_set()
+        self.on_status("Updated to " + self.upd.tag
+                       + " — restart when you are ready.")
+
+    def _relaunch(self):
+        if self._newexe is None:
+            return
+        self.update_btn.state(["disabled"])
+        self.cont_btn.state(["disabled"])
+        self.msg_var.set("Restarting…")
+        self.on_relaunch(self._newexe, self.upd.tag)
 
     # the worker runs off the UI thread; every touch of a widget goes back
     # through after(), because Tk is not safe to call from another thread
@@ -754,23 +774,11 @@ class UpdateWindow(Toplevel):
         self._close()
 
     def _ready(self, staged):
-        """Automatic mode: downloaded and verified — now ask."""
+        """Automatic mode: downloaded and verified after the user's yes —
+        install straight away (the yes covered it), then ask to restart."""
         self._busy = False
         self._staged = staged
-        self.msg_var.set(
-            "Downloaded and checked. Install " + self.upd.tag + " and "
-            "restart now? Not now keeps v" + self.current_version + " for "
-            "this session and asks again next time; Skip this version "
-            "stays quiet until there is a newer one.")
-        self.update_btn.configure(text="Install and restart",
-                                  command=self._restart)
-        self.update_btn.state(["!disabled"])
-        self.skip_btn.state(["!disabled"])
-        self.cont_btn.configure(text="Not now")
-        self.cont_btn.state(["!disabled"])
-        self.update_btn.focus_set()
-        self.on_status(self.upd.tag + " is downloaded — Install and restart, "
-                       "Not now, or Skip this version.")
+        self._restart()
 
     def _failed(self, err):
         self._busy = False
@@ -781,6 +789,7 @@ class UpdateWindow(Toplevel):
         self.update_btn.state(["!disabled"])
         self.skip_btn.state(["!disabled"])
         self.cont_btn.configure(text="Not now")
+        self.cont_btn.state(["!disabled"])
         self.msg_var.set("Update failed: " + err + "\nYou can keep working, "
                          "or download it yourself from " + RELEASES_PAGE)
         self.on_status("Update failed: " + err)

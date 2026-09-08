@@ -542,21 +542,18 @@ try:
                               "fg": "#e8e8f0"},
                              on_relaunch=lambda e, t: relaunched.append(t),
                              on_status=statuses.append, auto=True)
-        pump(root, lambda: w4._staged is not None)
-        check("automatic: the download starts on its own", staged_tags == ["v1.35.0"])
-        check("automatic: downloaded and verified, but NOTHING installed",
-              w4._staged is not None and not installs and not relaunched)
-        check("automatic: the primary button is Install and restart, enabled",
-              w4.update_btn.cget("text") == "Install and restart"
+        root.update()
+        check("automatic: NOTHING is downloaded before the user says so",
+              staged_tags == [] and not installs and not w4._busy)
+        check("automatic: the window asks — Download and install",
+              w4.update_btn.cget("text") == "Download and install"
               and "disabled" not in w4.update_btn.state())
-        check("automatic: Not now is offered", w4.cont_btn.cget("text") == "Not now"
-              and "disabled" not in w4.cont_btn.state())
-        check("automatic: Skip this version is offered too",
-              w4.skip_btn.winfo_manager() == "pack"
-              and "disabled" not in w4.skip_btn.state())
-        check("automatic: the message explains the three choices",
-              "Install" in w4.msg_var.get() and "Not now" in w4.msg_var.get()
-              and "Skip this version" in w4.msg_var.get())
+        check("automatic: Not now and Skip this version are offered",
+              w4.cont_btn.cget("text") == "Not now"
+              and w4.skip_btn.winfo_manager() == "pack")
+        check("automatic: the message asks the question",
+              "Download and install" in w4.msg_var.get()
+              and "Not now" in w4.msg_var.get())
         check("automatic: the checkbox reflects the setting", w4.auto_var.get())
         w4.auto_var.set(False)
         w4._toggle_auto()
@@ -564,58 +561,77 @@ try:
         w4.auto_var.set(True)
         w4._toggle_auto()
         check("automatic: …and on again", su.auto_update())
-        # Not now: the download is thrown away, nothing installed
+        # Not now before the download: nothing happened at all
         w4._continue()
         root.update()
-        check("Not now closes the window without installing",
-              not w4.winfo_exists() and not installs and not relaunched)
-        check("Not now discards the download", discards == [1])
-        check("Not now says it will ask again next time",
-              statuses and "asked again next time" in statuses[-1], statuses[-1:])
+        check("Not now closes the window with nothing downloaded",
+              not w4.winfo_exists() and staged_tags == [] and not installs
+              and not relaunched)
         check("Not now remembers no skip", su.skipped_version() is None)
 
-        # Install and restart: the approval
-        staged_tags.clear()
+        # the yes: download, verify, install — then ask about the restart
         w5 = su.UpdateWindow(root, upd, "1.34.0",
                              {"bg": "#17171c", "bg2": "#20202a",
                               "fg": "#e8e8f0"},
                              on_relaunch=lambda e, t: relaunched.append(t),
                              on_status=statuses.append, auto=True)
-        pump(root, lambda: w5._staged is not None)
-        w5._restart()
-        pump(root, lambda: relaunched)
-        check("Install and restart installs the verified download",
-              installs == [1])
-        check("…and hands over to the new exe", relaunched == ["v1.35.0"])
-        w5._close()
+        w5._start()
+        pump(root, lambda: w5._newexe is not None)
+        check("after the yes: downloaded and installed", staged_tags == ["v1.35.0"]
+              and installs == [1])
+        check("…but NOT restarted without approval", not relaunched)
+        check("…the window offers Restart now / Later",
+              w5.update_btn.cget("text") == "Restart now"
+              and "disabled" not in w5.update_btn.state()
+              and w5.cont_btn.cget("text") == "Later")
+        check("…and the status says restart when ready",
+              statuses and "restart" in statuses[-1].lower())
+        w5._continue()
+        root.update()
+        check("Later closes without restarting, saying it starts next time",
+              not w5.winfo_exists() and not relaunched
+              and "next time" in statuses[-1])
 
-        # Skip this version from the automatic window
+        # Restart now
         installs.clear()
-        relaunched.clear()
-        discards.clear()
         w5b = su.UpdateWindow(root, upd, "1.34.0",
                               {"bg": "#17171c", "bg2": "#20202a",
                                "fg": "#e8e8f0"},
                               on_relaunch=lambda e, t: relaunched.append(t),
                               on_status=statuses.append, auto=True)
-        pump(root, lambda: w5b._staged is not None)
-        w5b._skip()
+        w5b._start()
+        pump(root, lambda: w5b._newexe is not None)
+        w5b._relaunch()
         root.update()
-        check("Skip this version from the automatic window is remembered",
-              su.skipped_version() == "v1.35.0" and not installs
-              and discards == [1])
+        check("Restart now hands over to the new exe", relaunched == ["v1.35.0"])
+        w5b._close()
+
+        # Skip this version from the window, before any download
+        relaunched.clear()
+        staged_tags.clear()
+        w5c = su.UpdateWindow(root, upd, "1.34.0",
+                              {"bg": "#17171c", "bg2": "#20202a",
+                               "fg": "#e8e8f0"},
+                              on_relaunch=lambda e, t: relaunched.append(t),
+                              on_status=statuses.append, auto=True)
+        w5c._skip()
+        root.update()
+        check("Skip this version is remembered, nothing downloaded",
+              su.skipped_version() == "v1.35.0" and staged_tags == [])
         su.clear_skip()
 
-        # a failed automatic download offers Retry, never installs
+        # a failed download offers Retry, never installs
         def bad_stage(*a, **k):
             raise RuntimeError("the download was damaged")
 
         su.stage_update = bad_stage
+        installs.clear()
         w6 = su.UpdateWindow(root, upd, "1.34.0",
                              {"bg": "#17171c", "bg2": "#20202a",
                               "fg": "#e8e8f0"},
                              on_relaunch=lambda e, t: relaunched.append(t),
                              on_status=statuses.append, auto=True)
+        w6._start()
         pump(root, lambda: not w6._busy)
         check("automatic: a failed download offers Retry",
               w6.update_btn.cget("text") == "Retry"

@@ -1,5 +1,14 @@
 # Changelog — Comic Book Art Creator
 
+## v1.51.0 — 2026-09-08
+- **The update window asks before downloading.** At startup it opens on
+  its own with the release notes and waits: **Download and install**,
+  **Not now** (nothing downloaded; asked again next time), or **Skip
+  this version**. Only after your yes does it download, verify and
+  install — and then it asks once more before restarting (Restart now,
+  or Later, and the new version starts the next time you open the app).
+  Previously the download began the moment the window opened.
+
 ## v1.50.0 — 2026-09-08
 - **A face swap on a RAG-guided base no longer comes back as the base.**
   After a swap, only the region that differs strongly from the base is

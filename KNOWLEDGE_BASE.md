@@ -243,6 +243,15 @@ discards the staged download and says "asked again next time"; the
 window's X is Not now. The manual window's third button is Not now too.
 Tests stub `su.stage_update` / `su.install_staged` (not `apply_update`).
 
+**v1.51.0 — ask BEFORE downloading.** User rule ("small bug: wait for
+confirmation before downloading"): the automatic window no longer calls
+`_start()` on open. It opens with the notes and **Download and install /
+Skip this version / Not now**; `_start` stages, `_ready` installs at once
+(the yes covered it), `_installed` then offers **Restart now / Later**
+(`_relaunch` → `on_relaunch`; Later = the swapped exe starts next launch).
+So "automatic" now means only that the window appears by itself. Two
+questions per update (download, restart), never a byte without the first.
+
 Things it does that are easy to get wrong, and why:
 
 - **`version_tuple()` pads to exactly 4 parts.** A git tag reads as three

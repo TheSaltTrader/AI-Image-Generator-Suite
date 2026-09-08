@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.50.0"
+APP_VERSION = "1.51.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -3863,11 +3863,11 @@ class App:
                   "Ask GitHub whether a newer release of the app exists. If "
                   "there is one, a window shows what changed and you choose "
                   "whether to install it — nothing is downloaded until you "
-                  "say so. (At startup the app downloads a new version on "
-                  "its own, then asks: Install and restart, Not now, or "
-                  "Skip this version; the window has a box to turn the "
-                  "automatic download off.) This also brings back a version "
-                  "you skipped.")
+                  "say so. (At startup the app checks on its own and asks "
+                  "before downloading: Download and install, Not now, or "
+                  "Skip this version; after installing it asks again before "
+                  "restarting.) This also brings back a version you "
+                  "skipped.")
         self.log_btn = ttk.Button(vrow2, text="📋 Log", command=self._open_log)
         self.log_btn.pack(side="left", padx=(6, 0))
         self._tip(self.log_btn,

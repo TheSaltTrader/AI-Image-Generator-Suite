@@ -455,14 +455,10 @@ with tempfile.TemporaryDirectory() as td:
     check("a queued update opens the window", win is not None
           and win.winfo_exists())
     check("the startup window is in automatic mode", win is not None and win.auto)
-    pump(root, lambda: win._staged is not None)
-    check("the update downloaded and verified on its own",
-          staged_tags == ["v1.99.0"] and win._staged is not None)
-    check("NOTHING was installed or restarted without approval",
-          not installs and not _started and ui.root.winfo_exists())
-    check("Install and restart / Not now / Skip this version are offered",
-          win.update_btn.cget("text") == "Install and restart"
-          and "disabled" not in win.update_btn.state()
+    check("NOTHING is downloaded before the user says so",
+          staged_tags == [] and not installs and not _started)
+    check("Download and install / Not now / Skip this version are offered",
+          win.update_btn.cget("text") == "Download and install"
           and win.cont_btn.cget("text") == "Not now"
           and win.skip_btn.winfo_manager() == "pack")
 
@@ -477,12 +473,27 @@ with tempfile.TemporaryDirectory() as td:
     win._continue()
     root.update()
     check("Not now closes the window", not win.winfo_exists())
-    check("Not now leaves the app running on the old version",
-          ui.root.winfo_exists() and not installs)
-    check("Not now discards the download", discards == [1])
-    check("Not now starts no new process", not _started)
-    check("Not now says it will ask again next time",
-          "next time" in ui.status_var.get(), ui.status_var.get())
+    check("Not now leaves the app running on the old version with nothing "
+          "downloaded", ui.root.winfo_exists() and not installs
+          and staged_tags == [] and not _started)
+
+    # the yes: download + install, then ask about the restart
+    ui.ui_queue.put(("app_update", upd))
+    ui._poll_queue()
+    root.update()
+    win = ui._upd_win
+    win._start()
+    pump(root, lambda: win._newexe is not None)
+    check("after the yes: downloaded and installed, not restarted",
+          staged_tags == ["v1.99.0"] and installs == [1] and not _started)
+    check("Restart now / Later are offered",
+          win.update_btn.cget("text") == "Restart now"
+          and win.cont_btn.cget("text") == "Later")
+    win._continue()
+    root.update()
+    check("Later leaves the app running; the new version starts next time",
+          ui.root.winfo_exists() and not _started
+          and "next time" in ui.status_var.get(), ui.status_var.get())
     su.stage_update, su.install_staged = real_stage, real_install
 
 # manual mode (automatic turned off): nothing downloads until Update now
