@@ -14,6 +14,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import zipfile
 from pathlib import Path
 
@@ -29,6 +30,23 @@ def check(name, cond, detail=""):
     print(("  ok   " if cond else "  FAIL ") + name + ("  " + detail
                                                        if detail and not cond
                                                        else ""))
+
+
+def pump(root, cond, timeout=5.0):
+    """Run the REAL Tk event loop until cond() holds (or timeout). The
+    window's worker thread reports back through after(), which needs a
+    running loop exactly as in the app — an update() polling loop makes
+    every cross-thread after() raise 'main thread is not in main loop'."""
+    deadline = time.time() + timeout
+
+    def tick():
+        if cond() or time.time() > deadline:
+            root.quit()
+        else:
+            root.after(20, tick)
+
+    root.after(0, tick)
+    root.mainloop()
 
 
 # --------------------------------------------------------------- versions
@@ -153,7 +171,8 @@ with tempfile.TemporaryDirectory() as td:
     except RuntimeError as e:
         check("zip path traversal is refused", "bad path" in str(e))
     check("nothing escaped the temp folder",
-          not (Path(td).parent / "escaped.txt").exists())
+          not (Path(td) / "escaped.txt").exists()
+          and not (Path(td).parent / "escaped.txt").exists())
 
 # a mid-download cancel must stop, not finish
 with tempfile.TemporaryDirectory() as td:
@@ -213,7 +232,7 @@ with tempfile.TemporaryDirectory() as td:
           (p / "ComicArtCreator.exe").read_bytes() == b"ORIGINAL-APP")
     check("the original setup survived a refused update",
           (p / "Setup.exe").read_bytes() == b"ORIGINAL-SETUP")
-    check("no leftover temp folder", not (p / "_app_upd_tmp").exists())
+    check("no leftover temp folder", not list(p.glob("_app_upd_tmp*")))
 
 # the mis-tagged release: a real exe, but not actually newer
 if live.exists() and su.exe_version(live):
@@ -272,7 +291,7 @@ if live.exists() and su.exe_version(live):
               json.loads((p / "app" / "presets.json")
                          .read_text(encoding="utf-8")) == {"mine": 1})
         check("the swap cleaned up its temp folder",
-              not (p / "_app_upd_tmp").exists())
+              not list(p.glob("_app_upd_tmp*")))
 
 # a broken models_manifest.json in the release must not overwrite a good one
 if live.exists() and su.exe_version(live):
@@ -475,6 +494,126 @@ try:
               "github.com" in w3.msg_var.get())
         w3._close()
         check("closing twice is safe", w3._close() is None)
+
+        # ---- automatic mode: downloads on open, restarts on approval ----
+        print("automatic mode")
+        check("automatic is the default", su.auto_update())
+        su.set_auto_update(False)
+        check("automatic can be turned off", not su.auto_update())
+        su.set_auto_update(True)
+        check("…and back on", su.auto_update())
+
+        # the launch-time check ignores a skip only when automatic is on
+        _api({"tag_name": "v1.35.0", "assets": ASSET})
+        su.skip_version("v1.35.0")
+        check("automatic: a skipped version is still taken at startup",
+              su.startup_check("1.34.0") is not None)
+        su.set_auto_update(False)
+        check("manual: a skipped version stays skipped at startup",
+              su.startup_check("1.34.0") is None)
+        su.set_auto_update(True)
+        su.clear_skip()
+        su.requests.get = _real_get
+
+        applied = []
+        real_apply = su.apply_update
+
+        def fake_apply(upd_, cur, status, progress, cancel):
+            applied.append(upd_.tag)
+            status("Installing…")
+            progress(10, 10)
+            return Path(td) / "ComicArtCreator.exe"
+
+        su.apply_update = fake_apply
+        relaunched.clear()
+        statuses.clear()
+        w4 = su.UpdateWindow(root, upd, "1.34.0",
+                             {"bg": "#17171c", "bg2": "#20202a",
+                              "fg": "#e8e8f0"},
+                             on_relaunch=lambda e, t: relaunched.append(t),
+                             on_status=statuses.append, auto=True)
+        pump(root, lambda: w4._newexe is not None)
+        check("automatic: the download starts on its own", applied == ["v1.35.0"])
+        check("automatic: the window says it is updating",
+              "Updating" in w4.title())
+        check("automatic: no Skip button is offered",
+              not w4.skip_btn.winfo_manager() == "pack")
+        check("automatic: installed, but NOT restarted on its own",
+              w4._newexe is not None and not relaunched)
+        check("automatic: the primary button is Restart now, enabled",
+              w4.update_btn.cget("text") == "Restart now"
+              and "disabled" not in w4.update_btn.state())
+        check("automatic: the other button is Later",
+              w4.cont_btn.cget("text") == "Later")
+        check("automatic: the message says a restart is the user's call",
+              "Restart now" in w4.msg_var.get() and "Later" in w4.msg_var.get())
+        check("automatic: the status bar says restart when ready",
+              statuses and "restart" in statuses[-1].lower())
+        check("automatic: the checkbox reflects the setting", w4.auto_var.get())
+        w4.auto_var.set(False)
+        w4._toggle_auto()
+        check("automatic: the checkbox turns the setting off", not su.auto_update())
+        w4.auto_var.set(True)
+        w4._toggle_auto()
+        check("automatic: …and on again", su.auto_update())
+        # Later: closes, nothing relaunched, told it starts next time
+        w4._continue()
+        root.update()
+        check("Later closes the window without restarting",
+              not w4.winfo_exists() and not relaunched)
+        check("Later says the new version starts next time",
+              statuses and "next time" in statuses[-1])
+
+        # Restart now: the approval
+        applied.clear()
+        w5 = su.UpdateWindow(root, upd, "1.34.0",
+                             {"bg": "#17171c", "bg2": "#20202a",
+                              "fg": "#e8e8f0"},
+                             on_relaunch=lambda e, t: relaunched.append(t),
+                             on_status=statuses.append, auto=True)
+        pump(root, lambda: w5._newexe is not None)
+        check("Restart now is inert until the install is done — it is done",
+              w5._newexe is not None)
+        w5._restart()
+        root.update()
+        check("Restart now hands over to the new exe", relaunched == ["v1.35.0"])
+        w5._close()
+
+        # a failed automatic update offers Retry, never restarts
+        relaunched.clear()
+
+        def bad_apply(*a, **k):
+            raise RuntimeError("the download was damaged")
+
+        su.apply_update = bad_apply
+        w6 = su.UpdateWindow(root, upd, "1.34.0",
+                             {"bg": "#17171c", "bg2": "#20202a",
+                              "fg": "#e8e8f0"},
+                             on_relaunch=lambda e, t: relaunched.append(t),
+                             on_status=statuses.append, auto=True)
+        pump(root, lambda: not w6._busy)
+        check("automatic: a failed update offers Retry",
+              w6.update_btn.cget("text") == "Retry"
+              and "disabled" not in w6.update_btn.state())
+        check("automatic: a failed update never restarts", not relaunched)
+        check("automatic: a failed update explains itself",
+              "damaged" in w6.msg_var.get())
+        w6._close()
+        su.apply_update = real_apply
+
+        # the manual window is unchanged by all this
+        w7 = su.UpdateWindow(root, upd, "1.34.0",
+                             {"bg": "#17171c", "bg2": "#20202a",
+                              "fg": "#e8e8f0"},
+                             on_relaunch=lambda e, t: relaunched.append(t),
+                             on_status=statuses.append)
+        root.update()
+        check("manual: Update now / Skip / Continue as before",
+              w7.update_btn.cget("text") == "Update now"
+              and w7.skip_btn.winfo_manager() == "pack"
+              and w7.cont_btn.cget("text") == "Continue")
+        check("manual: nothing downloads on open", not w7._busy)
+        w7._close()
     root.destroy()
 except Exception as e:
     check("window smoke test", False, repr(e))

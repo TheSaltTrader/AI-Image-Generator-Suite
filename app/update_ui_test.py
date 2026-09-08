@@ -13,6 +13,7 @@ Run: venv\\Scripts\\python.exe app\\update_ui_test.py
 import sys
 import threading
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -24,6 +25,24 @@ def check(name, cond, detail=""):
     (PASS if cond else FAIL).append(name)
     print(("  ok   " if cond else "  FAIL ") + name
           + (("  " + detail) if detail and not cond else ""))
+
+
+def pump(root, cond, timeout=5.0):
+    """Run the REAL Tk event loop until cond() holds (or timeout): the
+    update window's worker thread reports back through after(), which
+    needs a running loop exactly as in the app — an update() polling loop
+    makes every cross-thread after() raise 'main thread is not in main
+    loop' (see KNOWLEDGE_BASE §7)."""
+    deadline = time.time() + timeout
+
+    def tick():
+        if cond() or time.time() > deadline:
+            root.quit()
+        else:
+            root.after(20, tick)
+
+    root.after(0, tick)
+    root.mainloop()
 
 
 import comic_art_creator as app
@@ -60,22 +79,38 @@ check("the version is shown next to it",
           if "text" in w.keys()))
 
 # ---- the startup path: a queued app_update opens the window -------------
-print("startup check")
+# automatic mode (the default): the download starts on its own, the app
+# keeps running, and only Restart now hands over to the new exe
+print("startup check — automatic")
 with tempfile.TemporaryDirectory() as td:
     su.configure(td, td)
     upd = su.Update("v1.99.0", "http://x/a.zip", 75 * 1024 * 1024,
                     "- something new", "2026-08-20")
+    applied = []
+    real_apply = su.apply_update
+
+    def fake_apply(upd_, cur, status, progress, cancel):
+        applied.append(upd_.tag)
+        return Path(td) / "ComicArtCreator.exe"
+
+    su.apply_update = fake_apply
     _started.clear()          # the app shells out to nvidia-smi on start;
     #                           only launches AFTER this point are ours
+    check("automatic updates are on by default", su.auto_update())
     ui.ui_queue.put(("app_update", upd))
     ui._poll_queue()
     root.update()
     win = getattr(ui, "_upd_win", None)
     check("a queued update opens the window", win is not None
           and win.winfo_exists())
-    check("the window names the new version",
-          win is not None and "v1.99.0" in win.title() + str(
-              win.upd.tag))
+    check("the startup window is in automatic mode", win is not None and win.auto)
+    pump(root, lambda: win._newexe is not None)
+    check("the update downloaded and installed on its own",
+          applied == ["v1.99.0"] and win._newexe is not None)
+    check("the app was NOT restarted without approval",
+          not _started and ui.root.winfo_exists())
+    check("Restart now is offered", win.update_btn.cget("text") == "Restart now"
+          and "disabled" not in win.update_btn.state())
 
     # a second notification must not stack a second window
     ui.ui_queue.put(("app_update", upd))
@@ -83,6 +118,36 @@ with tempfile.TemporaryDirectory() as td:
     root.update()
     check("a second notification reuses the open window",
           getattr(ui, "_upd_win") is win)
+
+    # Later leaves the app running; the new exe starts next launch
+    win._continue()
+    root.update()
+    check("Later closes the window", not win.winfo_exists())
+    check("Later leaves the app running", ui.root.winfo_exists())
+    check("Later starts no new process", not _started)
+    check("Later says the new version starts next time",
+          "next time" in ui.status_var.get(), ui.status_var.get())
+    su.apply_update = real_apply
+
+# manual mode (automatic turned off): nothing downloads until Update now
+print("startup check — manual")
+with tempfile.TemporaryDirectory() as td:
+    su.configure(td, td)
+    su.set_auto_update(False)
+    upd = su.Update("v1.99.0", "http://x/a.zip", 75 * 1024 * 1024,
+                    "- something new", "2026-08-20")
+    _started.clear()
+    ui.ui_queue.put(("app_update", upd))
+    ui._poll_queue()
+    root.update()
+    win = getattr(ui, "_upd_win", None)
+    check("a queued update opens the window", win is not None
+          and win.winfo_exists())
+    check("the window is in manual mode", win is not None and not win.auto)
+    check("the window names the new version",
+          win is not None and "v1.99.0" in win.title() + str(
+              win.upd.tag))
+    check("nothing downloads on open", not win._busy)
 
     # Continue leaves the app running and untouched
     win._continue()

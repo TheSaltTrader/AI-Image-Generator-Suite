@@ -41,8 +41,9 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageTk
 from PIL.PngImagePlugin import PngInfo
 
 import self_update
+import engine_files
 
-APP_VERSION = "1.35.0"
+APP_VERSION = "1.36.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -483,12 +484,15 @@ def download_model_update(entry, status_cb, prog_cb=None):
 # --------------------------------------------------------------------------
 
 ENGINE_VERSION_FILE = PROJECT / "engine_version.json"
-IPA_NODE_ZIP = ("https://github.com/cubiq/ComfyUI_IPAdapter_plus/"
-                "archive/refs/heads/main.zip")
-COMFY_COMMITS_API = ("https://api.github.com/repos/comfyanonymous/"
-                     "ComfyUI/commits/master")
-COMFY_ZIP_URL = ("https://github.com/comfyanonymous/ComfyUI/"
-                 "archive/refs/heads/master.zip")
+IPA_NODE_ZIP = engine_files.IPA_NODE_ZIP
+COMFY_COMMITS_API = engine_files.COMFY_COMMITS_API
+COMFY_ZIP_URL = engine_files.COMFY_ZIP_URL
+# engine file management (update / repair / add-on install) lives in
+# engine_files.py — its module note carries the 2026-09 post-mortem that
+# put it there: an in-place rmtree of the live engine that died part-way
+engine_files.configure(PROJECT, ENGINE_DIR, python_exe=engine_python,
+                       env=_contained_env, version_file=ENGINE_VERSION_FILE,
+                       no_window=NO_WINDOW)
 
 
 def check_engine_update():
@@ -538,143 +542,16 @@ def kill_engine():
         capture_output=True, creationflags=NO_WINDOW, timeout=60)
 
 
-def _long(p):
-    """Windows extended-length form. Plain shutil/os calls fail past
-    MAX_PATH, and a nested engine folder blows through it quickly."""
-    s = os.path.abspath(str(p))
-    if os.name == "nt" and not s.startswith("\\\\?\\"):
-        s = "\\\\?\\" + s
-    return s
-
-
-# stock files ComfyUI ships in custom_nodes — duplicated into every nest
-# level by the old update bug, so they are safe to discard when cleaning
-_STOCK_NODE_FILES = {"example_node.py.example", "websocket_image_save.py",
-                     "__pycache__", ".gitignore"}
-
-
-def restore_preserved(keep, engine_dir, subs):
-    """Put the preserved folders back after an engine swap. MERGES into
-    the folders the fresh engine ships instead of `shutil.move`-ing onto
-    them — moving a directory onto an existing directory puts the source
-    INSIDE it, which is what nested custom_nodes one level deeper on
-    every single update until the engine could no longer see any of the
-    user's nodes."""
-    for sub in subs:
-        s = Path(keep) / sub
-        if not s.exists():
-            continue
-        d = Path(engine_dir) / sub
-        if not d.exists():
-            shutil.move(str(s), str(d))
-            continue
-        for item in list(s.iterdir()):
-            target = d / item.name
-            if target.exists():
-                continue          # the fresh engine's own copy wins
-            shutil.move(_long(item), _long(target))
-        shutil.rmtree(_long(s), ignore_errors=True)
-
-
-def flatten_nested_dir(parent, name, dedupe=False):
-    """Repair `custom_nodes/custom_nodes/…` nesting left by older engine
-    updates: hoist the buried content back to the top level and drop the
-    empty shells. Each update pushed the previous folder one level
-    deeper, so the SHALLOWEST copy is the most recent one and wins.
-
-    dedupe=True also discards nested items whose name already exists at
-    the top — right for custom_nodes, where those are just older copies
-    of the same node package; left off for input/user, where a
-    same-named file may hold different data.
-
-    Returns how many items were rescued."""
-    top = Path(parent) / name
-    if not os.path.isdir(_long(top)):
-        return 0
-    # every probe goes through _long: a plain Path check silently returns
-    # False past MAX_PATH, which would stop the walk before the deepest
-    # (and most buried) levels
-    chain, cur = [], top / name
-    while os.path.isdir(_long(cur)):
-        chain.append(cur)
-        cur = cur / name
-    rescued = 0
-    for nest in chain:                    # shallowest first = newest wins
-        try:
-            entries = os.listdir(_long(nest))
-        except OSError:
-            continue
-        for entry in entries:
-            if entry == name:
-                continue                  # that is the next nest level
-            target = top / entry
-            if os.path.exists(_long(target)):
-                continue
-            try:
-                shutil.move(_long(nest / entry), _long(target))
-                rescued += 1
-            except OSError:
-                pass
-
-    def _disposable(d):
-        """True when only stock files and empty nest levels are left."""
-        try:
-            entries = os.listdir(_long(d))
-        except OSError:
-            return False
-        for entry in entries:
-            if entry == name:
-                if not _disposable(d / entry):
-                    return False
-            elif entry in _STOCK_NODE_FILES:
-                continue
-            elif dedupe and os.path.exists(_long(top / entry)):
-                continue          # an older copy of something rescued
-            else:
-                return False
-        return True
-
-    if chain and _disposable(chain[0]):
-        shutil.rmtree(_long(chain[0]), ignore_errors=True)
-    return rescued
+_long = engine_files.long_path
+_STOCK_NODE_FILES = engine_files.STOCK_NODE_FILES
+flatten_nested_dir = engine_files.flatten_nested_dir
 
 
 def update_engine(new_sha, status_cb):
-    """Swap in the latest engine, preserving user data, then refresh its
-    python packages."""
-    tmp = PROJECT / "_upd_tmp"
-    shutil.rmtree(tmp, ignore_errors=True)
-    tmp.mkdir(parents=True)
-    try:
-        z = tmp / "comfy.zip"
-        status_cb("Downloading engine update…")
-        with requests.get(COMFY_ZIP_URL, stream=True, timeout=60) as r:
-            r.raise_for_status()
-            with open(z, "wb") as fh:
-                for chunk in r.iter_content(1 << 22):
-                    fh.write(chunk)
-        status_cb("Installing engine update…")
-        with zipfile.ZipFile(z) as zf:
-            zf.extractall(tmp)
-        new_dir = next(tmp.glob("ComfyUI-*"))
-        keep = tmp / "keep"
-        keep.mkdir()
-        for sub in ("user", "input", "custom_nodes"):
-            s = ENGINE_DIR / sub
-            if s.exists():
-                shutil.move(str(s), str(keep / sub))
-        shutil.rmtree(ENGINE_DIR)
-        shutil.move(str(new_dir), str(ENGINE_DIR))
-        restore_preserved(keep, ENGINE_DIR, ("user", "input", "custom_nodes"))
-        status_cb("Updating engine packages…")
-        subprocess.run([str(engine_python()), "-m", "pip", "install", "-q",
-                        "-r", str(ENGINE_DIR / "requirements.txt")],
-                       capture_output=True, creationflags=NO_WINDOW,
-                       env=_contained_env(), timeout=1800)
-        ENGINE_VERSION_FILE.write_text(json.dumps({"sha": new_sha}),
-                                       encoding="utf-8")
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    """Swap in the latest engine, carrying the user's folders across, then
+    refresh its python packages. engine_files renames rather than deletes:
+    a failure at any step leaves the engine exactly as it was."""
+    return engine_files.update_engine(new_sha, status_cb)
 
 
 # --------------------------------------------------------------------------
@@ -2542,6 +2419,7 @@ class App:
         self.job_queue = []        # batch queue of pending jobs
         self._batch_active = False
         self.ragmap = None         # loaded RAG map (dict) or None
+        self._addon_lock = threading.Lock()   # one add-on install at a time
         self.ragmap_path = None
         self.actordb_path = None   # reference DB (Actor DB / Database Builder)
         self.actordb_kind = "person"   # "person" (actordb) | "character" (chardb)
@@ -3499,7 +3377,10 @@ class App:
                   "Ask GitHub whether a newer release of the app exists. If "
                   "there is one, a window shows what changed and you choose "
                   "whether to install it — nothing is downloaded until you "
-                  "say so. This also brings back a version you skipped.")
+                  "say so. (At startup the app updates automatically and "
+                  "asks only before restarting; the window has a box to "
+                  "turn that off.) This also brings back a version you "
+                  "skipped.")
 
         # ---------- right column: preview + gallery ----------
         right = ttk.Frame(root, padding=(0, 12, 12, 12))
@@ -5121,6 +5002,15 @@ class App:
             self_update.sweep_old_exes()
         except Exception:
             pass
+        # …and the old engines / temp folders engine updates renamed aside
+        try:
+            _gone, stuck = engine_files.sweep_leftovers()
+            if stuck:
+                self.ui_queue.put(("status", f"{len(stuck)} leftover file(s) "
+                                             "from an earlier update could "
+                                             "not be removed yet."))
+        except Exception:
+            pass
         # the exe carries the manifest it was built with — refresh a stale
         # disk copy first so the check below sees the current model list
         sync_bundled_manifest()
@@ -5140,7 +5030,7 @@ class App:
                     pass
         # app self-update (frozen exe only) — offer before model/engine
         if getattr(sys, "frozen", False):
-            app_up = self_update.check(APP_VERSION)
+            app_up = self_update.startup_check(APP_VERSION)
             if app_up:
                 self.ui_queue.put(("app_update", app_up))
         ups = check_model_updates()
@@ -5163,7 +5053,7 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _show_update_window(self, upd):
+    def _show_update_window(self, upd, auto=False):
         """Open the update window. Guarded so the startup check and the
         button cannot stack two of them."""
         win = getattr(self, "_upd_win", None)
@@ -5175,7 +5065,7 @@ class App:
             self.root, upd, APP_VERSION,
             {"bg": BG, "bg2": BG2, "fg": FG},
             on_relaunch=self._relaunch_after_update,
-            on_status=self.status_var.set)
+            on_status=self.status_var.set, auto=auto)
 
     def _relaunch_after_update(self, newexe, tag):
         """Hand over to the freshly installed exe. The engine is stopped
@@ -5208,22 +5098,29 @@ class App:
             except Exception as e:
                 self.ui_queue.put(("status",
                                    f"Update failed for {u['local']}: {e}"))
+        eng_ok = False
         if eng:
             try:
                 self.ui_queue.put(("status", "Stopping engine for update…"))
                 kill_engine()
+                time.sleep(2)
                 update_engine(eng["sha"],
                               lambda s: self.ui_queue.put(("status", s)))
+                eng_ok = True
                 self.ui_queue.put(("status", "Engine updated — restarting…"))
-                threading.Thread(target=self._boot_engine,
-                                 daemon=True).start()
             except Exception as e:
-                self.ui_queue.put(("status", f"Engine update failed: {e}"))
+                # the engine is as it was (engine_files renames, never
+                # deletes in place) — but it was stopped above, and used to
+                # stay stopped until the next launch
+                self.ui_queue.put(("status", f"Engine update failed: {e} — "
+                                             "restarting the engine you "
+                                             "have."))
+            threading.Thread(target=self._boot_engine, daemon=True).start()
         note = f"Updates done: {ok} model(s) installed"
         if locked:
             note += f", {locked} will apply on next start (file in use)"
         if eng:
-            note += ", engine updated"
+            note += ", engine updated" if eng_ok else ", engine NOT updated"
         self.ui_queue.put(("status", note))
         self.ui_queue.put(("models_changed", None))
 
@@ -5251,6 +5148,43 @@ class App:
                               f"({n} item(s) restored from an older "
                               "update) — add-ons work again."))
 
+    def _repair_engine_files(self, from_log=False):
+        """Rebuild the engine when its files cannot start it — the state a
+        pre-v1.36 engine update that died part-way left behind: every
+        package folder emptied behind a main.py that could not import
+        comfy, and no custom_nodes. Checked against the sentinel files
+        before every start; checked again from engine.log after a failed
+        start, because a tree can be broken in ways the list does not
+        name. Once per session. Returns True only when a repair ran and
+        the engine was started again from here."""
+        if getattr(self, "_engine_repair_tried", False):
+            return False
+        if from_log:
+            damaged = engine_files.log_shows_damage(PROJECT / "engine.log")
+        else:
+            damaged = ENGINE_DIR.is_dir() and \
+                bool(engine_files.check_integrity())
+        if not damaged:
+            return False
+        self._engine_repair_tried = True
+        self.ui_queue.put(("status", "The engine's files are damaged (an "
+                                     "earlier update stopped part-way) — "
+                                     "rebuilding them, one moment…"))
+        try:
+            kill_engine()
+            time.sleep(1)
+            engine_files.repair_engine(
+                lambda s: self.ui_queue.put(("status", s)))
+        except Exception as e:
+            self.ui_queue.put(("error", f"Engine repair failed: {e}"))
+            return False
+        self.ui_queue.put(("status", "Engine files rebuilt — starting the "
+                                     "engine…"))
+        if from_log:
+            self._boot_engine()
+            return True
+        return False
+
     def _autoheal_addons(self):
         """After the engine is up: install the add-ons the app needs but
         the model manifest cannot deliver — the IP-Adapter custom node
@@ -5275,6 +5209,7 @@ class App:
 
     def _boot_engine(self):
         self._repair_engine_dirs()
+        self._repair_engine_files()
         if engine_alive() and not engine_is_ours():
             # a foreign engine (another instance / leftover dev run) holds
             # the port — using it can send results to the wrong window
@@ -5296,6 +5231,8 @@ class App:
                     break
                 time.sleep(2)
             else:
+                if self._repair_engine_files(from_log=True):
+                    return          # the repair started the engine again
                 self.ui_queue.put(("error", "Engine did not come up — see "
                                             "engine.log in the project folder."))
                 return
@@ -6209,7 +6146,10 @@ class App:
                     self.enhance_btn.state(["!disabled"])
                     self.status_var.set(f"Prompt enhancer: {msg[1]}")
                 elif kind == "app_update":
-                    self._show_update_window(msg[1])
+                    # the startup check: automatic (download now, ask
+                    # before restarting) unless the user turned that off
+                    self._show_update_window(
+                        msg[1], auto=self_update.auto_update())
                 elif kind == "app_update_manual":
                     self.upd_btn.state(["!disabled"])
                     if msg[1]:
@@ -6760,27 +6700,22 @@ class App:
 
     def _install_style_support(self):
         """Self-install the IP-Adapter node + models, then restart the
-        engine — for installs that predate v1.3.0."""
+        engine — for installs that predate v1.3.0, and for the one an
+        engine update stripped. One at a time: the boot-time heal and a
+        user's click used to run this twice at once on ONE shared temp
+        folder, and the second run died on mkdir."""
+        if not self._addon_lock.acquire(blocking=False):
+            self.ui_queue.put(("status", "IP-Adapter is already being "
+                                         "installed — wait for 'Engine "
+                                         "ready.'"))
+            return
         try:
             node_dir = ENGINE_DIR / "custom_nodes" / "ComfyUI_IPAdapter_plus"
             if not node_dir.exists():
                 self.ui_queue.put(("status", "Installing IP-Adapter node…"))
-                tmpd = PROJECT / "_upd_tmp"
-                shutil.rmtree(tmpd, ignore_errors=True)
-                tmpd.mkdir(parents=True)
-                z = tmpd / "ipa.zip"
-                with requests.get(IPA_NODE_ZIP, stream=True,
-                                  timeout=60) as r:
-                    r.raise_for_status()
-                    with open(z, "wb") as fh:
-                        for c in r.iter_content(1 << 20):
-                            fh.write(c)
-                with zipfile.ZipFile(z) as zf:
-                    zf.extractall(tmpd)
-                inner = next(tmpd.glob("ComfyUI_IPAdapter_plus-*"))
-                node_dir.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(inner), str(node_dir))
-                shutil.rmtree(tmpd, ignore_errors=True)
+                engine_files.install_node_zip(
+                    IPA_NODE_ZIP, node_dir,
+                    lambda s: self.ui_queue.put(("status", s)))
             try:
                 entries = json.loads(
                     MANIFEST_FILE.read_text(encoding="utf-8"))
@@ -6804,6 +6739,8 @@ class App:
                                          "again."))
         except Exception as e:
             self.ui_queue.put(("error", f"IP-Adapter install failed: {e}"))
+        finally:
+            self._addon_lock.release()
 
     # -------------------------------------------------- animator
     def _pick_anim_image(self):

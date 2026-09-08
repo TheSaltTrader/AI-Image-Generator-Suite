@@ -2,9 +2,16 @@ r"""Self-update for Comic Book Art Creator — GitHub release -> this install.
 
 The app checks its GitHub releases at startup (and on demand from the
 "Check for updates" button). When a newer release exists an update window
-opens showing what changed, and the user decides: update now, skip this
-version, or carry on with the build they have. Nothing is downloaded until
-they press Update now.
+opens showing what changed. Two modes:
+
+* automatic (the default, since v1.36): the download and install start as
+  soon as the window opens, and the user is asked only to approve the
+  RESTART — Restart now, or Later, in which case the new version simply
+  starts the next time the app is opened. An install that is never updated
+  is how the bugs a release fixed live on.
+* manual (the checkbox in the window turns automatic off, and the Check for
+  updates button always uses it): nothing is downloaded until the user
+  presses Update now; Skip this version and Continue are offered.
 
 Why a module and not a few more functions in the main file: the swap itself
 is the fiddly part on Windows (a running .exe cannot be overwritten, so the
@@ -37,7 +44,8 @@ import shutil
 import threading
 import zipfile
 from pathlib import Path
-from tkinter import Toplevel, StringVar, Text, END, WORD, DISABLED
+from tkinter import (Toplevel, StringVar, BooleanVar, Text, END, WORD,
+                     DISABLED)
 from tkinter import ttk
 
 import requests
@@ -171,6 +179,19 @@ def clear_skip():
     _write_state(d)
 
 
+def auto_update():
+    """Whether the startup check downloads and installs on its own (the
+    user still approves the restart). On by default — see the module
+    note; the update window's checkbox turns it off."""
+    return bool(_state().get("auto_update", True))
+
+
+def set_auto_update(on):
+    d = _state()
+    d["auto_update"] = bool(on)
+    _write_state(d)
+
+
 # --------------------------------------------------------------------------
 # leftovers from previous updates
 # --------------------------------------------------------------------------
@@ -246,12 +267,35 @@ def check(current_version, include_skipped=False):
                   (j.get("published_at") or "")[:10])
 
 
+def startup_check(current_version):
+    """The launch-time check. With automatic updates on, a remembered
+    "skip this version" is not honoured — automatic means the latest,
+    always; the skip only means something in manual mode."""
+    return check(current_version, include_skipped=auto_update())
+
+
 # --------------------------------------------------------------------------
 # the download + swap
 # --------------------------------------------------------------------------
 
 class _Cancelled(Exception):
     """The user pressed Cancel mid-download."""
+
+
+def _make_tmp():
+    """A fresh temp folder with a name no earlier run used, made with
+    exist_ok. A leftover an earlier run could not delete (five .pyc files
+    once blocked every installer in the app for weeks with "Cannot create
+    a file when that file already exists") must never fail this one."""
+    for n in range(1, 50):
+        p = _PROJECT / ("_app_upd_tmp_%d_%d" % (os.getpid(), n))
+        if p.exists():
+            shutil.rmtree(p, ignore_errors=True)
+            if p.exists():
+                continue          # something in there will not go
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+    raise RuntimeError("could not create a temp folder under " + str(_PROJECT))
 
 
 def _download_and_unpack(upd, tmp, status, progress, cancel):
@@ -284,9 +328,7 @@ def apply_update(upd, current_version, status, progress, cancel):
 
     Raises on any problem, having first put back whatever it moved.
     """
-    tmp = _PROJECT / "_app_upd_tmp"
-    shutil.rmtree(tmp, ignore_errors=True)
-    tmp.mkdir(parents=True)
+    tmp = _make_tmp()
     try:
         _download_and_unpack(upd, tmp, status, progress, cancel)
 
@@ -410,29 +452,42 @@ def _plain_text(md):
 
 
 class UpdateWindow(Toplevel):
-    """The update window: what is new, and the user's three choices.
+    """The update window: what is new, and the user's choices.
 
-    Update now downloads and installs, showing progress in place; Skip this
-    version is remembered so the startup check stays quiet until there is a
-    newer one still; Continue just closes and leaves the install alone.
+    Manual mode (auto=False): Update now downloads and installs, showing
+    progress in place, and relaunches when done — pressing it was the
+    approval; Skip this version is remembered so the startup check stays
+    quiet until there is a newer one still; Continue just closes and leaves
+    the install alone.
+
+    Automatic mode (auto=True, the startup default): the download and
+    install begin as the window opens and the main window stays usable —
+    nothing changes for the running app until the user presses Restart now.
+    Later closes the window; the installed new version starts the next time
+    the app is opened. There is no Skip: automatic means the latest.
+
+    A checkbox in both modes turns automatic updates on or off.
     """
 
     def __init__(self, parent, upd, current_version, theme,
-                 on_relaunch, on_status=None):
+                 on_relaunch, on_status=None, auto=False):
         super().__init__(parent)
         self.upd = upd
         self.current_version = current_version
         self.on_relaunch = on_relaunch
         self.on_status = on_status or (lambda s: None)
+        self.auto = bool(auto)
         self.cancel = threading.Event()
         self._busy = False
         self._done = False
+        self._newexe = None
 
         bg = theme.get("bg", "#17171c")
         bg2 = theme.get("bg2", "#20202a")
         fg = theme.get("fg", "#e8e8f0")
 
-        self.title("Update available")
+        self.title("Updating to " + upd.tag if self.auto
+                   else "Update available")
         self.configure(bg=bg)
         self.transient(parent)
         self.resizable(False, False)
@@ -488,26 +543,43 @@ class UpdateWindow(Toplevel):
             row=r, column=0, sticky="w", pady=(6, 0))
         r += 1
 
+        # the switch between the two modes lives in the window itself, so
+        # the first automatic update is also where you learn you can stop it
+        self.auto_var = BooleanVar(value=auto_update())
+        self.auto_box = ttk.Checkbutton(
+            pad, text="Download and install updates automatically when the "
+                      "app starts (you always approve the restart)",
+            variable=self.auto_var, command=self._toggle_auto)
+        self.auto_box.grid(row=r, column=0, sticky="w", pady=(10, 0))
+        r += 1
+
         btns = ttk.Frame(pad)
         btns.grid(row=r, column=0, sticky="ew", pady=(14, 0))
-        self.update_btn = ttk.Button(btns, text="Update now",
-                                     style="Go.TButton", command=self._start)
+        self.update_btn = ttk.Button(
+            btns, text="Restart now" if self.auto else "Update now",
+            style="Go.TButton",
+            command=self._restart if self.auto else self._start)
         self.update_btn.pack(side="left")
         self.skip_btn = ttk.Button(btns, text="Skip this version",
                                    command=self._skip)
-        self.skip_btn.pack(side="left", padx=8)
-        self.cont_btn = ttk.Button(btns, text="Continue",
-                                   command=self._continue)
-        self.cont_btn.pack(side="left")
+        if not self.auto:
+            self.skip_btn.pack(side="left", padx=8)
+        self.cont_btn = ttk.Button(
+            btns, text="Later" if self.auto else "Continue",
+            command=self._continue)
+        self.cont_btn.pack(side="left", padx=(8, 0))
 
         self.bind("<Escape>", lambda _e: self._continue())
         self.update_idletasks()
         self._centre(parent)
-        try:
-            self.grab_set()
-        except Exception:
-            pass          # a grab is a nicety, never a reason to fail
+        if not self.auto:
+            try:
+                self.grab_set()
+            except Exception:
+                pass          # a grab is a nicety, never a reason to fail
         self.update_btn.focus_set()
+        if self.auto:
+            self._start()
 
     def _centre(self, parent):
         try:
@@ -519,6 +591,12 @@ class UpdateWindow(Toplevel):
             pass
 
     # ---------------------------------------------------------- actions
+    def _toggle_auto(self):
+        set_auto_update(self.auto_var.get())
+        self.on_status("Automatic updates "
+                       + ("on." if self.auto_var.get() else
+                          "off — the app will ask before downloading."))
+
     def _skip(self):
         skip_version(self.upd.tag)
         self.on_status(self.upd.tag + " skipped — use Check for updates "
@@ -527,10 +605,14 @@ class UpdateWindow(Toplevel):
 
     def _continue(self):
         if self._busy:
-            # mid-download: Continue means stop and keep the current build
+            # mid-download: Continue/Later means stop and keep the current
+            # build (an automatic update simply tries again next launch)
             self.cancel.set()
             self.msg_var.set("Stopping…")
             return
+        if self._newexe is not None:
+            self.on_status("Updated to " + self.upd.tag + " — it starts the "
+                           "next time you open the app.")
         self._close()
 
     def _close(self):
@@ -548,8 +630,19 @@ class UpdateWindow(Toplevel):
         self.update_btn.state(["disabled"])
         self.skip_btn.state(["disabled"])
         self.cont_btn.configure(text="Cancel")
-        self.msg_var.set("Starting…")
+        self.msg_var.set("Downloading — you can keep working; nothing "
+                         "changes until you restart." if self.auto
+                         else "Starting…")
         threading.Thread(target=self._worker, daemon=True).start()
+
+    def _restart(self):
+        """The approval, in automatic mode: hand over to the new exe."""
+        if self._newexe is None:
+            return
+        self.update_btn.state(["disabled"])
+        self.cont_btn.state(["disabled"])
+        self.msg_var.set("Restarting…")
+        self.on_relaunch(self._newexe, self.upd.tag)
 
     # the worker runs off the UI thread; every touch of a widget goes back
     # through after(), because Tk is not safe to call from another thread
@@ -590,15 +683,31 @@ class UpdateWindow(Toplevel):
         self._busy = False
         self.bar.configure(value=0)
         self.prog_var.set("")
+        if self.auto:
+            self.update_btn.configure(text="Retry", command=self._start)
         self.update_btn.state(["!disabled"])
         self.skip_btn.state(["!disabled"])
-        self.cont_btn.configure(text="Continue")
+        self.cont_btn.configure(text="Later" if self.auto else "Continue")
         self.msg_var.set("Update failed: " + err + "\nYou can keep working, "
                          "or download it yourself from " + RELEASES_PAGE)
 
     def _succeeded(self, newexe):
         self._busy = False
         clear_skip()
+        self._newexe = newexe
+        if self.auto:
+            # installed; the running app is untouched until the user says
+            self.msg_var.set("Update installed. Restart now to use "
+                             + self.upd.tag + " — or Later, and the new "
+                             "version starts the next time you open the app.")
+            self.update_btn.configure(text="Restart now",
+                                      command=self._restart)
+            self.update_btn.state(["!disabled"])
+            self.cont_btn.configure(text="Later")
+            self.update_btn.focus_set()
+            self.on_status("Updated to " + self.upd.tag
+                           + " — restart when you are ready.")
+            return
         self.msg_var.set("Updated to " + self.upd.tag + ". Restarting…")
         self.cont_btn.state(["disabled"])
         self.on_relaunch(newexe, self.upd.tag)

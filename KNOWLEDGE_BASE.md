@@ -130,6 +130,63 @@ move → download models → `kill_engine()` → reboot engine).
 
 ---
 
+**THE IN-PLACE DELETE (v1.36.0 — a real install lost its engine AND its
+custom nodes).** `update_engine` moved `user/input/custom_nodes` into
+`_upd_tmp/keep`, ran `shutil.rmtree(ENGINE_DIR)`, then moved the fresh
+tree in. Python 3.12's rmtree walks `os.walk(topdown=False)` and the
+first error stops it, so on 2026-08-21 the user's engine was left as
+**empty package folders behind an intact main.py** (`.ci` … `comfy_extras`
+emptied, `middleware` onward untouched, every top-level file still
+there — that pattern is the fingerprint). The function's `finally:
+rmtree(_upd_tmp)` then deleted the preserved folders. Five `.pyc` files
+that would not delete stayed in `_upd_tmp\keep\…\__pycache__`, and from
+then on EVERY user of that shared folder — the engine updater and
+`_install_style_support` alike — died on `tmp.mkdir()` with `WinError
+183 Cannot create a file when that file already exists`, which is what
+the user finally reported ("IP-Adapter install failed") three weeks later.
+Meanwhile engine.log said `ModuleNotFoundError: No module named
+'comfy.options'` and the app only offered "see engine.log".
+
+All engine file management now lives in **`app\engine_files.py`** (imports
+nothing from the monolith; `engine_files.configure(...)` once at import,
+like `self_update`). Its rules, each of which the census in
+`app\engine_files_test.py` enforces:
+
+- **Never delete the live engine in place.** Download → unpack →
+  integrity-check the staged tree → `pip -r` its requirements, ALL in a
+  temp folder; only then `os.rename(ComfyUI, ComfyUI_old_<stamp>)` (a
+  rename happens whole or not at all — a locked folder means nothing
+  changed, and the error says so), rename the staged tree in, COPY the
+  user's folders across (`copy_preserved`, fresh engine's own copy wins
+  on a name clash). A failure after the rename rolls the old tree back.
+  The old tree is removed last; leftovers are reported and swept next
+  launch (`sweep_leftovers` also clears the legacy `_upd_tmp` names).
+- **User data never lives under a temp folder** that a `finally` cleans.
+- **Temp folders are unique per run** (`make_tmp(tag)` →
+  `_tmp_<tag>_<pid>_<n>`, `exist_ok`, bumps the name past a stuck
+  leftover). `remove_tree()` deletes what it can, retries read-only
+  files, and RETURNS what would not go instead of raising or hiding.
+- **`check_integrity()`** (ten sentinel files that have existed in ComfyUI
+  for years) runs before every engine start (`_repair_engine_files`) and
+  `log_shows_damage()` re-checks from engine.log after a failed start;
+  either triggers `repair_engine()` = the same swap from the RECORDED sha
+  (`engine_version.json`, so the installed packages match; pip
+  non-strict). Once per session.
+- `install_node_zip()` is the add-on installer; the App holds
+  `_addon_lock` so `_autoheal_addons` and the RAG-map/Reference-DB offer
+  cannot run `_install_style_support` twice at once, and the module's own
+  lock makes the final move safe even if they did.
+- `_download_updates` now restarts the engine whether or not the update
+  succeeded — it used to stay stopped until the next launch.
+
+Diagnosing a broken install: `Get-ChildItem ComfyUI -Recurse -File |
+Group-Object DirectoryName` — empty package folders + intact top-level
+files = the in-place delete; `comfy\options.py` missing is the quickest
+tell. NTFS directory mtimes date the event (they update on entry
+add/remove).
+
+---
+
 **Manifest staleness (v1.25.0 — why installs missed Qwen)**: the app
 self-updater swaps ONLY the exe; `app\models_manifest.json` on disk
 stayed at whatever version was first unzipped, so `check_model_updates`
@@ -154,8 +211,25 @@ callbacks. Two entry points: the startup background check
 (`_check_updates_bg`) and the **Check for updates** button
 (`_check_updates_now`, which passes `include_skipped=True` so a skipped
 release stays reachable). The window is `UpdateWindow`: release notes,
-size, a progress bar, and Update now / Skip this version / Continue —
-nothing downloads until the user presses Update now.
+size, a progress bar, and — in manual mode — Update now / Skip this
+version / Continue, nothing downloading until the user presses Update now.
+
+**Automatic mode (v1.36.0, the default).** `auto_update()` lives in
+`update_state.json` (absent = on). The startup path calls
+`self_update.startup_check()` (ignores a remembered skip when automatic —
+automatic means the latest) and opens `UpdateWindow(..., auto=True)`,
+which calls `_start()` itself, takes NO grab (the main window stays
+usable while it downloads), hides Skip, and on success does NOT relaunch:
+the primary button becomes **Restart now** (`_restart` → `on_relaunch`),
+the other is **Later** (close; the swapped exe is already on disk, so the
+new version starts next launch — `_old_<pid>.exe` is swept then). A
+failure turns the primary into **Retry**. The window's checkbox
+(`set_auto_update`) switches modes; the Check for updates button always
+opens the manual window. The user asked for exactly this split:
+"autoupdate when the software first loads … restarts on user approval".
+`_make_tmp()` gives the download a unique `_app_upd_tmp_<pid>_<n>` folder
+(exist_ok) — the shared-folder mkdir failure described under the engine
+section applied here too.
 
 Things it does that are easy to get wrong, and why:
 
@@ -183,14 +257,25 @@ Things it does that are easy to get wrong, and why:
 - Zip entries are path-checked before extraction, and the download loop
   honours a cancel event so Cancel actually stops it.
 
-Tests, both of which must pass before a release:
-`app\self_update_test.py` (75 checks — versions, the resource read, skip
+Tests, all of which must pass before a release:
+`app\self_update_test.py` (111 checks — versions, the resource read, skip
 memory, the sweep, the zip guard, the verify gate, roll-back, data
-refresh, every `check()` path, notes rendering, and the window built for
-real on a withdrawn root) and `app\update_ui_test.py` (20 checks — the
-flow as wired into the real App window, engine stubbed out). The release
-zip layout they assume is the real one: exes and docs flat at the root,
-plus `app/models_manifest.json` and `app/presets.json`.
+refresh, every `check()` path, notes rendering, the window built for
+real on a withdrawn root, and automatic mode end to end with
+`apply_update` stubbed), `app\update_ui_test.py` (32 checks — the flow as
+wired into the real App window, engine stubbed out, automatic and manual
+startup paths), `app\engine_files_test.py` (65 checks, 11 enumerated
+subjects — the engine swap against throw-away folders and a local HTTP
+server), and `app\rag_lora_e2e_test.py` (32 checks on a LIVE engine —
+LoRA / RAG / embeds / combined / Flux renders fetched back and compared;
+`set CAC_ENGINE_PORT=8189` to aim it at an engine on another port so the
+user's app on 8188 is never touched). The release zip layout the first
+two assume is the real one: exes and docs flat at the root, plus
+`app/models_manifest.json` and `app/presets.json`. **The worker thread's
+`after()` calls need a running `mainloop()`** — the tests `pump()` the real
+loop until a condition holds; an `update()` polling loop makes every
+cross-thread `after()` raise "main thread is not in main loop" (§7 said
+so already; v1.36's first draft found out again).
 
 ## 3. Building and releasing
 
@@ -700,6 +785,17 @@ can combine LoRAs + RAG + a person in one pass.
 - `models_audit_test.py` asserts every model constant referenced in code
   exists in the manifest and still resolves upstream. Run it whenever a
   model is added.
+- `engine_files_test.py` is the census for the engine swap / repair /
+  add-on installer (no network, no engine — a local HTTP server and a
+  `.cmd` standing in for pip). Every subject is named before it is
+  tested, LODESTONE-style, so a missing subject is counted.
+- `rag_lora_e2e_test.py` is the LoRA + RAG end-to-end on a live engine:
+  it builds its own `cbac-ragmap/1` map from `output\*.png`, uploads the
+  retrieved references, renders LoRA-only / +images / +embeds /
+  combined / Flux+LoRA, fetches every PNG back and asserts the guided
+  renders differ from the unguided one at the same seed. Start a second
+  engine on 8189 for it (`main.py --port 8189 …`) so the user's app on
+  8188 is never touched.
 
 ---
 

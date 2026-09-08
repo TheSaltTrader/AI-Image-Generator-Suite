@@ -10,6 +10,10 @@ build_setup/
 engine_owner.json
 _setup_tmp/
 _upd_tmp/
+_tmp_*/
+_app_upd_tmp*/
+ComfyUI_old_*/
+ComfyUI_failed_*/
 
 # --- user data & generated art ---
 output/

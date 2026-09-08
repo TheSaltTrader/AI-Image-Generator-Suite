@@ -1,5 +1,46 @@
 # Changelog — Comic Book Art Creator
 
+## v1.36.0 — 2026-09-08
+- **An engine update can no longer break the engine.** The old updater
+  deleted the engine folder in place and put the fresh one down
+  afterwards; if the delete stopped part-way — as it did on a real
+  install — the engine was left as empty folders that could not start,
+  and the same routine's clean-up then threw away the custom nodes it
+  had set aside to keep. Now the fresh engine is downloaded, unpacked,
+  checked and its packages installed *before* anything is touched; the
+  live engine is then **renamed aside, never deleted**, your custom
+  nodes, inputs and settings are copied into the new one, and only when
+  all of that succeeded is the old copy removed. Any failure at any step
+  leaves the engine you had exactly as it was, and says so.
+- **A damaged engine repairs itself.** Before every start the app checks
+  that the engine's core files are there; if an earlier update left it
+  broken, the engine is rebuilt from the same version it recorded (your
+  add-ons kept) and started. The same check runs from the engine log
+  after a failed start, so a break the file check does not name is
+  still caught.
+- **"IP-Adapter install failed: Cannot create a file when that file
+  already exists" is gone.** Every installer used one shared temporary
+  folder and refused to run if a leftover in it would not delete — five
+  stale files blocked RAG-map and Reference-DB set-up for weeks. Each
+  run now gets its own fresh folder, a stuck leftover is stepped around
+  and reported, and old folders are cleared at the next launch.
+- **Two installers no longer trip over each other.** The start-up
+  add-on check and the install offered when you load a RAG map could run
+  at the same time; now one waits for the other.
+- **If an engine update fails, the engine is restarted anyway.** It used
+  to stay stopped until you relaunched the app.
+- **Updates are now automatic.** When a newer release exists, the app
+  downloads and installs it as it starts — and asks you only before
+  **restarting**: Restart now, or Later, in which case the new version
+  simply starts the next time you open the app. You keep working while
+  it downloads. A box in the update window turns automatic updates off
+  if you would rather be asked first (the Check for updates button
+  always asks).
+- **Validated end to end on a live engine:** LoRA-only, LoRA + RAG map
+  images, LoRA + an embeddings-only map, both chained off one loader,
+  and Flux + a Flux LoRA, each render fetched back and compared — the
+  references demonstrably change the picture at a fixed seed.
+
 ## v1.35.0 — 2026-08-20
 - **The app now shows you an update before it takes one.** When a newer
   release exists, a window opens with the new version number, the

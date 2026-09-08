@@ -154,7 +154,10 @@ explains exactly what applies in each mode.
   one after another; the app works through the queue while you keep
   browsing results.
 - The app **updates itself**: on start it checks GitHub for a newer
-  release and offers to swap the exe in place.
+  release, downloads and installs it while you keep working, and asks
+  only before restarting (Restart now, or Later — the new version then
+  starts next time). A box in the update window turns the automatic
+  part off if you would rather be asked first.
 - **Hover any control** for a tooltip explaining what it does.
 
 ## Animator — sprites & GIFs
