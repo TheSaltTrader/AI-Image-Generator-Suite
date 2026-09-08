@@ -1,5 +1,21 @@
 # Changelog — Comic Book Art Creator
 
+## v1.48.0 — 2026-09-08
+- **A loading model no longer looks like a hang.** While the engine
+  loads a model the progress bar now sweeps and the status counts the
+  elapsed time; the real bar returns with the first step. Previously the
+  bar sat at 100% from the last picture for the whole load, and the
+  face-swap model (28 GB, read from disk) takes minutes on first use.
+- **A swap batch loads the swap model once.** Every base picture is
+  drawn first, then every swap — instead of base, swap, base, swap,
+  which evicted and re-read the 28 GB swap model for each picture. The
+  status says which picture is being swapped.
+- **Under "Use RAG & LoRA for image swap", three checkmarks of their
+  own:** *RAG map guides the base*, *LoRAs on the base*, and *Fast swap*
+  (Flux Kontext instead of Qwen: no big reload because it fits next to
+  the drawing model, at the cost of a likeness that may need a few
+  Variations). The badges reflect the first two.
+
 ## v1.47.0 — 2026-09-08
 - **You can always say "not this time" to an update.** The automatic
   update still downloads the new version on its own, but it now stops

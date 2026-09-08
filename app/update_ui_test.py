@@ -330,6 +330,42 @@ with tempfile.TemporaryDirectory() as td:
     ui._clear_history()
     root.update()
 
+# ---- the swap's own checkmarks and the loading sweep --------------------
+print("swap checkmarks + loading sweep")
+check("RAG / LoRAs / Fast swap checkmarks exist with their defaults",
+      ui.swap_use_rag_var.get() and ui.swap_use_lora_var.get()
+      and not ui.swap_fast_var.get())
+ui.swap_use_rag_var.set(False)
+ui.swap_fast_var.set(True)
+st = dict(ui._collect_ui_state())
+check("the checkmarks are remembered",
+      st.get("swap_use_rag") is False and st.get("swap_use_lora") is True
+      and st.get("swap_fast") is True, {k: st.get(k) for k in ("swap_use_rag", "swap_use_lora", "swap_fast")})
+ui.swap_use_rag_var.set(True)
+ui.swap_fast_var.set(False)
+ui._apply_ui_state(st)
+root.update()
+check("…and restored", not ui.swap_use_rag_var.get() and ui.swap_fast_var.get())
+ui.swap_use_rag_var.set(True)
+ui.swap_fast_var.set(False)
+ui.ui_queue.put(("progress_mode", "loading"))
+ui._poll_queue()
+root.update()
+check("a loading model makes the bar sweep",
+      str(ui.progress.cget("mode")) == "indeterminate" and ui.pct_var.get() == "loading…")
+ui.ui_queue.put(("progress", 2, 4))
+ui._poll_queue()
+root.update()
+check("the first step brings a real bar back at its value",
+      str(ui.progress.cget("mode")) == "determinate" and int(ui.progress["value"]) == 2
+      and ui.pct_var.get() == "50%", (ui.progress.cget("mode"), ui.pct_var.get()))
+ui.ui_queue.put(("progress_mode", "loading"))
+ui.ui_queue.put(("done", None))
+ui._poll_queue()
+root.update()
+check("done stops the sweep and clears the bar",
+      str(ui.progress.cget("mode")) == "determinate" and int(ui.progress["value"]) == 0)
+
 # ---- a swap whose face file is gone stops before generating -------------
 print("swap guard")
 real_alive = app.engine_alive

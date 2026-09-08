@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.47.0"
+APP_VERSION = "1.48.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -2343,6 +2343,7 @@ class Generator:
         ws.connect(f"ws://{ENGINE_HOST}:{ENGINE_PORT}/ws?clientId={self.client_id}",
                    timeout=30)
         try:
+            pending_swaps = []        # (base image, its params) — swapped after
             for i in range(params["batch"]):
                 if CANCEL.is_set():
                     self.q.put(("status", f"Cancelled — stopped after "
@@ -2392,21 +2393,32 @@ class Generator:
                             and not border_center_clean(img):
                         img = self._clean_border_center(ws, img, p)
                     self.q.put(("image", img, p))
-                    # gen-then-swap: after the RAG/LoRA base, put the face in
-                    # with Flux Kontext and keep BOTH pictures
-                    if params.get("swap_face") and not CANCEL.is_set():
-                        # swap at CANVAS size — the base may be 4x-upscaled
-                        swapped = self._swap_face_pass(
-                            ws, img, params["swap_face"], seed=p["seed"],
-                            out_size=(p["width"], p["height"]),
-                            editor=params.get("swap_editor") or "kontext")
-                        if swapped is not None:
-                            sp = dict(p)
-                            sp.pop("swap_face", None)
-                            sp["transparent"] = False
-                            sp["upscale"] = False
-                            sp["user_prompt"] = "face-swapped"
-                            self.q.put(("image", swapped, sp))
+                    if params.get("swap_face"):
+                        # gen-then-swap: the swaps run AFTER every base, so
+                        # the 28 GB swap model is loaded once per batch
+                        # rather than once per picture (each switch between
+                        # it and the drawing model re-reads it from disk)
+                        pending_swaps.append((img, p))
+            for k, (img, p) in enumerate(pending_swaps):
+                if CANCEL.is_set():
+                    self.q.put(("status", f"Cancelled — {k} of "
+                                          f"{len(pending_swaps)} swapped."))
+                    break
+                if len(pending_swaps) > 1:
+                    self.q.put(("status", "Swapping the face into picture "
+                                          f"{k + 1}/{len(pending_swaps)}…"))
+                # swap at CANVAS size — the base may be 4x-upscaled
+                swapped = self._swap_face_pass(
+                    ws, img, params["swap_face"], seed=p["seed"],
+                    out_size=(p["width"], p["height"]),
+                    editor=params.get("swap_editor") or "kontext")
+                if swapped is not None:
+                    sp = dict(p)
+                    sp.pop("swap_face", None)
+                    sp["transparent"] = False
+                    sp["upscale"] = False
+                    sp["user_prompt"] = "face-swapped"
+                    self.q.put(("image", swapped, sp))
             self.q.put(("done", None))
         finally:
             ws.close()
@@ -2548,11 +2560,23 @@ class Generator:
         ws.settimeout(2)
         deadline = time.time() + timeout
         loading_told = False
+        loading_since = None      # a model is loading: sweep + elapsed time
+        last_tick = 0.0
         while True:
             if CANCEL.is_set():
                 return []
             if time.time() > deadline:
                 raise TimeoutError("the engine stopped responding")
+            if loading_since is not None and time.time() - last_tick >= 10:
+                # the bar cannot know how far a model load is, so say how
+                # long it has been — a bar parked at 100% read as "hung"
+                last_tick = time.time()
+                el = int(time.time() - loading_since)
+                self.q.put(("status", "Loading the model into GPU memory — "
+                                      f"{el // 60}:{el % 60:02d} elapsed. A "
+                                      "big model read from a hard drive "
+                                      "takes minutes on first use; the bar "
+                                      "starts once it is loaded…"))
             try:
                 msg = ws.recv()
             except Exception as e:
@@ -2564,15 +2588,23 @@ class Generator:
             data = json.loads(msg)
             t, d = data.get("type"), data.get("data", {})
             if t == "progress":
+                if loading_since is not None:
+                    loading_since = None
+                    self.q.put(("progress_mode", "steps"))
                 loading_told = True
                 self.q.put(("progress", d.get("value", 0), d.get("max", 1)))
             elif t == "execution_error" and d.get("prompt_id") == prompt_id:
                 raise RuntimeError(d.get("exception_message", "engine error"))
             elif t == "executing" and d.get("prompt_id") == prompt_id:
                 if d.get("node") is None:
+                    if loading_since is not None:
+                        self.q.put(("progress_mode", "steps"))
                     break  # finished
                 if not loading_told:
                     loading_told = True
+                    loading_since = time.time()
+                    last_tick = loading_since
+                    self.q.put(("progress_mode", "loading"))
                     self.q.put(("status",
                                 "Loading the model into GPU memory — the "
                                 "bar starts once it's loaded (big models "
@@ -3399,6 +3431,41 @@ class App:
                   "reliable), else Flux Kontext. Both pictures are kept. "
                   "While this is ticked, loaded images are the FACE — not "
                   "edit targets. Honors Variations: N = N base+swap pairs.")
+        # what the swap's base uses, and which swap engine — each its own
+        # checkmark (user request). The reload the user noticed is the
+        # 28 GB Qwen swap model evicting the drawing model and being read
+        # back from disk; Fast swap uses Kontext, which fits alongside.
+        swopts = ttk.Frame(left)
+        swopts.grid(row=r, sticky=NSEW, padx=(18, 0), pady=(0, 2)); r += 1
+        self.swap_use_rag_var = BooleanVar(value=True)
+        self.swap_use_lora_var = BooleanVar(value=True)
+        self.swap_fast_var = BooleanVar(value=False)
+        sw_rag = ttk.Checkbutton(swopts, text="RAG map guides the base",
+                                 variable=self.swap_use_rag_var,
+                                 command=self._refresh_editor_state)
+        sw_rag.grid(row=0, column=0, sticky=W)
+        sw_lora = ttk.Checkbutton(swopts, text="LoRAs on the base",
+                                  variable=self.swap_use_lora_var,
+                                  command=self._refresh_editor_state)
+        sw_lora.grid(row=0, column=1, sticky=W, padx=(12, 0))
+        sw_fast = ttk.Checkbutton(swopts, text="Fast swap — Flux Kontext, no "
+                                                "28 GB reload (likeness may "
+                                                "take a few tries)",
+                                  variable=self.swap_fast_var)
+        sw_fast.grid(row=1, column=0, columnspan=2, sticky=W)
+        self._tip(sw_rag, "Untick to draw the swap's base without the RAG "
+                          "map's example images.")
+        self._tip(sw_lora, "Untick to draw the swap's base without the "
+                           "ticked LoRAs.")
+        self._tip(sw_fast,
+                  "The Qwen swap gives the best likeness, but its 28 GB "
+                  "model cannot stay loaded next to the drawing model on a "
+                  "32 GB card, so it is read back from disk for every swap "
+                  "batch (minutes from a hard drive). Flux Kontext (11 GB) "
+                  "fits alongside, so nothing reloads — the face may need a "
+                  "few Variations to land. A batch now draws every base "
+                  "first and swaps afterwards, so Qwen loads once per batch "
+                  "either way.")
         erow = ttk.Frame(left); erow.grid(row=r, sticky=NSEW, pady=(0, 4)); r += 1
         erow.columnconfigure(1, weight=1)
         ttk.Label(erow, text="Editor", style="Dim.TLabel").grid(row=0,
@@ -5346,6 +5413,9 @@ class App:
             "seed": self.seed_var.get(),
             "random_seed": self.random_seed_var.get(),
             "swap_rag": self.swap_rag_var.get(),
+            "swap_use_rag": self.swap_use_rag_var.get(),
+            "swap_use_lora": self.swap_use_lora_var.get(),
+            "swap_fast": self.swap_fast_var.get(),
             "auto_negative": self._auto_negative,
         }
 
@@ -5427,6 +5497,9 @@ class App:
             self.transparent_var.set(st.get("transparent", False))
             self.upscale_var.set(st.get("upscale", False))
             self.swap_rag_var.set(st.get("swap_rag", False))
+            self.swap_use_rag_var.set(st.get("swap_use_rag", True))
+            self.swap_use_lora_var.set(st.get("swap_use_lora", True))
+            self.swap_fast_var.set(st.get("swap_fast", False))
             # the probe runs in the background, so remember the wanted
             # model and select it once the list arrives
             self._want_ollama_model = st.get("ollama_model", "") or ""
@@ -5483,7 +5556,8 @@ class App:
                     self.anim_motion_var, self.anim_gif_var,
                     self.anim_zip_var, self.anim_sheet_var,
                     self.anim_video_var, self.ollama_var,
-                    self.swap_rag_var):
+                    self.swap_rag_var, self.swap_use_rag_var,
+                    self.swap_use_lora_var, self.swap_fast_var):
             var.trace_add("write", self._schedule_persist)
         for box in (self.prompt_box, self.negative_box, self.style_box,
                     self.border_prompt_box, self.anim_prompt_box):
@@ -6389,8 +6463,10 @@ class App:
         model = self._model_raw()
         fam = model_family(model) if model else ""
         sdxl = bool(fam) and fam not in ("flux", "schnell")
-        lora_on = (not editing) and bool(self._selected_loras())
-        rag_on = (not editing) and (self.ragmap is not None) and sdxl
+        lora_on = (not editing) and bool(self._selected_loras()) \
+            and (not swap_mode or self.swap_use_lora_var.get())
+        rag_on = (not editing) and (self.ragmap is not None) and sdxl \
+            and (not swap_mode or self.swap_use_rag_var.get())
         self.lora_badge.configure(
             style="BadgeOn.TLabel" if lora_on else "BadgeOff.TLabel")
         self.rag_badge.configure(
@@ -6454,7 +6530,9 @@ class App:
                     "with 🖼 Load… or pick a 👤 Person. Generating "
                     "normally.")
             else:
-                qwen_fits = self._editor_tier("qwen") != "block"
+                # Fast swap: Kontext, which fits next to the drawing model
+                qwen_fits = (self._editor_tier("qwen") != "block"
+                             and not self.swap_fast_var.get())
                 qwen_missing = self._editor_missing("qwen")
                 if qwen_fits and not qwen_missing:
                     swap_editor = "qwen"
@@ -6527,7 +6605,8 @@ class App:
                 return
 
         strength = round(self.lora_strength.get(), 2)
-        loras = [] if editing else \
+        loras = [] if editing or (swap_face
+                                  and not self.swap_use_lora_var.get()) else \
             [(name, strength) for name in self._selected_loras()]
 
         # RAG map: retrieve the closest example images for this prompt and
@@ -6537,7 +6616,8 @@ class App:
         rag_refs = []
         rag_embed_paths = []
         rag_weight = 0.8
-        if self.ragmap and not editing:
+        if self.ragmap and not editing \
+                and (not swap_face or self.swap_use_rag_var.get()):
             if model_family(model) in ("flux", "schnell"):
                 self.status_var.set("RAG image guidance needs an SDXL model "
                                     "(Juggernaut/DreamShaper) — skipped for "
@@ -6702,8 +6782,22 @@ class App:
                 kind = msg[0]
                 if kind == "status":
                     self.status_var.set(msg[1])
+                elif kind == "progress_mode":
+                    # a model is loading: the bar cannot know how far, so it
+                    # sweeps; back to a real bar once the steps begin
+                    if msg[1] == "loading":
+                        self.progress.configure(mode="indeterminate")
+                        self.progress.start(15)
+                        self.pct_var.set("loading…")
+                    else:
+                        self.progress.stop()
+                        self.progress.configure(mode="determinate")
+                        self.pct_var.set("")
                 elif kind == "progress":
                     _, val, mx = msg
+                    if str(self.progress.cget("mode")) != "determinate":
+                        self.progress.stop()
+                        self.progress.configure(mode="determinate")
                     self.progress["maximum"] = mx
                     self.progress["value"] = val
                     self.pct_var.set(f"{val * 100 / max(1, mx):.0f}%")
@@ -6734,6 +6828,8 @@ class App:
                 elif kind == "done":
                     self.busy = False
                     self.go_btn.state(["!disabled"])
+                    self.progress.stop()
+                    self.progress.configure(mode="determinate")
                     for bar, var in ((self.progress, self.pct_var),
                                      (self.anim_progress,
                                       self.anim_pct_var),
@@ -6844,6 +6940,8 @@ class App:
                 elif kind == "error":
                     applog.error("shown: " + str(msg[1]))
                     self.busy = False
+                    self.progress.stop()
+                    self.progress.configure(mode="determinate")
                     self.go_btn.state(["!disabled"])
                     self.status_var.set(f"Error: {msg[1]}")
 

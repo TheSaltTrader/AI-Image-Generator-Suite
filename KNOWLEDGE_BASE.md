@@ -890,6 +890,24 @@ can combine LoRAs + RAG + a person in one pass.
   `root.after` and `invoke()`-ing its button — `event_generate("<Return>")`
   on an unmapped toplevel hung the suite; keep a watchdog `after` that
   destroys the box.
+- **The swap "hang" was a 163-second Qwen load (v1.48.0).** app.log +
+  the engine history proved the swap SUCCEEDED; the user saw a bar parked
+  at 100% and read it as hung. Qwen (19 GB fp8 + 8.7 GB text encoder)
+  cannot stay resident next to SDXL + IP-Adapter vision + upscaler on the
+  32 GB card, so every base→swap alternation evicted it and re-read it
+  from the H: HDD (~3 min). Fixes: `_await_images` posts
+  `("progress_mode", "loading")` on the first `executing` and an
+  elapsed-time status every 10 s until the first `progress`
+  (`("progress_mode", "steps")`); the handler sweeps the bar
+  (indeterminate) and restores it. `Generator._run` collects
+  `pending_swaps` and swaps AFTER the whole batch (one model switch per
+  batch); Cancel in the swap phase keeps the bases. Under the swap
+  checkbox: `swap_use_rag_var`, `swap_use_lora_var` (the base without the
+  map / LoRAs; badges follow), `swap_fast_var` (Kontext, 11 GB, fits
+  alongside — no reload; likeness weaker). Separate RAG/LoRA checkmarks
+  do NOT remove the reload; only the ordering and the fast option do.
+  `swap_test.py` drives `Generator._run` and `_await_images` against a
+  fake websocket/requests with a scripted clock.
 - **Deleting a file must let go of every reference to it (v1.46.0).**
   The editor (`ref_paths`), the border maker (`border_ref_paths`) and the
   animator (`anim_image_path`) hold PATHS into `output\`; after the user
