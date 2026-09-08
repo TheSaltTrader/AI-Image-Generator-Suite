@@ -958,6 +958,17 @@ the run.
   do NOT remove the reload; only the ordering and the fast option do.
   `swap_test.py` drives `Generator._run` and `_await_images` against a
   fake websocket/requests with a scripted clock.
+- **Cycle/drop a person's photos (v1.58.0).** `self._actor_excluded`
+  {imdb_id -> set(indices)} restricts which of a multi-photo person's
+  pictures are sent — never touches the DB. `_actor_step_photo(delta)`
+  cycles `actor_photo_i` across ALL photos (so an excluded one can be
+  re-included); `_actor_toggle_photo` adds/removes the shown index
+  (refuses to drop the last remaining one); `_actor_ref_paths_all` skips
+  excluded indices (falls back to all if somehow all excluded). The
+  ◀ ▶ + Drop nav (`photo_nav`) shows only when >1 photo. Persisted as
+  `actor_excluded` (sets -> sorted lists), restored BEFORE `_set_actor`
+  so the view reflects it. `_refresh_actor_view` shows "photo i/N
+  (dropped) · K sent"; the Using list lists the kept photos.
 - **Edit on its own tab + clone toggle (v1.56.0).** A 4th notebook tab
   "Edit image" (`_page_edit`) holds the loaded-image editor with its OWN
   instruction box (`edit_prompt_box`) — `_generate` uses it when

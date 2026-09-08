@@ -456,6 +456,46 @@ root.update()
 check("the RAG loading bar leaves no timer behind either", not stray_sweeps(),
       stray_sweeps())
 
+# ---- a database person's photos: cycle + drop (not delete) --------------
+print("photo cycle / drop")
+import io as _io, tempfile as _tf2
+from PIL import Image as _Im3
+def _blob(col):
+    b = _io.BytesIO(); _Im3.new("RGB", (32, 32), col).save(b, "JPEG"); return b.getvalue()
+_blobs = [_blob("red"), _blob("green"), _blob("blue")]
+_dbf = Path(_tf2.mkdtemp()) / "people.sqlite"; _dbf.write_bytes(b"x")
+ui.actordb_path = str(_dbf)
+ui._actor_photo_blobs = lambda imdb: _blobs
+ui.face_source_var.set("db")
+ui._actor_excluded = {}
+ui._set_actor({"imdb_id": "tt1", "first_name": "Test", "last_name": "Person"})
+root.update()
+check("the photo arrows show for a multi-photo person",
+      bool(ui.photo_nav.grid_info()))
+ui.actor_photo_i = 0
+ui._actor_step_photo(1)
+check("the right arrow advances the shown photo", ui.actor_photo_i == 1)
+ui._actor_step_photo(-1)
+check("the left arrow goes back (wrapping)", ui.actor_photo_i == 0)
+ui._actor_toggle_photo()   # drop photo 0
+check("dropping a photo records it as excluded, not deleted",
+      0 in ui._excluded_set())
+paths = ui._actor_ref_paths_all()
+check("the dropped photo is not sent to the model",
+      paths and all("_0.jpg" not in Path(p).name for p in paths), paths)
+st = dict(ui._collect_ui_state())
+check("the dropped photo is remembered", st.get("actor_excluded") == {"tt1": [0]})
+# cannot drop the last remaining photo
+ui._actor_excluded["tt1"] = {0, 1}
+ui.actor_photo_i = 2
+ui._actor_toggle_photo()
+check("the last remaining photo cannot be dropped",
+      2 not in ui._excluded_set() and "must stay" in ui.status_var.get())
+ui.actor_sel = None
+ui._actor_excluded = {}
+ui.face_source_var.set("file")
+ui._refresh_editor_state()
+
 # ---- a swap whose face file is gone stops before generating -------------
 print("swap guard")
 real_alive = app.engine_alive

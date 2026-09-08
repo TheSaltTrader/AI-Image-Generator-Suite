@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.57.0"
+APP_VERSION = "1.58.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -2792,6 +2792,7 @@ class App:
         self.actordb_kind = "person"   # "person" (actordb) | "character" (chardb)
         self.actor_sel = None      # selected actor (dict) or None
         self.actor_photo_i = 0     # which of their photos the arrows chose
+        self._actor_excluded = {}  # imdb_id -> set of photo indices to skip
         self._actor_base_label = ""
         self._actor_thumb = None   # Tk image ref for the small headshot
         self._ollama_models = []   # models found in a local Ollama, if any
@@ -3476,6 +3477,27 @@ class App:
                   wraplength=150).grid(row=0, column=1, sticky=W, padx=6)
         self.actor_thumb_lab = ttk.Label(_pr)
         self.actor_thumb_lab.grid(row=0, column=2, padx=(0, 4))
+        # cycle a multi-photo person's pictures and drop the ones that
+        # don't fit (restricts what is sent; never deletes from the DB)
+        self.photo_nav = ttk.Frame(_pr)
+        self.photo_nav.grid(row=1, column=0, columnspan=3, sticky=W, pady=(2, 0))
+        self.photo_prev = ttk.Button(self.photo_nav, text="\u25c0", width=3,
+                                     command=lambda: self._actor_step_photo(-1))
+        self.photo_prev.pack(side="left")
+        self.photo_next = ttk.Button(self.photo_nav, text="\u25b6", width=3,
+                                     command=lambda: self._actor_step_photo(1))
+        self.photo_next.pack(side="left", padx=(2, 6))
+        self.photo_excl_btn = ttk.Button(self.photo_nav, text="\u2715 Drop",
+                                         width=9,
+                                         command=self._actor_toggle_photo)
+        self.photo_excl_btn.pack(side="left")
+        self._tip(self.photo_prev, "Show the previous photo of this person.")
+        self._tip(self.photo_next, "Show the next photo of this person.")
+        self._tip(self.photo_excl_btn,
+                  "Drop this photo from what is sent to the model (or add it "
+                  "back). It stays in the database \u2014 this only restricts "
+                  "which photos are used.")
+        self.photo_nav.grid_remove()
 
         ttk.Label(cb, text="Using:", style="Dim.TLabel").grid(row=cr, sticky=W)
         cr += 1
@@ -4590,6 +4612,46 @@ class App:
             pass
         return blobs
 
+    def _excluded_set(self):
+        """The excluded photo indices for the current person (a live set)."""
+        if not self.actor_sel:
+            return set()
+        return self._actor_excluded.setdefault(self.actor_sel["imdb_id"], set())
+
+    def _actor_step_photo(self, delta):
+        """Cycle the shown photo (wrapping) across ALL of the person's
+        photos, so an excluded one can be seen and re-included."""
+        if not self.actor_sel:
+            return
+        blobs = self._actor_photo_blobs(self.actor_sel["imdb_id"])
+        if len(blobs) < 2:
+            return
+        self.actor_photo_i = (getattr(self, "actor_photo_i", 0) + delta) % len(blobs)
+        self._refresh_actor_view()
+        self._schedule_persist()
+
+    def _actor_toggle_photo(self):
+        """Drop the shown photo from the selection sent to the model, or
+        add it back. Never deletes from the database."""
+        if not self.actor_sel:
+            return
+        blobs = self._actor_photo_blobs(self.actor_sel["imdb_id"])
+        if not blobs:
+            return
+        i = getattr(self, "actor_photo_i", 0) % len(blobs)
+        ex = self._excluded_set()
+        if i in ex:
+            ex.discard(i)
+        elif len(ex) < len(blobs) - 1:   # never drop the last remaining one
+            ex.add(i)
+        else:
+            self.status_var.set("At least one photo must stay selected.")
+            return
+        self._refresh_actor_view()
+        self._refresh_face_list()
+        self._refresh_editor_state()
+        self._schedule_persist()
+
     def _set_actor(self, row, photo_i=0):
         """row = dict from _actordb_rows, or None to clear the choice.
         photo_i = which of the person's pictures the browser was showing —
@@ -4636,9 +4698,23 @@ class App:
         if blobs:
             i = getattr(self, "actor_photo_i", 0) % len(blobs)
             shot = blobs[i]
+            ex = self._excluded_set()
             if len(blobs) > 1:
+                kept = len(blobs) - len(ex)
                 note = f"  · photo {i + 1}/{len(blobs)}"
+                if i in ex:
+                    note += " (dropped)"
+                note += f"  · {kept} sent"
         self.actor_var.set(getattr(self, "_actor_base_label", "") + note)
+        if hasattr(self, "photo_nav"):
+            if blobs and len(blobs) > 1:
+                self.photo_nav.grid()
+                dropped = (getattr(self, "actor_photo_i", 0) % len(blobs)) \
+                    in self._excluded_set()
+                self.photo_excl_btn.configure(
+                    text="\u21ba Add back" if dropped else "\u2715 Drop")
+            else:
+                self.photo_nav.grid_remove()
         if shot:
             try:
                 img = Image.open(BytesIO(shot))
@@ -5171,8 +5247,12 @@ class App:
             blobs = self._actor_photo_blobs(self.actor_sel["imdb_id"])
             if not blobs:
                 return []
+            ex = self._actor_excluded.get(self.actor_sel["imdb_id"], set())
             sel = getattr(self, "actor_photo_i", 0) % len(blobs)
-            order = list(range(sel, len(blobs))) + list(range(0, sel))
+            order = [i for i in (list(range(sel, len(blobs)))
+                                 + list(range(0, sel))) if i not in ex]
+            if not order:                      # all dropped -> use them all
+                order = list(range(len(blobs)))
             out = []
             for i in order:
                 p = Path(tempfile.gettempdir()) / \
@@ -5536,6 +5616,8 @@ class App:
             "actordb_path": self.actordb_path,
             "actor_imdb": (self.actor_sel or {}).get("imdb_id"),
             "actor_photo": getattr(self, "actor_photo_i", 0),
+            "actor_excluded": {k: sorted(v) for k, v
+                               in self._actor_excluded.items() if v},
             "ollama_model": self.ollama_var.get(),
             "seed": self.seed_var.get(),
             "random_seed": self.random_seed_var.get(),
@@ -5653,6 +5735,9 @@ class App:
                     aid = st.get("actor_imdb")
                     if aid:
                         try:
+                            self._actor_excluded = {
+                                k: set(v) for k, v in
+                                (st.get("actor_excluded") or {}).items()}
                             row = next((r for r in self._actordb_rows()
                                         if r["imdb_id"] == aid), None)
                             if row:
@@ -6855,7 +6940,19 @@ class App:
                 self.face_list.insert(END, "(no image chosen — Browse…)")
         else:
             if self.actor_sel:
-                self.face_list.insert(END, self.actor_var.get())
+                name = getattr(self, "_actor_base_label", "") \
+                    or self.actor_var.get()
+                blobs = self._actor_photo_blobs(self.actor_sel["imdb_id"])
+                ex = self._excluded_set()
+                kept = [i for i in range(len(blobs)) if i not in ex] \
+                    or list(range(len(blobs)))
+                if len(blobs) <= 1:
+                    self.face_list.insert(END, name)
+                else:
+                    self.face_list.insert(END, f"{name} — {len(kept)} of "
+                                          f"{len(blobs)} photos")
+                    for i in kept[:self.SWAP_MAX_FACES]:
+                        self.face_list.insert(END, f"   photo {i + 1}")
             else:
                 self.face_list.insert(END, "(no person chosen — Person…)")
 

@@ -1,5 +1,14 @@
 # Changelog — Comic Book Art Creator
 
+## v1.58.0 — 2026-09-08
+- **Cycle through a person's photos and drop the ones that don't fit.**
+  When a database person has more than one picture, ◀ ▶ arrows appear
+  by their thumbnail to step through the photos, and a **Drop** button
+  removes the shown photo from what is sent to the model (press it again
+  to add it back). Dropped photos are only excluded from this selection
+  — nothing is ever deleted from your database. The "Using:" list shows
+  how many of the photos will be sent, and your choices are remembered.
+
 ## v1.57.0 — 2026-09-08
 - **A font choice in Settings, and the menu size now scales the whole
   left panel.** ⚙ Settings has a **Font** dropdown (Segoe UI, Arial,
