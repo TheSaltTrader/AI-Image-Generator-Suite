@@ -1,5 +1,12 @@
 # Changelog — Comic Book Art Creator
 
+## v1.55.0 — 2026-09-08
+- **A Daylight (light) theme, and a Settings menu.** A new **⚙ Settings**
+  button at the bottom of the panel lets you switch between the **Dark**
+  and **Daylight** themes and choose the **menu size** (Small, Normal,
+  Large, Extra large) so the text and controls are as big as you like.
+  Apply changes live, or Restart now to have them take effect cleanly.
+
 ## v1.54.0 — 2026-09-08
 - **Fewer controls in the face/character section, as requested.** Under
   the swap there are now just two checkboxes — **LoRA** and **RAG** —

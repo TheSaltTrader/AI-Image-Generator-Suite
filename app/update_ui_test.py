@@ -25,7 +25,7 @@ PASS, FAIL = [], []
 def check(name, cond, detail=""):
     (PASS if cond else FAIL).append(name)
     print(("  ok   " if cond else "  FAIL ") + name
-          + (("  " + detail) if detail and not cond else ""))
+          + (("  " + str(detail)) if detail and not cond else ""))
 
 
 def pump(root, cond, timeout=5.0):
@@ -453,6 +453,32 @@ check("…and the app is not left busy", not ui.busy)
 ui.swap_rag_var.set(False)
 ui._set(ui.prompt_box, "")
 app.engine_alive = real_alive
+
+# ---- settings: theme + menu size ----------------------------------------
+print("settings (theme + size)")
+check("apply_theme switches the palette",
+      app.apply_theme("light") == "light" and app.FG == "#1b1b24"
+      and app.BG == "#f4f4f7")
+app.apply_theme("dark")
+check("…and back to dark", app.BG == "#17171c" and app.FG == "#e8e8f0")
+check("a Settings button exists", hasattr(ui, "settings_btn")
+      and "Settings" in ui.settings_btn.cget("text"))
+ui.settings.setdefault("prefs", {})["theme"] = "light"
+ui.settings["prefs"]["ui_scale"] = 1.2
+ui._apply_prefs_live()
+root.update()
+check("live apply sets the light palette", app.BG == "#f4f4f7")
+check("live apply recolours the prompt box",
+      str(ui.prompt_box.cget("bg")).lower() == "#d8d8e2")
+check("the scaling reflects the size choice",
+      abs(float(root.tk.call("tk", "scaling"))
+          - ui._base_scaling * 1.2) < 0.01)
+ui.settings["prefs"]["theme"] = "dark"
+ui.settings["prefs"]["ui_scale"] = 1.0
+ui._apply_prefs_live()
+root.update()
+check("switching back to dark recolours again", app.BG == "#17171c"
+      and str(ui.prompt_box.cget("bg")).lower() == "#2a2a38")
 
 # ---- the startup path: a queued app_update opens the window -------------
 # automatic mode (the default): the download starts on its own, the app

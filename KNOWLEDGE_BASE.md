@@ -766,6 +766,22 @@ can combine LoRAs + RAG + a person in one pass.
 
 ---
 
+**Theme + size (v1.55.0).** Colours are two palettes in `THEMES`
+(dark/light); `apply_theme(name)` rebinds the module globals (BG, BG2,
+BG3, FG, FG_DIM, ACCENT, ACCENT2, RULE, plus BTN_ACTIVE/TIP_BG/BADGE_FG/
+GO_ACTIVE which `_style` now reads instead of hardcoded hexes). `__init__`
+loads `settings["prefs"]` and calls `apply_theme` + sets `tk scaling`
+(`_base_scaling` × ui_scale) BEFORE `_style()`/`_build_ui`. The ⚙ Settings
+dialog (`_open_settings`) saves prefs; `_apply_prefs_live` rebinds the
+palette, re-runs `_style`, walks the tree recolouring Text/Listbox/Canvas
+(plain tk widgets don't follow ttk styles), and resets scaling — a
+Restart (`_restart_app`, releases the mutex + Popen sys.executable) makes
+it exact. TEST GOTCHA: the dev settings.json accumulates a ragmap_path so
+the app auto-loads a map at startup and the "bar hidden at rest" checks
+trip — clear ui.ragmap_path/face_paths/actordb_path (and prefs) for a
+clean run; `check()` now `str()`s its detail so a list detail can't crash
+the run.
+
 ## 6. Tkinter and threading rules
 
 - **`exportselection=False` on every Combobox, Listbox, Entry and

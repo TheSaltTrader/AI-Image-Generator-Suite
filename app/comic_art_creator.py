@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.54.0"
+APP_VERSION = "1.55.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -176,15 +176,32 @@ SIZE_PRESETS = {
 NONE_LORA = "— none —"
 NONE_PRESET = "— none (raw prompt) —"
 
-# colors
-BG = "#17171c"
-BG2 = "#20202a"
-BG3 = "#2a2a38"
-FG = "#e8e8f0"
-FG_DIM = "#9a9ab0"
-ACCENT = "#e94560"
-ACCENT2 = "#4ecca3"
-RULE = "#3d7dff"        # blue divider between the panel's major sections
+# colors \u2014 two themes; apply_theme() rebinds the globals below before the
+# UI is built, and again (best-effort) when the user switches in Settings.
+THEMES = {
+    "dark": dict(BG="#17171c", BG2="#20202a", BG3="#2a2a38", FG="#e8e8f0",
+                 FG_DIM="#9a9ab0", ACCENT="#e94560", ACCENT2="#4ecca3",
+                 RULE="#3d7dff", BTN_ACTIVE="#3a3a4e", TIP_BG="#33334a",
+                 BADGE_FG="#0d0d12", GO_ACTIVE="#ff5e7a"),
+    "light": dict(BG="#f4f4f7", BG2="#e7e7ee", BG3="#d8d8e2", FG="#1b1b24",
+                  FG_DIM="#5a5a68", ACCENT="#e94560", ACCENT2="#1f9d6b",
+                  RULE="#3d7dff", BTN_ACTIVE="#c8c8d6", TIP_BG="#2b2b38",
+                  BADGE_FG="#ffffff", GO_ACTIVE="#ff5e7a"),
+}
+BG = BG2 = BG3 = FG = FG_DIM = ACCENT = ACCENT2 = RULE = None
+BTN_ACTIVE = TIP_BG = BADGE_FG = GO_ACTIVE = None
+
+
+def apply_theme(name):
+    """Rebind the colour globals to the chosen theme ("dark"/"light")."""
+    pal = THEMES.get(name) or THEMES["dark"]
+    g = globals()
+    for k, v in pal.items():
+        g[k] = v
+    return name
+
+
+apply_theme("dark")     # default until settings say otherwise
 
 
 # --------------------------------------------------------------------------
@@ -2738,11 +2755,21 @@ class App:
         root.title(f"Comic Book Art Creator v{APP_VERSION}")
         root.geometry("1500x940")
         root.minsize(1200, 780)
-        root.configure(bg=BG)
-        self._style()
-
         self.presets = json.loads(PRESETS_FILE.read_text(encoding="utf-8"))["presets"]
         self.settings = self._load_settings()
+        prefs = self.settings.get("prefs", {})
+        apply_theme(prefs.get("theme", "dark"))
+        try:
+            self._base_scaling = float(root.tk.call("tk", "scaling"))
+        except Exception:
+            self._base_scaling = 1.333
+        try:
+            root.tk.call("tk", "scaling",
+                         self._base_scaling * float(prefs.get("ui_scale", 1.0)))
+        except Exception:
+            pass
+        root.configure(bg=BG)
+        self._style()
         self.ui_queue = queue_mod.Queue()
         self.session = []          # list of (PIL image, params, path)
         self.current = None        # index into session
@@ -2862,7 +2889,7 @@ class App:
         s.configure("Head.TLabel", foreground=ACCENT2,
                     font=("Segoe UI", 10, "bold"))
         s.configure("TButton", background=BG3, padding=6)
-        s.map("TButton", background=[("active", "#3a3a4e")])
+        s.map("TButton", background=[("active", BTN_ACTIVE)])
         s.configure("Go.TButton", background=ACCENT, foreground="white",
                     font=("Segoe UI", 12, "bold"), padding=10)
         s.configure("TNotebook", background=BG, borderwidth=0,
@@ -2871,7 +2898,7 @@ class App:
                     padding=(16, 7), font=("Segoe UI", 10, "bold"))
         s.map("TNotebook.Tab", background=[("selected", BG2)],
               foreground=[("selected", ACCENT2)])
-        s.map("Go.TButton", background=[("active", "#ff5e7a"),
+        s.map("Go.TButton", background=[("active", GO_ACTIVE),
                                         ("disabled", BG3)])
         s.configure("Danger.TButton", background="#c0392b",
                     foreground="white", padding=6)
@@ -2920,13 +2947,13 @@ class App:
         s.configure("TSpinbox", padding=4)
         s.configure("TFrame", background=BG)
         # hover tooltips + the top-right mode badges
-        s.configure("Tip.TLabel", background="#33334a", foreground=FG,
+        s.configure("Tip.TLabel", background=TIP_BG, foreground=FG,
                     padding=(8, 5), relief="solid", borderwidth=1)
         # green = the feature will apply to the next generation, red = it won't
         s.configure("Gpu.Horizontal.TProgressbar", background="#3b82f6",
                     troughcolor=BG2, bordercolor=BG3, lightcolor="#3b82f6",
                     darkcolor="#3b82f6")
-        s.configure("BadgeOn.TLabel", background=ACCENT2, foreground="#0d0d12",
+        s.configure("BadgeOn.TLabel", background=ACCENT2, foreground=BADGE_FG,
                     font=("Segoe UI", 9, "bold"), padding=(9, 3))
         s.configure("BadgeOff.TLabel", background=ACCENT, foreground="white",
                     font=("Segoe UI", 9, "bold"), padding=(9, 3))
@@ -3873,6 +3900,12 @@ class App:
                   "skipped.")
         self.log_btn = ttk.Button(vrow2, text="📋 Log", command=self._open_log)
         self.log_btn.pack(side="left", padx=(6, 0))
+        self.settings_btn = ttk.Button(vrow2, text="⚙ Settings",
+                                       command=self._open_settings)
+        self.settings_btn.pack(side="left", padx=(6, 0))
+        self._tip(self.settings_btn,
+                  "Appearance settings: the Daylight or Dark theme and the "
+                  "size of the menus and text.")
         self._tip(self.log_btn,
                   "Open app.log — every message the app showed and every "
                   "error it caught, with the time. Send it along when "
@@ -5825,6 +5858,151 @@ class App:
             applog.log("status: " + self.status_var.get())
         except Exception:
             pass
+
+    def _open_settings(self):
+        """Appearance settings: theme (Dark / Daylight) and menu size."""
+        prefs = self.settings.get("prefs", {})
+        dlg = Toplevel(self.root)
+        dlg.withdraw()
+        dlg.title("Settings")
+        dlg.configure(bg=BG)
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        frm = ttk.Frame(dlg, padding=16)
+        frm.pack(fill="both", expand=True)
+        ttk.Label(frm, text="Appearance", style="Head.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky=W, pady=(0, 8))
+
+        ttk.Label(frm, text="Theme").grid(row=1, column=0, sticky=W)
+        theme_var = StringVar(value=prefs.get("theme", "dark"))
+        trow = ttk.Frame(frm); trow.grid(row=1, column=1, sticky=W)
+        ttk.Radiobutton(trow, text="Dark", value="dark",
+                        variable=theme_var).pack(side="left")
+        ttk.Radiobutton(trow, text="Daylight", value="light",
+                        variable=theme_var).pack(side="left", padx=(10, 0))
+
+        ttk.Label(frm, text="Menu size").grid(row=2, column=0, sticky=W,
+                                              pady=(8, 0))
+        SIZES = [("Small", 0.9), ("Normal", 1.0), ("Large", 1.2),
+                 ("Extra large", 1.4)]
+        cur = float(prefs.get("ui_scale", 1.0))
+        size_var = StringVar(value=next((n for n, v in SIZES if abs(v - cur)
+                                         < 0.01), "Normal"))
+        ttk.Combobox(frm, textvariable=size_var, state="readonly",
+                     exportselection=False,
+                     values=[n for n, _v in SIZES], width=14).grid(
+            row=2, column=1, sticky=W, pady=(8, 0))
+
+        msg = ttk.Label(frm, text="", style="Dim.TLabel", wraplength=320,
+                        justify="left")
+        msg.grid(row=3, column=0, columnspan=2, sticky=W, pady=(12, 0))
+
+        def save():
+            p = self.settings.setdefault("prefs", {})
+            p["theme"] = theme_var.get()
+            p["ui_scale"] = dict(SIZES)[size_var.get()]
+            self._save_settings()
+            return p
+
+        def apply_now():
+            save()
+            self._apply_prefs_live()
+            msg.configure(text="Applied. If anything looks half-changed, "
+                               "Restart now makes it exact.")
+
+        def restart():
+            save()
+            dlg.destroy()
+            self._restart_app()
+
+        brow = ttk.Frame(frm); brow.grid(row=4, column=0, columnspan=2,
+                                         sticky="ew", pady=(14, 0))
+        ttk.Button(brow, text="Restart now", style="Go.TButton",
+                   command=restart).pack(side="right")
+        ttk.Button(brow, text="Apply", command=apply_now).pack(
+            side="right", padx=(0, 8))
+        ttk.Button(brow, text="Close", command=dlg.destroy).pack(
+            side="right", padx=(0, 8))
+        self._place_near(dlg, self.settings_btn)
+        dlg.deiconify()
+        try:
+            dlg.grab_set()
+        except Exception:
+            pass
+
+    def _apply_prefs_live(self):
+        """Best-effort live apply of theme + size: rebind the palette, redo
+        the ttk styles, recolour the plain tk widgets (Text/Listbox/Canvas)
+        by walking the tree, and reset the scaling. A Restart makes it
+        exact; this makes it close without one."""
+        prefs = self.settings.get("prefs", {})
+        apply_theme(prefs.get("theme", "dark"))
+        try:
+            self.root.tk.call("tk", "scaling", getattr(self, "_base_scaling",
+                              1.333) * float(prefs.get("ui_scale", 1.0)))
+        except Exception:
+            pass
+        self._style()
+        self.root.configure(bg=BG)
+
+        def recolour(w):
+            cls = w.winfo_class()
+            try:
+                if cls == "Text":
+                    w.configure(bg=BG3, fg=FG, insertbackground=FG)
+                elif cls == "Listbox":
+                    w.configure(bg=BG3, fg=FG, selectbackground=ACCENT,
+                                selectforeground="white")
+                elif cls == "Canvas":
+                    # the section rules are RULE; everything else is BG/BG2
+                    if int(w.cget("height")) == 3:
+                        w.configure(bg=RULE)
+                    else:
+                        w.configure(bg=w.cget("bg") if False else BG)
+            except Exception:
+                pass
+            for c in w.winfo_children():
+                recolour(c)
+
+        recolour(self.root)
+        try:
+            self.canvas.configure(bg=BG2)
+            self.gallery_canvas.configure(bg=BG)
+        except Exception:
+            pass
+        self._show_current()
+
+    def _restart_app(self):
+        """Relaunch the app so theme/size apply cleanly from a fresh start."""
+        self.status_var.set("Restarting to apply settings…")
+        try:
+            self._persist()
+        except Exception:
+            pass
+
+        def work():
+            try:
+                if engine_ours_to_stop():
+                    kill_engine()
+                    ENGINE_OWNER_FILE.unlink(missing_ok=True)
+            except Exception:
+                pass
+            try:
+                release_single_instance()
+            except Exception:
+                pass
+            try:
+                subprocess.Popen([sys.executable] + sys.argv[1:],
+                                 cwd=str(PROJECT),
+                                 env=_clean_child_env()
+                                 if "_clean_child_env" in globals() else None)
+            except Exception as e:
+                self.ui_queue.put(("status", f"Could not restart: {e}"))
+                return
+            self.ui_queue.put(("quit", None))
+
+        threading.Thread(target=work, daemon=True).start()
+        self.root.after(20000, self._force_quit)
 
     def _open_log(self):
         """The Log button: open app.log, or say where it is."""
