@@ -1,5 +1,20 @@
 # Changelog — Comic Book Art Creator
 
+## v1.46.0 — 2026-09-08
+- **Deleting a gallery image also removes it from wherever it was in
+  use.** The image editor, the border maker's references and the
+  animator all kept pointing at a picture after you deleted it from the
+  gallery. With "Use RAG & LoRA for image swap" ticked, that meant the
+  face for the swap was a file that no longer existed, so every swap was
+  skipped with a one-line status and only the base picture appeared — the
+  selected image looked as if it was never used. Now a deleted image is
+  dropped from the editor, border and animator on the spot, and the
+  status says so.
+- **A swap whose face file is missing stops before generating** and
+  tells you to load another image, instead of drawing a base and
+  silently keeping it. The skipped-swap message is also logged with
+  its reason.
+
 ## v1.45.0 — 2026-09-08
 - **The RAG map has its own section**, right under the LoRAs on the
   Image generation tab, with its own heading and explanation instead of

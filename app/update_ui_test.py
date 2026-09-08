@@ -264,10 +264,27 @@ with tempfile.TemporaryDirectory() as td:
           all(p.exists() for p in paths) and len(ui.session) == 3)
     check("the box was placed (it has a position, not Windows' default)",
           "+" in seen.get("geom", ""), seen)
+    # the editor, border maker and animator point at two of the images —
+    # a deleted gallery image used to stay as the swap's face
+    ui.ref_paths = [str(paths[0])]
+    ui.ref_var.set("selection")
+    ui.border_ref_paths = [str(paths[2]), str(paths[1])]
+    ui.anim_image_path = str(paths[2])
+    ui.anim_img_var.set(paths[2].name)
     root.after(120, lambda: click("Delete"))
     root.after(6000, watchdog)
     ui._delete_current()
     root.update()
+    check("a deleted image is dropped from the editor",
+          ui.ref_paths == [] and ui.ref_var.get() == "none — text only",
+          (ui.ref_paths, ui.ref_var.get()))
+    check("…and from the border references, keeping the survivors",
+          ui.border_ref_paths == [str(paths[1])], ui.border_ref_paths)
+    check("…and from the animator", ui.anim_image_path is None
+          and ui.anim_img_var.get() == "none")
+    check("the status says what was dropped",
+          "editor" in ui.status_var.get() and "animator" in ui.status_var.get(),
+          ui.status_var.get())
     check("Delete removes exactly the tagged images from disk",
           not paths[0].exists() and paths[1].exists() and not paths[2].exists())
     check("…and from the gallery",
@@ -278,6 +295,26 @@ with tempfile.TemporaryDirectory() as td:
     check("the remaining image is selected", ui.current == 0)
     ui._clear_history()
     root.update()
+
+# ---- a swap whose face file is gone stops before generating -------------
+print("swap guard")
+real_alive = app.engine_alive
+app.engine_alive = lambda *a, **k: True
+ui._set(ui.prompt_box, "a hero on a rooftop")
+ui.swap_rag_var.set(True)
+ui.ref_paths = ["C:/nope/gone_face.png"]
+ui.ref_var.set("selection")
+ui._generate()
+root.update()
+check("a missing face stops the run with a clear message",
+      "no longer exists" in ui.status_var.get()
+      and "Nothing was generated" in ui.status_var.get(), ui.status_var.get())
+check("…and the editor lets the missing file go",
+      ui.ref_paths == [] and ui.ref_var.get() == "none — text only")
+check("…and the app is not left busy", not ui.busy)
+ui.swap_rag_var.set(False)
+ui._set(ui.prompt_box, "")
+app.engine_alive = real_alive
 
 # ---- the startup path: a queued app_update opens the window -------------
 # automatic mode (the default): the download starts on its own, the app

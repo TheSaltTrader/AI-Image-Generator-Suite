@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.45.0"
+APP_VERSION = "1.46.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -2428,6 +2428,12 @@ class Generator:
         try:
             if isinstance(face_paths, str):
                 face_paths = [face_paths]
+            face_paths = [p for p in face_paths if Path(p).exists()]
+            if not face_paths:
+                self.q.put(("status", "Face swap skipped — the face image no "
+                                      "longer exists (deleted?); the base "
+                                      "image is kept."))
+                return None
             label = "Qwen" if editor == "qwen" else "Flux Kontext"
             self.q.put(("status", f"Swapping the face in ({label}) — the "
                                   "first swap can take minutes while the "
@@ -2476,6 +2482,7 @@ class Generator:
                 # base's actual pixels instead of a re-rendered copy
                 return swap_composite(up, self._fetch_image(out[0]))
         except Exception as e:
+            applog.exception("face swap failed")
             self.q.put(("status", f"Face swap skipped ({e}); kept the base "
                                   "image."))
         return None
@@ -6345,6 +6352,18 @@ class App:
             swap_face = [swap_face]
         if swap_face is None and self.swap_rag_var.get():
             swap_face = self._swap_face_source()
+            missing = [p for p in swap_face if not Path(p).exists()]
+            if missing:
+                # the face was a gallery image that has since been deleted:
+                # say so and stop, rather than draw a base and skip the swap
+                self._forget_deleted_refs({str(p) for p in missing})
+                self.status_var.set(
+                    "The face image "
+                    + ", ".join(Path(p).name for p in missing)
+                    + " no longer exists (deleted from the gallery?) — load "
+                      "another with 🖼 Load… or Use selected. Nothing was "
+                      "generated.")
+                return
             if not swap_face:
                 self.status_var.set(
                     "Image-swap is ticked but there is no face — load one "
@@ -7091,15 +7110,64 @@ class App:
         goneset = set(gone)
         self.session = [t for t in self.session if str(t[2]) not in goneset]
         self.tagged -= goneset
+        # anything still pointing at a deleted picture lets go of it: the
+        # editor kept a deleted gallery image as the swap's FACE, and every
+        # swap after that was skipped with a one-line status nobody saw
+        dropped = self._forget_deleted_refs(goneset)
         self.current = len(self.session) - 1 if self.session else None
         self._rebuild_gallery()
         self._show_current()
         self._update_editor_btn()
         note = (f"Deleted {len(gone)} image{'s' if len(gone) != 1 else ''} — "
                 f"{len(self.session)} left in history.")
+        if dropped:
+            note += " " + dropped
         if failed:
             note += " Could not delete: " + ", ".join(failed)
         self.status_var.set(note)
+
+    def _set_ref_label(self):
+        """The editor's reference label, from ref_paths."""
+        if not self.ref_paths:
+            self.ref_var.set("none — text only")
+            return
+        first = Path(self.ref_paths[0]).name
+        self.ref_var.set(first if len(self.ref_paths) == 1 else
+                         f"{len(self.ref_paths)} images ({first}, …)")
+
+    def _forget_deleted_refs(self, goneset):
+        """Drop deleted files from the editor, border-maker and animator
+        references, repaint their labels, and return a note saying what
+        was dropped ("" when nothing was)."""
+        goneset = {str(p) for p in goneset}
+        notes = []
+        if any(str(p) in goneset for p in self.ref_paths):
+            self.ref_paths = [p for p in self.ref_paths
+                              if str(p) not in goneset]
+            self._set_ref_label()
+            notes.append("The editor's loaded image was among them — load "
+                         "another with 🖼 Load… or Use selected."
+                         if not self.ref_paths else
+                         "One of the editor's loaded images was among them.")
+            self._refresh_editor_state()
+        if any(str(p) in goneset for p in self.border_ref_paths):
+            self.border_ref_paths = [p for p in self.border_ref_paths
+                                     if str(p) not in goneset]
+            if self.border_ref_paths:
+                first = Path(self.border_ref_paths[0]).name
+                self.border_ref_var.set(
+                    first if len(self.border_ref_paths) == 1 else
+                    f"{len(self.border_ref_paths)} images ({first}, …)")
+            else:
+                self.border_ref_var.set("none")
+            notes.append("A border reference was among them.")
+        if self.anim_image_path and str(self.anim_image_path) in goneset:
+            self.anim_image_path = None
+            self.anim_img_var.set("none")
+            notes.append("The animator's character image was among them.")
+        if notes:
+            self._schedule_persist()
+        return " ".join(notes)
 
     def _delete_tagged(self):
         paths = [p for _i, _p, p in self.session if str(p) in self.tagged]
@@ -7195,7 +7263,9 @@ class App:
                 except OSError:
                     pass
             self._clear_history()
-            self.status_var.set(f"Deleted {n} image files permanently.")
+            dropped = self._forget_deleted_refs({str(f) for f in files})
+            self.status_var.set(f"Deleted {n} image files permanently."
+                                + (" " + dropped if dropped else ""))
             dlg.destroy()
 
         ttk.Button(brow, text="Delete permanently", style="Danger.TButton",

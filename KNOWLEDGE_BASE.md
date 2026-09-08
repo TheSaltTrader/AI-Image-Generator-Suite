@@ -861,6 +861,18 @@ can combine LoRAs + RAG + a person in one pass.
   `root.after` and `invoke()`-ing its button — `event_generate("<Return>")`
   on an unmapped toplevel hung the suite; keep a watchdog `after` that
   destroys the box.
+- **Deleting a file must let go of every reference to it (v1.46.0).**
+  The editor (`ref_paths`), the border maker (`border_ref_paths`) and the
+  animator (`anim_image_path`) hold PATHS into `output\`; after the user
+  deleted a gallery image that was the swap's face, every gen-then-swap
+  ran the base and logged "Face swap skipped ([Errno 2] …); kept the base
+  image" — reported as "the selected image is never used". Found in
+  app.log in one grep. `_forget_deleted_refs(goneset)` is called by
+  `_delete_paths` and by Delete art files; `_generate`'s swap branch stops
+  with "no longer exists … Nothing was generated" when the face file is
+  gone; `_swap_face_pass` filters missing faces and logs failures with
+  their traceback. Rule: any feature that remembers a path to a generated
+  file must be on that list.
 - **Gallery tags follow the image PATH** (`self.tagged` is a set of
   paths, `_toggle_tag(idx)` repaints one thumbnail via `_thumb_image(img,
   tagged)` with a red frame), so a rebuild after a delete never shifts a
