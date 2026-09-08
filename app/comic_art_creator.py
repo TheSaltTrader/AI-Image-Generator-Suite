@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.58.0"
+APP_VERSION = "1.59.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -182,14 +182,14 @@ THEMES = {
     "dark": dict(BG="#17171c", BG2="#20202a", BG3="#2a2a38", FG="#e8e8f0",
                  FG_DIM="#9a9ab0", ACCENT="#e94560", ACCENT2="#4ecca3",
                  RULE="#3d7dff", BTN_ACTIVE="#3a3a4e", TIP_BG="#33334a",
-                 BADGE_FG="#0d0d12", GO_ACTIVE="#ff5e7a"),
+                 TIP_FG="#e8e8f0", BADGE_FG="#0d0d12", GO_ACTIVE="#ff5e7a"),
     "light": dict(BG="#f4f4f7", BG2="#e7e7ee", BG3="#d8d8e2", FG="#1b1b24",
                   FG_DIM="#5a5a68", ACCENT="#e94560", ACCENT2="#1f9d6b",
-                  RULE="#3d7dff", BTN_ACTIVE="#c8c8d6", TIP_BG="#2b2b38",
-                  BADGE_FG="#ffffff", GO_ACTIVE="#ff5e7a"),
+                  RULE="#3d7dff", BTN_ACTIVE="#c8c8d6", TIP_BG="#fffbe6",
+                  TIP_FG="#1b1b24", BADGE_FG="#ffffff", GO_ACTIVE="#ff5e7a"),
 }
 BG = BG2 = BG3 = FG = FG_DIM = ACCENT = ACCENT2 = RULE = None
-BTN_ACTIVE = TIP_BG = BADGE_FG = GO_ACTIVE = None
+BTN_ACTIVE = TIP_BG = TIP_FG = BADGE_FG = GO_ACTIVE = None
 UI_FONT = "Segoe UI"     # the menu font family; Settings can change it
 UI_FONTS = ["Segoe UI", "Arial", "Calibri", "Verdana", "Tahoma",
             "Georgia", "Times New Roman", "Comic Sans MS", "Consolas"]
@@ -2952,7 +2952,7 @@ class App:
         s.configure("TSpinbox", padding=4)
         s.configure("TFrame", background=BG)
         # hover tooltips + the top-right mode badges
-        s.configure("Tip.TLabel", background=TIP_BG, foreground=FG,
+        s.configure("Tip.TLabel", background=TIP_BG, foreground=TIP_FG,
                     padding=(8, 5), relief="solid", borderwidth=1)
         # green = the feature will apply to the next generation, red = it won't
         s.configure("Gpu.Horizontal.TProgressbar", background="#3b82f6",

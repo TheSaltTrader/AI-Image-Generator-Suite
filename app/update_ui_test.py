@@ -532,6 +532,12 @@ ui.settings["prefs"]["ui_scale"] = 1.2
 ui._apply_prefs_live()
 root.update()
 check("live apply sets the light palette", app.BG == "#f4f4f7")
+from tkinter import ttk as _ttk2
+_st = _ttk2.Style()
+check("daylight tooltips are a pale bg with dark text (readable)",
+      str(_st.lookup("Tip.TLabel", "background")).lower() in ("#fffbe6", "#fffbe6")
+      and str(_st.lookup("Tip.TLabel", "foreground")).lower() == "#1b1b24",
+      (_st.lookup("Tip.TLabel", "background"), _st.lookup("Tip.TLabel", "foreground")))
 check("live apply recolours the prompt box",
       str(ui.prompt_box.cget("bg")).lower() == "#d8d8e2")
 check("the scaling reflects the size choice",
