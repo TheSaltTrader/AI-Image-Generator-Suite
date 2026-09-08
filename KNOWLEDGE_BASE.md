@@ -262,9 +262,12 @@ Tests, all of which must pass before a release:
 memory, the sweep, the zip guard, the verify gate, roll-back, data
 refresh, every `check()` path, notes rendering, the window built for
 real on a withdrawn root, and automatic mode end to end with
-`apply_update` stubbed), `app\update_ui_test.py` (32 checks — the flow as
+`apply_update` stubbed), `app\update_ui_test.py` (48 checks — the flow as
 wired into the real App window, engine stubbed out, automatic and manual
-startup paths), `app\engine_files_test.py` (65 checks, 11 enumerated
+startup paths, the RAG map parsed off the UI thread, the relaunch and
+close hand-overs), `app\startup_test.py` (12 checks — the relaunched
+copy waits for the copy that started it; a real child process holds the
+real mutex), `app\engine_files_test.py` (65 checks, 11 enumerated
 subjects — the engine swap against throw-away folders and a local HTTP
 server), and `app\rag_lora_e2e_test.py` (32 checks on a LIVE engine —
 LoRA / RAG / embeds / combined / Flux renders fetched back and compared;
@@ -756,6 +759,37 @@ can combine LoRAs + RAG + a person in one pass.
   and pass plain data in; `root.after(...)` back is fine.
 - `_poll_queue` wraps each message in its own try/except and reschedules
   in a `finally`. One exception in a handler used to kill the UI loop.
+- **Never parse a RAG map on the UI thread (v1.37.0).** A user's map is
+  925 MB of JSON + a 1.97 GB embeddings file on an HDD; `load_ragmap` on
+  the UI thread showed the app as "Not responding" for the whole parse —
+  at startup (the restore), again straight after (`_refresh_models` →
+  `_validate_ragmap` re-parsed the whole file), and again on every model
+  refresh. `_load_ragmap_async(path, on_done)` parses in a thread and
+  posts `("ragmap_loaded", gen, path, rag, err, on_done)`; the handler
+  runs `on_done` only for the NEWEST generation, so a later pick
+  supersedes an earlier parse. `_validate_ragmap` compares the file's
+  `(mtime, size)` (`rag["_sig"]`) and only re-parses (async) when the
+  file changed. `load_ragmap` precomputes `e["_words"]` so
+  `ragmap_retrieve` (UI thread, every Generate) does not re-tokenise
+  hundreds of thousands of entries. Rule: anything that scales with a
+  user's data goes through `ui_queue`, never inline in a handler.
+- **Shutting the engine down is seconds of PowerShell** (`kill_engine`
+  enumerates every process). `_on_close` withdraws the window first and
+  does it in a thread, then posts `("quit", None)` (the handler destroys
+  via `after(0)` so the poll's own reschedule is the last Tk call);
+  `_relaunch_after_update` does the same. Both arm a 20 s
+  `_force_quit` so a stuck shutdown can never leave a hidden window
+  running.
+- **The relaunched copy must WAIT for the copy that started it.** Right
+  after every update the new exe took the single-instance mutex while
+  the old one was still closing and asked "already running — open
+  another window?". `previous_instance_pids()` reads the pid out of the
+  `*_old_<pid>.exe` the swap leaves (and `--after-update <pid>`, which a
+  v1.37+ relaunch passes); `wait_for_previous_instance()` polls tasklist
+  until those pids are gone, releases OUR mutex handle (while we hold
+  one the name never disappears) and probes again. A genuinely separate
+  copy still gets the question. `startup_test.py` covers it with a real
+  child process holding the real mutex.
 - Settings persist on a 700 ms debounce (`_schedule_persist`) with a
   baseline save at startup, so a force-kill still keeps recent edits.
 - The left panel is a Canvas + inner frame; a global wheel router walks

@@ -1,5 +1,24 @@
 # Changelog — Comic Book Art Creator
 
+## v1.37.0 — 2026-09-08
+- **No more "Not responding" while a RAG map loads.** A map can be
+  hundreds of megabytes of JSON plus a multi-gigabyte embeddings file,
+  and the app parsed it on the interface thread — at start-up, then
+  again right after, and again on every model refresh. The window froze
+  for as long as each parse took. Maps are now parsed in the background
+  (the label reads "loading…" and you can keep working), an unchanged
+  map is never parsed twice, and the words used for retrieval are worked
+  out once at load time instead of on every Generate.
+- **No more "appears to be already running" after an update.** The new
+  version checked whether another copy was open while the copy that had
+  just updated was still closing its engine, and asked whether to open
+  another window. The new copy now waits for the old one to finish
+  (it is told which one to wait for), and asks only if a genuinely
+  separate copy is open.
+- **Restarting after an update, and closing the app, no longer freeze
+  the window.** Stopping the engine takes a few seconds; that now
+  happens after the window has gone, not while it sits there greyed out.
+
 ## v1.36.0 — 2026-09-08
 - **An engine update can no longer break the engine.** The old updater
   deleted the engine folder in place and put the fresh one down

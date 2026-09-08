@@ -43,7 +43,7 @@ from PIL.PngImagePlugin import PngInfo
 import self_update
 import engine_files
 
-APP_VERSION = "1.36.0"
+APP_VERSION = "1.37.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -284,18 +284,83 @@ def engine_ours_to_stop():
         return False
 
 
+_MUTEX_HANDLE = None
+
+
 def single_instance_handle():
-    """Windows named mutex: returns (handle, already_running). Keep the
-    handle alive for the process lifetime; None on non-Windows."""
+    """Windows named mutex: returns (handle, already_running). The handle
+    is kept alive for the process lifetime (module global, so the
+    updating copy can let go of it on purpose); None on non-Windows."""
+    global _MUTEX_HANDLE
     if os.name != "nt":
         return None, False
     try:
         h = ctypes.windll.kernel32.CreateMutexW(
             None, False, "Global\\ComicBookArtCreator_singleton")
         already = ctypes.windll.kernel32.GetLastError() == 183  # ALREADY_EXISTS
+        _MUTEX_HANDLE = h
         return h, already
     except Exception:
         return None, False
+
+
+def release_single_instance():
+    """Let go of the single-instance mutex — the last thing an updating
+    copy does before it starts its replacement, so the replacement's own
+    check does not see a ghost of the copy that launched it."""
+    global _MUTEX_HANDLE
+    h, _MUTEX_HANDLE = _MUTEX_HANDLE, None
+    if h:
+        try:
+            ctypes.windll.kernel32.CloseHandle(h)
+        except Exception:
+            pass
+
+
+def _pid_alive(pid):
+    try:
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                             capture_output=True, text=True,
+                             creationflags=NO_WINDOW, timeout=5).stdout
+        return str(pid) in out
+    except Exception:
+        return False
+
+
+def previous_instance_pids(argv=None):
+    """PIDs of copies of this app that are on their way out: the one an
+    update just replaced renamed its exe to *_old_<pid>.exe, and a v1.37+
+    copy also passes --after-update <pid> to the copy it starts. Such a
+    copy is closing, not competing — it must be waited for, never
+    reported as "already running" (which is what every user saw right
+    after an update, because the new exe checked the mutex while the old
+    one was still shutting its engine down)."""
+    argv = sys.argv if argv is None else argv
+    pids = set()
+    for f in PROJECT.glob("*_old_*.exe"):
+        m = re.search(r"_old_(\d+)\.exe$", f.name)
+        if m:
+            pids.add(int(m.group(1)))
+    if "--after-update" in argv:
+        i = argv.index("--after-update")
+        if i + 1 < len(argv) and argv[i + 1].isdigit():
+            pids.add(int(argv[i + 1]))
+    return pids
+
+
+def wait_for_previous_instance(pids, timeout=30, alive=None, probe=None):
+    """Wait (up to timeout s) for the listed copies to exit, then take the
+    single-instance mutex again. Returns (handle, already_running) — the
+    same shape as single_instance_handle(). Our own handle is released
+    before re-probing: while we hold one, the name never goes away."""
+    alive = alive or _pid_alive
+    probe = probe or single_instance_handle
+    deadline = time.time() + timeout
+    while time.time() < deadline and any(alive(p) for p in pids):
+        time.sleep(0.5)
+    release_single_instance()
+    time.sleep(0.2)          # the name vanishes as the last handle closes
+    return probe()
 
 
 def api_get(path):
@@ -1771,6 +1836,11 @@ def load_ragmap(path):
     data = json.loads(mp.read_text(encoding="utf-8"))
     base = mp.resolve().parent
     data["_file"], data["_base"] = str(mp), str(base)
+    try:
+        st = mp.stat()
+        data["_sig"] = (st.st_mtime, st.st_size)   # "has it changed?" key
+    except OSError:
+        data["_sig"] = None
     data["_kind"] = "trainer" if (data.get("kind") == "lora-retrieval-map"
                                   or "images_dir" in data) else "cbac"
 
@@ -1819,6 +1889,12 @@ def load_ragmap(path):
         has_image = has_image or bool(e["_path"])
         if not e.get("keywords"):
             e["keywords"] = _caption_keywords(e.get("caption", ""))
+        # retrieval words, once — a map can hold hundreds of thousands of
+        # entries, and re-tokenising every one on every Generate click
+        # stalled the UI for seconds
+        e["_words"] = frozenset(re.findall(
+            r"[a-z0-9]+", (" ".join(e["keywords"]) + " "
+                           + e.get("caption", "")).lower()))
     # embeddings-only: the builder said so, or there are embeds and no images
     data["_embeds_only"] = (str(data.get("mode", "")).lower() == "embeddings-only"
                             or (has_embed and not has_image))
@@ -1888,8 +1964,10 @@ def ragmap_retrieve(ragmap, prompt, k=None, require_image=True):
     for i, e in enumerate(ragmap.get("entries", [])):
         if require_image and not (e.get("_path") or e.get("_ipadpt")):
             continue
-        text = " ".join(e.get("keywords", [])) + " " + e.get("caption", "")
-        ewords = set(re.findall(r"[a-z0-9]+", text.lower()))
+        ewords = e.get("_words")
+        if ewords is None:          # an entry not made by load_ragmap
+            text = " ".join(e.get("keywords", [])) + " " + e.get("caption", "")
+            ewords = frozenset(re.findall(r"[a-z0-9]+", text.lower()))
         scored.append((len(words & ewords), i, e))
     scored.sort(key=lambda t: t[0], reverse=True)   # stable → original order on ties
     return _rag_diverse([(i, e) for _s, i, e in scored], ragmap.get("_emb"), k)
@@ -2421,6 +2499,7 @@ class App:
         self.ragmap = None         # loaded RAG map (dict) or None
         self._addon_lock = threading.Lock()   # one add-on install at a time
         self.ragmap_path = None
+        self._ragmap_load_gen = 0  # newest async map parse wins
         self.actordb_path = None   # reference DB (Actor DB / Database Builder)
         self.actordb_kind = "person"   # "person" (actordb) | "character" (chardb)
         self.actor_sel = None      # selected actor (dict) or None
@@ -3512,6 +3591,55 @@ class App:
     def _selected_loras(self):
         return [self.lora_list.get(i) for i in self.lora_list.curselection()]
 
+    def _load_ragmap_async(self, path, on_done):
+        """Parse a RAG map OFF the UI thread and hand the result to
+        on_done(path, rag, err) on the UI thread.
+
+        A map can be hundreds of MB of JSON plus a multi-GB embeddings
+        file on a slow drive — a user's is 925 MB + 1.97 GB on an HDD —
+        and parsing it in the UI thread froze the app ("Not responding")
+        for as long as that took, twice at every launch (the restore, then
+        the re-validation that followed it). Only the newest request
+        counts: a later pick supersedes an earlier one still parsing."""
+        self._ragmap_load_gen += 1
+        gen = self._ragmap_load_gen
+        try:
+            mb = Path(path).stat().st_size / (1024 * 1024)
+        except OSError:
+            mb = 0
+        self.ragmap_var.set(f"{Path(path).name} — loading…")
+        self.status_var.set(f"Loading RAG map {Path(path).name}"
+                            + (f" ({mb:.0f} MB)" if mb >= 1 else "")
+                            + " — you can keep working.")
+
+        def work():
+            try:
+                rag = load_ragmap(path)
+                self.ui_queue.put(("ragmap_loaded", gen, path, rag, None,
+                                   on_done))
+            except Exception as e:
+                self.ui_queue.put(("ragmap_loaded", gen, path, None, e,
+                                   on_done))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _ragmap_restored(self, path, rag, err):
+        """The map remembered from last session (or one re-parsed because
+        the file changed) has finished parsing."""
+        if self.ragmap_path != path:
+            return          # the user picked something else meanwhile
+        if err is not None or not rag:
+            self.ragmap = None
+            self.ragmap_var.set("none")
+            self.status_var.set(f"RAG map {Path(path).name} could not be "
+                                f"reloaded ({err}) — pick it again with "
+                                "🧭 RAG map….")
+            return
+        self.ragmap = rag
+        self.ragmap_var.set(self._ragmap_label(rag, path))
+        self._refresh_mode_badges()
+        self.status_var.set(f"RAG map '{rag.get('name', '')}' ready.")
+
     def _pick_ragmap(self):
         """Load a RAG map — this app's .ragmap.json, or the retrieval map
         a trainer writes beside a finished LoRA (<name>-rag\\index.json).
@@ -3523,13 +3651,24 @@ class App:
                        ("JSON", "*.json"), ("All files", "*.*")])
         if not path:
             return
-        try:
-            rag = load_ragmap(path)
-        except Exception as e:
-            messagebox.showerror("RAG map", f"Could not read the RAG map: {e}")
+        self._load_ragmap_async(path, self._ragmap_picked)
+
+    def _ragmap_picked(self, path, rag, err):
+        """The rest of loading a picked map, on the UI thread once the
+        parse (off it) is done."""
+        if err is not None:
+            messagebox.showerror("RAG map",
+                                 f"Could not read the RAG map: {err}")
+            if self.ragmap is None:
+                self.ragmap_var.set("none")
+            else:
+                self.ragmap_var.set(self._ragmap_label(self.ragmap,
+                                                       self.ragmap_path))
             return
         entries = rag.get("entries", [])
-        n = len([e for e in entries if Path(e.get("_path", "")).exists()])
+        # a usable reference is a real image file OR a precomputed embed
+        # (an embeddings-only map has no images at all, on purpose)
+        n = len([e for e in entries if e.get("_path") or e.get("_ipadpt")])
         caps = len([e for e in entries if e.get("caption")])
         if not n and not caps:
             messagebox.showwarning(
@@ -4541,9 +4680,11 @@ class App:
 
     def _validate_ragmap(self):
         """Drop a RAG map that is no longer where it was: the file may have
-        been moved or deleted since it was loaded. References that vanished
-        individually are counted in the label rather than dropping the whole
-        map, since the rest of it still works."""
+        been moved or deleted since it was loaded. A map whose file changed
+        (mtime/size) is parsed again, off the UI thread; an unchanged one
+        is kept as parsed — this used to re-parse the whole map on the UI
+        thread at every model refresh, which for a large map meant the
+        app froze for as long as the parse took."""
         if not self.ragmap_path:
             return
         if not Path(self.ragmap_path).exists():
@@ -4551,20 +4692,17 @@ class App:
             self._clear_ragmap(f"RAG map removed — {name} is no longer at "
                                "its saved location.")
             return
+        if self.ragmap is None:
+            return          # still parsing in the background
         try:
-            fresh = load_ragmap(self.ragmap_path)   # re-resolve every file
-        except Exception as e:
-            self._clear_ragmap(f"RAG map removed — it could not be read "
-                               f"any more ({e}).")
-            return
-        entries = fresh.get("entries", [])
-        if not any(e.get("_path") or e.get("_ipadpt") or e.get("caption")
-                   for e in entries):
-            self._clear_ragmap("RAG map removed — none of its references "
-                               "are on disk any more.")
-            return
-        self.ragmap = fresh
-        self.ragmap_var.set(self._ragmap_label(fresh, self.ragmap_path))
+            st = Path(self.ragmap_path).stat()
+            sig = (st.st_mtime, st.st_size)
+        except OSError:
+            sig = None
+        if sig == self.ragmap.get("_sig"):
+            return          # unchanged since it was parsed: nothing to redo
+        # the file changed underneath us: parse it again, off the UI thread
+        self._load_ragmap_async(self.ragmap_path, self._ragmap_restored)
 
     def _import_checkpoint(self):
         """Browse for a base model (.safetensors) anywhere on disk and make
@@ -4894,13 +5032,10 @@ class App:
                 self.ollama_var.set(self._want_ollama_model)
             rmp = st.get("ragmap_path")
             if rmp and Path(rmp).exists():
-                try:
-                    self.ragmap = load_ragmap(rmp)
-                    self.ragmap_path = rmp
-                    self.ragmap_var.set(
-                        self._ragmap_label(self.ragmap, rmp))
-                except Exception:
-                    self.ragmap = None
+                # parsed off the UI thread — see _load_ragmap_async; the
+                # path is remembered at once so persistence keeps it
+                self.ragmap_path = rmp
+                self._load_ragmap_async(rmp, self._ragmap_restored)
             adb = st.get("actordb_path")
             if adb and Path(adb).exists():
                 if self._load_actordb(adb, quiet=True) is not None:
@@ -4977,14 +5112,25 @@ class App:
         try:
             self._persist()
         finally:
+            # hide at once; the engine shutdown (a PowerShell round trip,
+            # seconds) runs off the UI thread so the window never sits
+            # there "Not responding" while it closes
             try:
-                if engine_ours_to_stop():
-                    self.status_var.set("Closing the engine…")
-                    kill_engine()
-                    ENGINE_OWNER_FILE.unlink(missing_ok=True)
+                self.root.withdraw()
             except Exception:
-                pass          # never let cleanup stop the app from closing
-            self.root.destroy()
+                pass
+
+            def work():
+                try:
+                    if engine_ours_to_stop():
+                        kill_engine()
+                        ENGINE_OWNER_FILE.unlink(missing_ok=True)
+                except Exception:
+                    pass      # never let cleanup stop the app from closing
+                self.ui_queue.put(("quit", None))
+
+            threading.Thread(target=work, daemon=True).start()
+            self.root.after(20000, self._force_quit)
 
     def _clear_all(self):
         self._set(self.prompt_box, "")
@@ -5070,20 +5216,47 @@ class App:
     def _relaunch_after_update(self, newexe, tag):
         """Hand over to the freshly installed exe. The engine is stopped
         first: it belongs to this install, and leaving it holding port 8188
-        would make the new app think a foreign engine is squatting there."""
+        would make the new app think a foreign engine is squatting there.
+
+        All of that runs OFF the UI thread — kill_engine shells out to
+        PowerShell for seconds, and doing it here showed the window as
+        "Not responding" in the middle of every update. The single-instance
+        mutex is released before the new copy starts, and the new copy is
+        told our pid so it waits for us to finish closing instead of asking
+        whether we are a second copy."""
         self.status_var.set(f"Updated to {tag} — restarting…")
         try:
-            kill_engine()
-            ENGINE_OWNER_FILE.unlink(missing_ok=True)
+            self._persist()
         except Exception:
-            pass          # never let cleanup block the restart
+            pass
+
+        def work():
+            try:
+                kill_engine()
+                ENGINE_OWNER_FILE.unlink(missing_ok=True)
+            except Exception:
+                pass          # never let cleanup block the restart
+            release_single_instance()
+            try:
+                subprocess.Popen([str(newexe), "--after-update",
+                                  str(os.getpid())], cwd=str(PROJECT))
+            except OSError as e:
+                self.ui_queue.put(("status", f"Could not start the new "
+                                             f"version: {e} — run "
+                                             f"{newexe.name} yourself."))
+                return
+            self.ui_queue.put(("quit", None))
+
+        threading.Thread(target=work, daemon=True).start()
+        self.root.after(20000, self._force_quit)
+
+    def _force_quit(self):
+        """Fallback for the close / relaunch hand-over: never leave a
+        hidden window running because the engine shutdown got stuck."""
         try:
-            subprocess.Popen([str(newexe)], cwd=str(PROJECT))
-        except OSError as e:
-            self.status_var.set(f"Could not start the new version: {e} — "
-                                f"run {newexe.name} yourself.")
-            return
-        self.root.after(800, self.root.destroy)
+            self.root.destroy()
+        except Exception:
+            pass
 
     def _download_updates(self, ups, eng=None):
         ok, locked = 0, 0
@@ -6181,6 +6354,15 @@ class App:
                         threading.Thread(target=self._download_updates,
                                          args=(ups, eng),
                                          daemon=True).start()
+                elif kind == "ragmap_loaded":
+                    gen, path, rag, err, on_done = msg[1:6]
+                    if gen == self._ragmap_load_gen:
+                        on_done(path, rag, err)
+                    # an older request was superseded by a newer pick: drop
+                elif kind == "quit":
+                    # after this poll returns, so its reschedule is the
+                    # last thing that touches the interpreter
+                    self.root.after(0, self.root.destroy)
                 elif kind == "batch_done":
                     self.busy = False
                     self.go_btn.state(["!disabled"])
@@ -7090,6 +7272,14 @@ class App:
 def main():
     root = Tk()
     _mutex_handle, already = single_instance_handle()
+    if already:
+        leaving = previous_instance_pids()
+        if leaving:
+            # the copy holding the mutex is the one that just updated and
+            # started us — it is closing, not competing: wait for it
+            root.withdraw()
+            _mutex_handle, already = wait_for_previous_instance(leaving)
+            root.deiconify()
     if already:
         from tkinter import messagebox as _mb
         if not _mb.askyesno(

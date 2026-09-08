@@ -10,6 +10,7 @@ calling a method that moved.
 Run: venv\\Scripts\\python.exe app\\update_ui_test.py
 """
 
+import json
 import sys
 import threading
 import tempfile
@@ -201,19 +202,90 @@ with tempfile.TemporaryDirectory() as td:
     check("Skip is reported in the status bar",
           "skipped" in ui.status_var.get(), ui.status_var.get())
 
+# ---- RAG map parsing never blocks the UI --------------------------------
+# a user's map is 925 MB of JSON + 1.97 GB of embeddings on an HDD; parsed
+# on the UI thread it showed the app as "Not responding" at every launch
+print("RAG map loads off the UI thread")
+with tempfile.TemporaryDirectory() as td:
+    from PIL import Image
+    Image.new("RGB", (64, 64), "red").save(Path(td) / "0001.png")
+    mp = Path(td) / "ui.ragmap.json"
+    mp.write_text(json.dumps({
+        "schema": "cbac-ragmap/1", "name": "UI test map",
+        "entries": [{"image": "0001.png", "keywords": ["hero"],
+                     "caption": "a hero"}]}), encoding="utf-8")
+    app.filedialog.askopenfilename = lambda **k: str(mp)
+    app.messagebox.askyesno = lambda *a, **k: False
+    errors = []
+    app.messagebox.showerror = lambda *a, **k: errors.append(a)
+    ui._pick_ragmap()
+    check("the label says loading right away",
+          "loading" in ui.ragmap_var.get(), ui.ragmap_var.get())
+    check("the pick returns before the parse lands", ui.ragmap is None)
+    pump(root, lambda: ui.ragmap is not None, timeout=10)
+    check("the parsed map arrives through the queue",
+          ui.ragmap is not None and ui.ragmap.get("name") == "UI test map")
+    check("the label shows the map", "UI test map" in ui.ragmap_var.get(),
+          ui.ragmap_var.get())
+    check("no error was shown", not errors, errors)
+    check("retrieval words were precomputed at parse time",
+          isinstance(ui.ragmap["entries"][0].get("_words"), frozenset))
+
+    # the startup restore takes the same road
+    ui.ragmap = None
+    ui.ragmap_var.set("none")
+    st = dict(ui._collect_ui_state())
+    st["ragmap_path"] = str(mp)
+    ui._apply_ui_state(st)
+    check("restore remembers the path at once", ui.ragmap_path == str(mp))
+    check("restore returns before the parse lands", ui.ragmap is None)
+    pump(root, lambda: ui.ragmap is not None, timeout=10)
+    check("the restored map arrives",
+          ui.ragmap is not None and "UI test map" in ui.ragmap_var.get())
+
+    # an unchanged map is not parsed again on a model refresh; a changed
+    # file is — off the UI thread
+    gen = ui._ragmap_load_gen
+    ui._validate_ragmap()
+    check("an unchanged map is not re-parsed on a refresh",
+          ui._ragmap_load_gen == gen)
+    mp.write_text(mp.read_text(encoding="utf-8").replace(
+        "UI test map", "UI test map v2"), encoding="utf-8")
+    ui._validate_ragmap()
+    check("a changed map file is parsed again", ui._ragmap_load_gen == gen + 1)
+    pump(root, lambda: ui.ragmap is not None
+         and ui.ragmap.get("name") == "UI test map v2", timeout=10)
+    check("…and the new contents land",
+          ui.ragmap is not None and ui.ragmap.get("name") == "UI test map v2")
+    ui._clear_ragmap()
+
 # ---- the relaunch hand-over --------------------------------------------
+# the engine shutdown runs off the UI thread now (it took seconds on the UI
+# thread and showed "Not responding"), and the new copy is told our pid
 print("relaunch after a successful update")
 _started.clear()
 destroyed = []
 ui.root.destroy = lambda: destroyed.append(True)
 ui._relaunch_after_update(Path("ComicArtCreator.exe"), "v2.0.0")
-root.update()
-check("the new exe is launched", len(_started) == 1, str(_started))
 check("the status bar says what happened",
       "v2.0.0" in ui.status_var.get() and "restart" in ui.status_var.get(),
       ui.status_var.get())
-root.after(0, lambda: None)
-root.update()
+pump(root, lambda: destroyed, timeout=10)
+check("the new exe is launched", len(_started) == 1, str(_started))
+check("the new exe is told which pid to wait for",
+      bool(_started) and "--after-update" in _started[0][0]
+      and str(app.os.getpid()) in _started[0][0], str(_started))
+check("the window is closed once the hand-over is done", bool(destroyed))
+
+# ---- closing ------------------------------------------------------------
+print("closing")
+destroyed.clear()
+app.engine_ours_to_stop = lambda: False
+ui._on_close()
+check("closing returns before the engine shutdown is done", not destroyed)
+pump(root, lambda: destroyed, timeout=10)
+check("the app closes once the shutdown thread reports back",
+      bool(destroyed))
 
 print()
 print("%d passed, %d failed" % (len(PASS), len(FAIL)))
