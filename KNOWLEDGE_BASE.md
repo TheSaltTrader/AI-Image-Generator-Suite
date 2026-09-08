@@ -773,6 +773,16 @@ can combine LoRAs + RAG + a person in one pass.
   and pass plain data in; `root.after(...)` back is fine.
 - `_poll_queue` wraps each message in its own try/except and reschedules
   in a `finally`. One exception in a handler used to kill the UI loop.
+- **Never call `Progressbar.start()` twice (v1.49.0).** ttk's `start`
+  schedules a NEW `ttk::progressbar::Autoincrement` timer chain on every
+  call and remembers only the newest id; `stop` cancels only that one.
+  Each chain keeps stepping the bar in ANY mode. After a batch of four
+  model loads the Generate bar raced for ever ("extremely fast"). Every
+  sweep goes through `_sweep(bar, on, interval)`: a `self._sweeping`
+  registry guards the start, and the stop also scans `after info` for
+  Autoincrement scripts naming the bar and cancels them. `update_ui_test`
+  asserts no stray Autoincrement timers after repeated loads on all three
+  bars (Generate, RAG map, readiness strip).
 - **Never parse a RAG map on the UI thread (v1.37.0).** A user's map is
   925 MB of JSON + a 1.97 GB embeddings file on an HDD; `load_ragmap` on
   the UI thread showed the app as "Not responding" for the whole parse —

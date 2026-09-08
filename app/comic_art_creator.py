@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.48.0"
+APP_VERSION = "1.49.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -2713,6 +2713,7 @@ class App:
         self.job_queue = []        # batch queue of pending jobs
         self._batch_active = False
         self.ragmap = None         # loaded RAG map (dict) or None
+        self._sweeping = {}        # progress bars currently sweeping, by path
         self._addon_lock = threading.Lock()   # one add-on install at a time
         self.ragmap_path = None
         self._ragmap_load_gen = 0  # newest async map parse wins
@@ -4033,6 +4034,36 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _sweep(self, bar, on, interval=15):
+        """Start or stop a progress bar's sweep exactly once.
+
+        ttk's start() schedules a NEW timer chain on every call and keeps
+        only the newest id, and stop() cancels only that one — so a second
+        start() left a chain nothing could reach, the bar stepped twice as
+        fast, and after a batch of four it raced for ever. Starts are
+        therefore guarded, and stopping also cancels any Autoincrement
+        timer for this bar that Tk still holds."""
+        key = str(bar)
+        if on:
+            if not self._sweeping.get(key):
+                bar.configure(mode="indeterminate")
+                bar.start(interval)
+                self._sweeping[key] = True
+            return
+        try:
+            bar.stop()
+        except Exception:
+            pass
+        try:
+            for aid in self.root.tk.call("after", "info"):
+                info = str(self.root.tk.call("after", "info", aid))
+                if "Autoincrement" in info and key in info:
+                    self.root.tk.call("after", "cancel", aid)
+        except Exception:
+            pass
+        bar.configure(mode="determinate")
+        self._sweeping[key] = False
+
     # ------------------------------------------------ what is still loading
     def _set_pending(self, key, text):
         """Mark one start-up item as still loading (text) or done (None)
@@ -4047,12 +4078,9 @@ class App:
             self.ready_var.set("Still loading — please wait: "
                                + "; ".join(self._pending.values()))
             self.ready_frame.grid()
-            try:
-                self.ready_bar.start(12)
-            except Exception:
-                pass
+            self._sweep(self.ready_bar, True, 12)
         else:
-            self.ready_bar.stop()
+            self._sweep(self.ready_bar, False)
             self.ready_frame.grid_remove()
             self.ready_var.set("")
 
@@ -4065,9 +4093,8 @@ class App:
         self.rag_prog.grid()
         self.rag_prog_lab.grid()
         if phase == "resolving" and total:
-            self.rag_prog.stop()
-            self.rag_prog.configure(mode="determinate", maximum=total,
-                                    value=done)
+            self._sweep(self.rag_prog, False)
+            self.rag_prog.configure(maximum=total, value=done)
             self.rag_prog_var.set(
                 f"Loading {name}: checking references {done:,} / {total:,} "
                 f"({done * 100 // total}%)")
@@ -4078,14 +4105,13 @@ class App:
             text = {"reading": f"reading and parsing the map file{size}",
                     "embeddings": "reading the embeddings",
                     "indexing": "building the word index"}.get(phase, phase)
-            self.rag_prog.configure(mode="indeterminate")
-            self.rag_prog.start(12)
+            self._sweep(self.rag_prog, True, 12)
             self.rag_prog_var.set(f"Loading {name}: {text}…")
 
     def _rag_progress_done(self):
         self._set_pending("ragmap", None)
         if hasattr(self, "rag_prog"):
-            self.rag_prog.stop()
+            self._sweep(self.rag_prog, False)
             self.rag_prog.grid_remove()
             self.rag_prog_lab.grid_remove()
             self.rag_prog_var.set("")
@@ -6786,18 +6812,15 @@ class App:
                     # a model is loading: the bar cannot know how far, so it
                     # sweeps; back to a real bar once the steps begin
                     if msg[1] == "loading":
-                        self.progress.configure(mode="indeterminate")
-                        self.progress.start(15)
+                        self._sweep(self.progress, True)
                         self.pct_var.set("loading…")
                     else:
-                        self.progress.stop()
-                        self.progress.configure(mode="determinate")
+                        self._sweep(self.progress, False)
                         self.pct_var.set("")
                 elif kind == "progress":
                     _, val, mx = msg
-                    if str(self.progress.cget("mode")) != "determinate":
-                        self.progress.stop()
-                        self.progress.configure(mode="determinate")
+                    if self._sweeping.get(str(self.progress)):
+                        self._sweep(self.progress, False)
                     self.progress["maximum"] = mx
                     self.progress["value"] = val
                     self.pct_var.set(f"{val * 100 / max(1, mx):.0f}%")
@@ -6828,8 +6851,7 @@ class App:
                 elif kind == "done":
                     self.busy = False
                     self.go_btn.state(["!disabled"])
-                    self.progress.stop()
-                    self.progress.configure(mode="determinate")
+                    self._sweep(self.progress, False)
                     for bar, var in ((self.progress, self.pct_var),
                                      (self.anim_progress,
                                       self.anim_pct_var),
@@ -6940,8 +6962,7 @@ class App:
                 elif kind == "error":
                     applog.error("shown: " + str(msg[1]))
                     self.busy = False
-                    self.progress.stop()
-                    self.progress.configure(mode="determinate")
+                    self._sweep(self.progress, False)
                     self.go_btn.state(["!disabled"])
                     self.status_var.set(f"Error: {msg[1]}")
 

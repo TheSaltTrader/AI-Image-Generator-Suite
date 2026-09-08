@@ -1,5 +1,14 @@
 # Changelog — Comic Book Art Creator
 
+## v1.49.0 — 2026-09-08
+- **The progress bar no longer races on after a batch.** Each time a
+  model load told the bar to sweep, the toolkit started another timer
+  behind the scenes and its stop only cancelled the last one — after a
+  batch of four the bar under Generate kept stepping, faster and faster,
+  for as long as the app ran. Sweeps now start once, stop fully, and any
+  stray timer is hunted down. The same guard covers the RAG loading bar
+  and the loading strip above the tabs.
+
 ## v1.48.0 — 2026-09-08
 - **A loading model no longer looks like a hang.** While the engine
   loads a model the progress bar now sweeps and the status counts the

@@ -366,6 +366,40 @@ root.update()
 check("done stops the sweep and clears the bar",
       str(ui.progress.cget("mode")) == "determinate" and int(ui.progress["value"]) == 0)
 
+
+def stray_sweeps():
+    """Tk timer chains still stepping a progress bar."""
+    return [aid for aid in root.tk.call("after", "info")
+            if "Autoincrement" in str(root.tk.call("after", "info", aid))]
+
+
+# the Tk trap: every start() stacked a timer chain stop() could not reach —
+# after four pictures the Generate bar raced for ever
+for _ in range(4):
+    ui.ui_queue.put(("progress_mode", "loading"))
+    ui._poll_queue()
+    root.update()
+ui.ui_queue.put(("done", None))
+ui._poll_queue()
+root.update()
+check("four loads then done leave no sweeping timer behind",
+      not stray_sweeps() and str(ui.progress.cget("mode")) == "determinate",
+      stray_sweeps())
+for _ in range(3):
+    ui._set_pending("engine", "engine starting")
+root.update()
+ui._set_pending("engine", None)
+root.update()
+check("the readiness strip leaves no timer behind either", not stray_sweeps(),
+      stray_sweeps())
+for ph in ("reading", "indexing", "embeddings"):
+    ui._rag_progress(ui._ragmap_load_gen, ph, 0, 0)
+    root.update()
+ui._rag_progress_done()
+root.update()
+check("the RAG loading bar leaves no timer behind either", not stray_sweeps(),
+      stray_sweeps())
+
 # ---- a swap whose face file is gone stops before generating -------------
 print("swap guard")
 real_alive = app.engine_alive
