@@ -1,5 +1,13 @@
 # Changelog — Comic Book Art Creator
 
+## v1.57.0 — 2026-09-08
+- **A font choice in Settings, and the menu size now scales the whole
+  left panel.** ⚙ Settings has a **Font** dropdown (Segoe UI, Arial,
+  Calibri, Verdana, Tahoma, Georgia, Times New Roman, Comic Sans MS,
+  Consolas). The **Menu size** setting scales every menu and the entire
+  left panel. Apply changes on the spot, or Restart now to have the font
+  and size take effect everywhere cleanly.
+
 ## v1.56.0 — 2026-09-08
 - **"Edit a loaded image" is now its own tab.** A new **Edit image** tab
   holds the loaded-image editor, fully separate from the face swap on the

@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.56.0"
+APP_VERSION = "1.57.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -190,6 +190,9 @@ THEMES = {
 }
 BG = BG2 = BG3 = FG = FG_DIM = ACCENT = ACCENT2 = RULE = None
 BTN_ACTIVE = TIP_BG = BADGE_FG = GO_ACTIVE = None
+UI_FONT = "Segoe UI"     # the menu font family; Settings can change it
+UI_FONTS = ["Segoe UI", "Arial", "Calibri", "Verdana", "Tahoma",
+            "Georgia", "Times New Roman", "Comic Sans MS", "Consolas"]
 
 
 def apply_theme(name):
@@ -2759,6 +2762,7 @@ class App:
         self.settings = self._load_settings()
         prefs = self.settings.get("prefs", {})
         apply_theme(prefs.get("theme", "dark"))
+        globals()["UI_FONT"] = prefs.get("font", "Segoe UI")
         try:
             self._base_scaling = float(root.tk.call("tk", "scaling"))
         except Exception:
@@ -2887,15 +2891,15 @@ class App:
         s.configure("TLabel", background=BG, foreground=FG)
         s.configure("Dim.TLabel", foreground=FG_DIM)
         s.configure("Head.TLabel", foreground=ACCENT2,
-                    font=("Segoe UI", 10, "bold"))
+                    font=(UI_FONT, 10, "bold"))
         s.configure("TButton", background=BG3, padding=6)
         s.map("TButton", background=[("active", BTN_ACTIVE)])
         s.configure("Go.TButton", background=ACCENT, foreground="white",
-                    font=("Segoe UI", 12, "bold"), padding=10)
+                    font=(UI_FONT, 12, "bold"), padding=10)
         s.configure("TNotebook", background=BG, borderwidth=0,
                     tabmargins=(6, 6, 0, 0))
         s.configure("TNotebook.Tab", background=BG3, foreground=FG_DIM,
-                    padding=(16, 7), font=("Segoe UI", 10, "bold"))
+                    padding=(16, 7), font=(UI_FONT, 10, "bold"))
         s.map("TNotebook.Tab", background=[("selected", BG2)],
               foreground=[("selected", ACCENT2)])
         s.map("Go.TButton", background=[("active", GO_ACTIVE),
@@ -2954,9 +2958,9 @@ class App:
                     troughcolor=BG2, bordercolor=BG3, lightcolor="#3b82f6",
                     darkcolor="#3b82f6")
         s.configure("BadgeOn.TLabel", background=ACCENT2, foreground=BADGE_FG,
-                    font=("Segoe UI", 9, "bold"), padding=(9, 3))
+                    font=(UI_FONT, 9, "bold"), padding=(9, 3))
         s.configure("BadgeOff.TLabel", background=ACCENT, foreground="white",
-                    font=("Segoe UI", 9, "bold"), padding=(9, 3))
+                    font=(UI_FONT, 9, "bold"), padding=(9, 3))
 
     def _rule(self, parent, row):
         """A blue divider marking where one section of the panel ends and
@@ -2970,7 +2974,7 @@ class App:
     def _text(self, parent, height):
         return Text(parent, height=height, wrap=WORD, bg=BG3, fg=FG,
                     insertbackground=FG, relief="flat", padx=8, pady=6,
-                    font=("Segoe UI", 10), undo=True)
+                    font=(UI_FONT, 10), undo=True)
 
     def _arm_panel_wheel(self):
         """Put the PanelWheel tag first on every widget of the three pages,
@@ -3235,7 +3239,7 @@ class App:
                                  fg=FG, relief="flat", highlightthickness=0,
                                  selectbackground=ACCENT,
                                  selectforeground="white",
-                                 activestyle="none", font=("Segoe UI", 9))
+                                 activestyle="none", font=(UI_FONT, 9))
         self.lora_list.grid(row=0, column=0, sticky="ew")
         lsb = ttk.Scrollbar(lframe, orient="vertical",
                             command=self.lora_list.yview)
@@ -3477,7 +3481,7 @@ class App:
         cr += 1
         self.face_list = Listbox(cb, height=3, bg=BG3, fg=FG, relief="flat",
                                  highlightthickness=0, activestyle="none",
-                                 font=("Segoe UI", 9), exportselection=False)
+                                 font=(UI_FONT, 9), exportselection=False)
         self.face_list.grid(row=cr, sticky="ew", pady=(0, 2)); cr += 1
         self._tip(self.face_list,
                   "The face image(s) or person that will be placed on the "
@@ -3886,7 +3890,7 @@ class App:
         self.queue_list = Listbox(qframe, selectmode="extended", height=4,
                                   bg=BG3, fg=FG, relief="flat",
                                   highlightthickness=0, activestyle="none",
-                                  exportselection=False, font=("Segoe UI", 9))
+                                  exportselection=False, font=(UI_FONT, 9))
         self.queue_list.grid(row=0, column=0, sticky="ew")
         qsb = ttk.Scrollbar(qframe, orient="vertical",
                             command=self.queue_list.yview)
@@ -5914,29 +5918,37 @@ class App:
                      values=[n for n, _v in SIZES], width=14).grid(
             row=2, column=1, sticky=W, pady=(8, 0))
 
+        ttk.Label(frm, text="Font").grid(row=3, column=0, sticky=W,
+                                         pady=(8, 0))
+        font_var = StringVar(value=prefs.get("font", "Segoe UI"))
+        ttk.Combobox(frm, textvariable=font_var, state="readonly",
+                     exportselection=False, values=UI_FONTS, width=16).grid(
+            row=3, column=1, sticky=W, pady=(8, 0))
+
         msg = ttk.Label(frm, text="", style="Dim.TLabel", wraplength=320,
                         justify="left")
-        msg.grid(row=3, column=0, columnspan=2, sticky=W, pady=(12, 0))
+        msg.grid(row=4, column=0, columnspan=2, sticky=W, pady=(12, 0))
 
         def save():
             p = self.settings.setdefault("prefs", {})
             p["theme"] = theme_var.get()
             p["ui_scale"] = dict(SIZES)[size_var.get()]
+            p["font"] = font_var.get()
             self._save_settings()
             return p
 
         def apply_now():
             save()
             self._apply_prefs_live()
-            msg.configure(text="Applied. If anything looks half-changed, "
-                               "Restart now makes it exact.")
+            msg.configure(text="Applied. The font and size apply fully after "
+                               "Restart now.")
 
         def restart():
             save()
             dlg.destroy()
             self._restart_app()
 
-        brow = ttk.Frame(frm); brow.grid(row=4, column=0, columnspan=2,
+        brow = ttk.Frame(frm); brow.grid(row=5, column=0, columnspan=2,
                                          sticky="ew", pady=(14, 0))
         ttk.Button(brow, text="Restart now", style="Go.TButton",
                    command=restart).pack(side="right")
@@ -5958,6 +5970,7 @@ class App:
         exact; this makes it close without one."""
         prefs = self.settings.get("prefs", {})
         apply_theme(prefs.get("theme", "dark"))
+        globals()["UI_FONT"] = prefs.get("font", "Segoe UI")
         try:
             self.root.tk.call("tk", "scaling", getattr(self, "_base_scaling",
                               1.333) * float(prefs.get("ui_scale", 1.0)))
@@ -5965,6 +5978,20 @@ class App:
             pass
         self._style()
         self.root.configure(bg=BG)
+
+        import tkinter.font as _tkfont
+
+        def refont(w):
+            try:
+                if w.winfo_class() in ("Text", "Listbox"):
+                    f = _tkfont.Font(font=w.cget("font"))
+                    w.configure(font=(UI_FONT, f.cget("size")))
+            except Exception:
+                pass
+            for c in w.winfo_children():
+                refont(c)
+
+        refont(self.root)
 
         def recolour(w):
             cls = w.winfo_class()
@@ -7558,7 +7585,7 @@ class App:
             self.canvas.create_text(
                 self.canvas.winfo_width() // 2, self.canvas.winfo_height() // 2,
                 text="Your art appears here", fill=FG_DIM,
-                font=("Segoe UI", 16))
+                font=(UI_FONT, 16))
             return
         img, params, path = self.session[self.current]
         if str(path).lower().endswith(".gif") and Path(path).exists() \
@@ -7700,7 +7727,7 @@ class App:
         frm = ttk.Frame(dlg, padding=14)
         frm.pack(fill="both", expand=True)
         TkLabel(frm, text=text, fg="#e74c3c", bg=BG,
-                font=("Segoe UI", 10, "bold"), justify="left",
+                font=(UI_FONT, 10, "bold"), justify="left",
                 wraplength=380).pack(anchor="w")
         brow = ttk.Frame(frm)
         brow.pack(fill="x", pady=(12, 0))
@@ -7886,7 +7913,7 @@ class App:
                           f"{'s' if len(files) != 1 else ''} "
                           f"({mb:.0f} MB) from the output folder.\n"
                           "This cannot be undone.",
-                fg="#e74c3c", bg=BG, font=("Segoe UI", 10, "bold"),
+                fg="#e74c3c", bg=BG, font=(UI_FONT, 10, "bold"),
                 justify="left", wraplength=420).pack(anchor="w")
         brow = ttk.Frame(frm)
         brow.pack(fill="x", pady=(14, 0))

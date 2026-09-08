@@ -55,6 +55,7 @@ app.App._probe_ollama = lambda self: None
 app.App._vram_poll = lambda self: None
 app.App._first_run_check = lambda self: None
 app.App._check_updates_bg = lambda self: None      # driven by hand below
+app.App._load_settings = lambda self: {}  # deterministic: ignore on-disk drift
 
 _started = []
 app.subprocess.Popen = lambda *a, **k: _started.append(a)
@@ -502,6 +503,22 @@ ui._apply_prefs_live()
 root.update()
 check("switching back to dark recolours again", app.BG == "#17171c"
       and str(ui.prompt_box.cget("bg")).lower() == "#2a2a38")
+
+# font family: applied live to the ttk styles and the tk widgets
+check("the font list and pref exist",
+      hasattr(app, "UI_FONTS") and "Segoe UI" in app.UI_FONTS)
+ui.settings["prefs"]["font"] = "Verdana"
+ui._apply_prefs_live()
+root.update()
+check("the UI font family changes", app.UI_FONT == "Verdana")
+import tkinter.font as _tf
+check("the prompt box uses the new family",
+      _tf.Font(font=ui.prompt_box.cget("font")).cget("family") == "Verdana")
+ui.settings["prefs"]["font"] = "Segoe UI"
+ui._apply_prefs_live()
+root.update()
+check("…and back to Segoe UI",
+      _tf.Font(font=ui.prompt_box.cget("font")).cget("family") == "Segoe UI")
 
 # ---- the startup path: a queued app_update opens the window -------------
 # automatic mode (the default): the download starts on its own, the app
