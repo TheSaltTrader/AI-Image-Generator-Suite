@@ -1,5 +1,20 @@
 # Changelog — Comic Book Art Creator
 
+## v1.56.0 — 2026-09-08
+- **"Edit a loaded image" is now its own tab.** A new **Edit image** tab
+  holds the loaded-image editor, fully separate from the face swap on the
+  Image generation tab, so the two never conflict. It has its own
+  instruction box and an **Apply edit** button, plus a **Common edits**
+  menu (also on right-click) with ready-made instructions — remove text,
+  plain background, change background/outfit/colours, restyle, improve
+  quality, fix hands — that fill the box for you.
+- **The face-swap checkbox is now at the top of the Face / Character
+  section**, and unticking it greys out the whole section.
+- **Badges now explain themselves in the log.** Each time the LoRA/RAG
+  badges refresh, app.log records whether each is green or red and why
+  (no LoRA ticked, map still loading, model not SDXL, editing, or a swap
+  setting) — so a "why is it red?" question can be answered from the log.
+
 ## v1.55.0 — 2026-09-08
 - **A Daylight (light) theme, and a Settings menu.** A new **⚙ Settings**
   button at the bottom of the panel lets you switch between the **Dark**

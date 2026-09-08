@@ -99,7 +99,7 @@ check("a reading without utilisation leaves the badge blank, not broken",
 # ---- the left panel is three tabs ---------------------------------------
 print("three tabs")
 tabs = [ui.left_tabs.tab(t, "text") for t in ui.left_tabs.tabs()]
-check("three tabs, in order", tabs == ["Image generation", "Animation", "Borders"], tabs)
+check("four tabs, in order", tabs == ["Image generation", "Animation", "Borders", "Edit image"], tabs)
 
 
 def page_of(widget):
@@ -119,7 +119,9 @@ check("the border maker lives on Borders", page_of(ui.border_prompt_box) == page
 check("the batch queue stays under the tabs, on every tab",
       page_of(ui.queue_list) is None and ui.queue_list.winfo_toplevel() is ui.root)
 check("the version row stays under the tabs", page_of(ui.upd_btn) is None)
-check("every page scrolls with the wheel", len(ui._scroll_canvases) == 3)
+check("every page scrolls with the wheel", len(ui._scroll_canvases) == 4)
+check("the edit box and Apply live on the Edit tab",
+      page_of(ui.edit_prompt_box) == pages[3] and page_of(ui.editor_use_btn) == pages[3])
 ui.left_tabs.select(2)
 root.update()
 check("the chosen tab is remembered", ui._collect_ui_state().get("tab") == 2,
@@ -349,6 +351,27 @@ check("swap + two guide checkboxes exist and are settable",
       hasattr(ui, "swap_rag_var") and hasattr(ui, "swap_cb")
       and hasattr(ui, "swap_use_rag_var") and hasattr(ui, "swap_use_lora_var")
       and not hasattr(ui, "swap_guide_cb"))
+check("the swap checkbox sits above the clone body",
+      int(ui.swap_cb.grid_info().get("row", 9)) < int(ui.clone_body.grid_info().get("row", 0)))
+ui.swap_rag_var.set(False)
+ui._on_clone_toggle()
+root.update()
+check("unticking the swap greys the clone body",
+      "disabled" in ui.face_list.cget("state")
+      or str(ui.face_list.cget("state")) == "disabled")
+ui.swap_rag_var.set(True)
+ui._on_clone_toggle()
+root.update()
+check("re-ticking re-enables it", str(ui.face_list.cget("state")) == "normal")
+check("the Edit tab has a Common-edits menu", hasattr(ui, "edit_menu_btn")
+      and hasattr(ui, "_edit_menu"))
+ui._pick_edit_action("remove the watermark")
+root.update()
+check("a menu action fills the edit box and shows the Edit tab",
+      "remove the watermark" in ui._get(ui.edit_prompt_box)
+      and ui.left_tabs.index("current") == 3)
+ui._set(ui.edit_prompt_box, "")
+ui.left_tabs.select(0)
 ui.swap_rag_var.set(True); ui.swap_fast_var.set(False)
 check("swap on + Best quality read back",
       ui.swap_rag_var.get() and not ui.swap_fast_var.get())

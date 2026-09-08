@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.55.0"
+APP_VERSION = "1.56.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -2980,7 +2980,8 @@ class App:
             yield w
             for c in w.winfo_children():
                 yield from walk(c)
-        for page in (self._page_gen, self._page_anim, self._page_border):
+        for page in (self._page_gen, self._page_anim, self._page_border,
+                     self._page_edit):
             for w in walk(page):
                 tags = w.bindtags()
                 if tags and tags[0] != "PanelWheel":
@@ -3007,6 +3008,9 @@ class App:
             w, width=e.width))
         inner.columnconfigure(0, weight=1)
         self._scroll_canvases.append(canvas)
+        if not hasattr(self, "_page_tabs"):
+            self._page_tabs = {}
+        self._page_tabs[str(inner)] = page
         return inner
 
     def _build_ui(self):
@@ -3045,6 +3049,7 @@ class App:
         self._page_gen = self._scroll_page(self.left_tabs, "Image generation")
         self._page_anim = self._scroll_page(self.left_tabs, "Animation")
         self._page_border = self._scroll_page(self.left_tabs, "Borders")
+        self._page_edit = self._scroll_page(self.left_tabs, "Edit image")
         self.left_canvas = self._scroll_canvases[0]
         self._page_bottom = ttk.Frame(left_wrap, padding=(12, 0, 12, 8))
         self._page_bottom.grid(row=2, column=0, sticky=NSEW)
@@ -3399,20 +3404,36 @@ class App:
 
         # image editor — Gemini-style instruction editing
         r = self._rule(left, r)
-        # ---------- FACE / CHARACTER: put a person on the generated image ----------
+        # ---------- CLONE A FACE onto the generated image ----------
         fc_head = ttk.Label(left, text="FACE / CHARACTER (optional)",
                             style="Head.TLabel")
         fc_head.grid(row=r, sticky=W, pady=(10, 0)); r += 1
         self._tip(fc_head,
                   "Put a specific person on the picture your prompt makes. "
-                  "Choose a face from a file OR from a people database, tick "
-                  "the swap, and Generate: your prompt (with the model, LoRAs "
-                  "and RAG map) draws the scene, then that face is placed on "
-                  "the person in it. Both pictures are kept.")
+                  "Tick the box, choose a face from a file or a database, and "
+                  "Generate: your prompt (with the model, LoRAs and RAG map) "
+                  "draws the scene, then that face is placed on the person "
+                  "in it. Both pictures are kept.")
 
-        # source: a file, or a people database — one or the other
+        # the on/off checkbox at the TOP; unticking greys the whole section
+        self.swap_rag_var = BooleanVar(value=True)
+        self.swap_cb = ttk.Checkbutton(
+            left, text="Put this face on the generated image",
+            variable=self.swap_rag_var, command=self._on_clone_toggle)
+        self.swap_cb.grid(row=r, sticky=W, pady=(2, 2)); r += 1
+        self._tip(self.swap_cb,
+                  "On: after the prompt draws the scene, the chosen face is "
+                  "placed on the person in it. Off: the whole section below "
+                  "is disabled and only the prompt is used.")
+
+        self.clone_body = ttk.Frame(left)
+        self.clone_body.grid(row=r, sticky=NSEW); r += 1
+        self.clone_body.columnconfigure(0, weight=1)
+        cb = self.clone_body
+        cr = 0
+
         self.face_source_var = StringVar(value="file")
-        srcrow = ttk.Frame(left); srcrow.grid(row=r, sticky=W, pady=(2, 0)); r += 1
+        srcrow = ttk.Frame(cb); srcrow.grid(row=cr, sticky=W, pady=(2, 0)); cr += 1
         ttk.Label(srcrow, text="Source:", style="Dim.TLabel").pack(side="left")
         ttk.Radiobutton(srcrow, text="From a file", value="file",
                         variable=self.face_source_var,
@@ -3421,9 +3442,8 @@ class App:
                         variable=self.face_source_var,
                         command=self._on_face_source).pack(side="left", padx=(10, 0))
 
-        # --- file source ---
-        self.face_file_row = ttk.Frame(left)
-        self.face_file_row.grid(row=r, sticky=NSEW, pady=2); r += 1
+        self.face_file_row = ttk.Frame(cb)
+        self.face_file_row.grid(row=cr, sticky=NSEW, pady=2); cr += 1
         self.face_file_row.columnconfigure(1, weight=1)
         ttk.Button(self.face_file_row, text="\U0001f5bc Browse\u2026", width=11,
                    command=self._pick_face).grid(row=0, column=0)
@@ -3431,9 +3451,8 @@ class App:
         ttk.Button(self.face_file_row, text="\u2715", width=3,
                    command=self._clear_face).grid(row=0, column=2)
 
-        # --- database source (pick the DB, then a person) ---
-        self.face_db_row = ttk.Frame(left)
-        self.face_db_row.grid(row=r, sticky=NSEW, pady=2); r += 1
+        self.face_db_row = ttk.Frame(cb)
+        self.face_db_row.grid(row=cr, sticky=NSEW, pady=2); cr += 1
         self.face_db_row.columnconfigure(1, weight=1)
         ttk.Button(self.face_db_row, text="\U0001f4c7 Database\u2026", width=13,
                    command=self._pick_actordb).grid(row=0, column=0)
@@ -3454,38 +3473,21 @@ class App:
         self.actor_thumb_lab = ttk.Label(_pr)
         self.actor_thumb_lab.grid(row=0, column=2, padx=(0, 4))
 
-        # what is actually being used, listed
-        ttk.Label(left, text="Using:", style="Dim.TLabel").grid(row=r, sticky=W)
-        r += 1
-        self.face_list = Listbox(left, height=3, bg=BG3, fg=FG, relief="flat",
+        ttk.Label(cb, text="Using:", style="Dim.TLabel").grid(row=cr, sticky=W)
+        cr += 1
+        self.face_list = Listbox(cb, height=3, bg=BG3, fg=FG, relief="flat",
                                  highlightthickness=0, activestyle="none",
                                  font=("Segoe UI", 9), exportselection=False)
-        self.face_list.grid(row=r, sticky="ew", pady=(0, 2)); r += 1
+        self.face_list.grid(row=cr, sticky="ew", pady=(0, 2)); cr += 1
         self._tip(self.face_list,
                   "The face image(s) or person that will be placed on the "
                   "generated picture.")
 
-        # --- the swap + its options ---
-        self.swap_rag_var = BooleanVar(value=True)
-        self.swap_cb = ttk.Checkbutton(
-            left, text="Put this face on the generated image",
-            variable=self.swap_rag_var, command=self._refresh_editor_state)
-        self.swap_cb.grid(row=r, sticky=W, pady=(4, 0)); r += 1
-        self._tip(self.swap_cb,
-                  "On: after the prompt draws the scene, the chosen face is "
-                  "placed on the person in it (a two-step generation; both "
-                  "the plain and the face-swapped picture are kept). Off: "
-                  "the face is ignored and only the prompt is used.")
-
-        # quality is always Best (Qwen) now \u2014 no on-screen option
         self.swap_fast_var = BooleanVar(value=False)
-
-        # exactly two checkboxes: use LoRA and/or RAG to guide the base the
-        # swap draws (either, both, or neither)
         self.swap_use_rag_var = BooleanVar(value=True)
         self.swap_use_lora_var = BooleanVar(value=True)
-        grow = ttk.Frame(left)
-        grow.grid(row=r, sticky=W, padx=(18, 0), pady=(0, 2)); r += 1
+        grow = ttk.Frame(cb)
+        grow.grid(row=cr, sticky=W, pady=(0, 2)); cr += 1
         ttk.Label(grow, text="Guide the base with:",
                   style="Dim.TLabel").pack(side="left")
         gl = ttk.Checkbutton(grow, text="LoRA", variable=self.swap_use_lora_var,
@@ -3494,25 +3496,26 @@ class App:
         gr = ttk.Checkbutton(grow, text="RAG", variable=self.swap_use_rag_var,
                              command=self._refresh_editor_state)
         gr.pack(side="left", padx=(8, 0))
-        self._tip(gl, "Apply your ticked LoRAs to the picture the swap "
-                      "draws. Untick to draw it without them.")
-        self._tip(gr, "Let your loaded RAG map guide the picture the swap "
-                      "draws. Untick to draw it without it.")
+        self._tip(gl, "Apply your ticked LoRAs to the picture the swap draws.")
+        self._tip(gr, "Let your loaded RAG map guide the picture the swap draws.")
 
-        # ---------- EDIT A LOADED IMAGE: a separate feature ----------
-        ed_head = ttk.Label(left, text="EDIT A LOADED IMAGE (optional)",
+        self._gen_row = r      # the generation page continues here, after clone
+        # ---------- EDIT A LOADED IMAGE: its own tab ----------
+        left = self._page_edit
+        r = 0
+        ed_head = ttk.Label(left, text="EDIT A LOADED IMAGE",
                             style="Head.TLabel")
-        ed_head.grid(row=r, sticky=W, pady=(12, 0)); r += 1
+        ed_head.grid(row=r, sticky=W, pady=(10, 0)); r += 1
         self._tip(ed_head,
-                  "Load an image and your prompt edits it \u2014 remove text, "
-                  "change the background, restage a character. While an image "
-                  "is loaded, presets, LoRAs and RAG are off (the image plus "
-                  "your instruction drive the result).")
+                  "Load an image and describe a change \u2014 the AI edits that "
+                  "image. Presets, LoRAs and RAG are off here; the image and "
+                  "your instruction drive the result. (Separate from the face "
+                  "swap on the Image generation tab.)")
         rrow = ttk.Frame(left); rrow.grid(row=r, sticky=NSEW, pady=2); r += 1
         rrow.columnconfigure(1, weight=1)
         ttk.Button(rrow, text="\U0001f5bc Load\u2026", width=9,
                    command=self._pick_ref).grid(row=0, column=0)
-        self.ref_var = StringVar(value="none \u2014 text only")
+        self.ref_var = StringVar(value="none \u2014 nothing loaded")
         ttk.Label(rrow, textvariable=self.ref_var, style="Dim.TLabel",
                   wraplength=150).grid(row=0, column=1, sticky=W, padx=6)
         self.editor_use_btn = ttk.Button(
@@ -3521,24 +3524,35 @@ class App:
         self.editor_use_btn.grid(row=0, column=2, padx=(0, 4))
         self.editor_use_btn.state(["disabled"])
         self._tip(self.editor_use_btn,
-                  "Edit the picture currently selected in the gallery \u2014 the "
-                  "prompt becomes the edit instruction.")
+                  "Edit the picture currently selected in the gallery.")
         ttk.Button(rrow, text="\u2715", width=3,
                    command=self._clear_ref).grid(row=0, column=3)
+
+        irow = ttk.Frame(left); irow.grid(row=r, sticky=NSEW, pady=(6, 0)); r += 1
+        irow.columnconfigure(0, weight=1)
+        ttk.Label(irow, text="What should the AI change?",
+                  style="Dim.TLabel").grid(row=0, column=0, sticky=W)
+        self.edit_menu_btn = ttk.Menubutton(irow, text="Common edits \u25be")
+        self.edit_menu_btn.grid(row=0, column=1, sticky="e")
+        self.edit_menu_btn["menu"] = self._build_edit_menu(self.edit_menu_btn)
+        self.edit_prompt_box = self._text(left, 3)
+        self.edit_prompt_box.grid(row=r, sticky=NSEW, pady=(2, 4)); r += 1
+        self.edit_prompt_box.bind("<Button-3>",
+                                  lambda e: self._popup_edit_menu(e))
+        self._tip(self.edit_prompt_box,
+                  "Describe the change in plain words (e.g. 'remove the "
+                  "watermark', 'change the background to a beach'). "
+                  "Right-click for common edits.")
 
         self.change_var = DoubleVar(value=60)
         chrow = ttk.Frame(left); chrow.grid(row=r, sticky=NSEW, pady=(2, 0)); r += 1
         ttk.Label(chrow, text="Change amount", style="Dim.TLabel").pack(side="left")
-        ch_scale = ttk.Scale(chrow, from_=10, to=100, variable=self.change_var,
-                             length=150)
-        ch_scale.pack(side="left", padx=6)
+        ttk.Scale(chrow, from_=10, to=100, variable=self.change_var,
+                  length=150).pack(side="left", padx=6)
         self.change_lab = ttk.Label(chrow, text="60%", width=5, style="Dim.TLabel")
         self.change_lab.pack(side="left")
         self.change_var.trace_add("write", lambda *_a: self.change_lab.config(
             text=f"{int(self.change_var.get())}%"))
-        self._tip(ch_scale,
-                  "How strongly the edit transforms the loaded image \u2014 low "
-                  "keeps it close, high changes it more.")
 
         erow = ttk.Frame(left); erow.grid(row=r, sticky=NSEW, pady=(2, 4)); r += 1
         erow.columnconfigure(1, weight=1)
@@ -3552,12 +3566,18 @@ class App:
                             lambda _e: self._on_editor_pick())
         self._refresh_editor_list()
         self._tip(self.editor_dd,
-                  "Which engine edits a loaded image: Flux Kontext (best at "
+                  "Which engine edits the image: Flux Kontext (best at "
                   "keeping identity and style) or Qwen Image Edit.")
-        # the result always renders at the Canvas size (no option)
+        ttk.Button(left, text="\u26a1  Apply edit", style="Go.TButton",
+                   command=self._generate).grid(row=r, sticky="ew", pady=(4, 0))
+        r += 1
         self.editor_canvas_var = BooleanVar(value=True)
 
+        left = self._page_gen      # restore for anything after this block
+        r = self._gen_row          # (set below just before this block)
+
         # generate
+        gorow = ttk.Frame(left)        # generate
         gorow = ttk.Frame(left); gorow.grid(row=r, sticky=NSEW,
                                             pady=(12, 4)); r += 1
         gorow.columnconfigure(0, weight=1)
@@ -5669,7 +5689,8 @@ class App:
                     self.swap_use_lora_var, self.swap_fast_var):
             var.trace_add("write", self._schedule_persist)
         for box in (self.prompt_box, self.negative_box, self.style_box,
-                    self.border_prompt_box, self.anim_prompt_box):
+                    self.border_prompt_box, self.anim_prompt_box,
+                    self.edit_prompt_box):
             box.bind("<KeyRelease>", self._schedule_persist)
             box.bind("<FocusOut>", self._schedule_persist)
         # a Listbox has no variable to trace, so ticking a LoRA never
@@ -6667,6 +6688,82 @@ class App:
     # takes 3 images total; Kontext chains up to 4 — 2 keeps both happy)
     SWAP_MAX_FACES = 2
 
+    EDIT_ACTIONS = [
+        ("Remove text / watermark",
+         "remove all text, captions, logos and watermarks, keep everything "
+         "else identical"),
+        ("Plain white background",
+         "replace the background with a plain solid white background, keep "
+         "the subject exactly as it is"),
+        ("Change the background to\u2026", "change the background to "),
+        ("Change the outfit to\u2026", "change the outfit to "),
+        ("Recolour to\u2026", "change the colour scheme to "),
+        ("Redraw in the style of\u2026", "redraw in the style of "),
+        ("Improve quality & sharpness",
+         "improve the overall quality, sharpness and detail, keep the "
+         "content the same"),
+        ("Fix distorted hands / faces",
+         "fix any distorted hands and faces, keep everything else the same"),
+    ]
+
+    def _build_edit_menu(self, parent):
+        """The 'Common edits' menu: each item fills the edit instruction
+        box. Items ending in a space (a template) leave the cursor for you
+        to finish the sentence."""
+        from tkinter import Menu
+        m = Menu(parent, tearoff=0, bg=BG2, fg=FG,
+                 activebackground=ACCENT, activeforeground="white")
+        for label, instr in self.EDIT_ACTIONS:
+            m.add_command(label=label,
+                          command=lambda t=instr: self._pick_edit_action(t))
+        self._edit_menu = m
+        return m
+
+    def _pick_edit_action(self, instr):
+        try:
+            self.left_tabs.select(self._page_tabs[str(self._page_edit)])
+        except Exception:
+            pass
+        self._set(self.edit_prompt_box, instr)
+        self.edit_prompt_box.focus_set()
+        self.edit_prompt_box.mark_set("insert", END)
+        if not self.ref_paths:
+            self.status_var.set("Now load an image (\U0001f5bc Load\u2026 or "
+                                "Use selected), then Apply edit.")
+        self._schedule_persist()
+
+    def _popup_edit_menu(self, event):
+        try:
+            self._edit_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._edit_menu.grab_release()
+        return "break"
+
+    def _on_clone_toggle(self, *_a):
+        self._apply_clone_enabled()
+        self._refresh_editor_state()
+        self._schedule_persist()
+
+    def _apply_clone_enabled(self):
+        """Grey the whole Clone body when the swap is unticked."""
+        if not hasattr(self, "clone_body"):
+            return
+        on = self.swap_rag_var.get()
+
+        def setstate(w):
+            try:
+                if isinstance(w, (ttk.Button, ttk.Checkbutton, ttk.Radiobutton,
+                                  ttk.Combobox, ttk.Menubutton, ttk.Scale)):
+                    w.state(["!disabled"] if on else ["disabled"])
+                elif w.winfo_class() == "Listbox":
+                    w.configure(state=("normal" if on else "disabled"))
+            except Exception:
+                pass
+            for c in w.winfo_children():
+                setstate(c)
+
+        setstate(self.clone_body)
+
     def _on_face_source(self, *_a):
         """Show the file row or the database rows for the chosen source."""
         db = self.face_source_var.get() == "db"
@@ -6794,11 +6891,36 @@ class App:
             style="BadgeOn.TLabel" if lora_on else "BadgeOff.TLabel")
         self.rag_badge.configure(
             style="BadgeOn.TLabel" if rag_on else "BadgeOff.TLabel")
+        # log WHY each badge is the colour it is, so a "why is it red?"
+        # report can be answered from app.log instead of guessed
+        why = []
+        if not lora_on:
+            why.append("LoRA red: " + ("editing a loaded image"
+                       if editing else "no LoRA ticked in the list"
+                       if not self._selected_loras()
+                       else "swap set to skip LoRA" if swap_mode
+                       and not self.swap_use_lora_var.get() else "?"))
+        if not rag_on:
+            why.append("RAG red: " + ("editing a loaded image" if editing
+                       else "no RAG map loaded (or still loading)"
+                       if self.ragmap is None
+                       else f"model {fam or '?'} is not SDXL" if not sdxl
+                       else "swap set to skip RAG" if swap_mode
+                       and not self.swap_use_rag_var.get() else "?"))
+        try:
+            applog.log("badges: LoRA=%s RAG=%s%s"
+                       % ("green" if lora_on else "red",
+                          "green" if rag_on else "red",
+                          "  (" + "; ".join(why) + ")" if why else ""))
+        except Exception:
+            pass
 
     def _refresh_editor_state(self):
         """After anything that changes the editor's inputs: enable/disable the
         editor buttons and repaint the mode badges."""
         has_gallery = bool(self.session)
+        if hasattr(self, "clone_body"):
+            self._apply_clone_enabled()
         if hasattr(self, "face_list"):
             self._refresh_face_list()
         if hasattr(self, "editor_use_btn"):
@@ -6822,10 +6944,17 @@ class App:
         if not engine_alive():
             messagebox.showerror("Engine", "Engine is not running yet.")
             return
-        prompt = self._get(self.prompt_box)
+        editing0 = bool(self.ref_paths)
+        prompt = (self._get(self.edit_prompt_box) if editing0
+                  else self._get(self.prompt_box))
         if not prompt:
-            messagebox.showinfo("Prompt", "Write a prompt first — or pick a "
-                                          "preset and hit 'Try example'.")
+            if editing0:
+                messagebox.showinfo(
+                    "Edit", "On the Edit image tab, say what the AI should "
+                            "change — type it or pick from Common edits.")
+            else:
+                messagebox.showinfo("Prompt", "Write a prompt first — or pick "
+                                              "a preset and hit 'Try example'.")
             return
         style = self._get(self.style_box)
         # 🔀 Use RAG & LoRA for image swap: two-step run — the styled base
