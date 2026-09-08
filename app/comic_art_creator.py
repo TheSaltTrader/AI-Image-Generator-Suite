@@ -42,8 +42,10 @@ from PIL.PngImagePlugin import PngInfo
 
 import self_update
 import engine_files
+import applog
+import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.38.0"
+APP_VERSION = "1.39.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -58,6 +60,15 @@ ENGINE_DIR = PROJECT / "ComfyUI"
 # the self-updater needs to know where this install lives before
 # anything calls it (it deliberately imports nothing from here)
 self_update.configure(PROJECT, APP_DIR)
+# app.log next to the exe: every status, message box, shown error and
+# caught exception, timestamped — a windowed exe has no console, and a
+# problem used to be reportable only from memory
+applog.configure(PROJECT / "app.log")
+applog.install_hooks()
+applog.wrap_messagebox(_tk_messagebox)
+applog.log("start v%s frozen=%s python=%s exe=%s" % (
+    APP_VERSION, bool(getattr(sys, "frozen", False)),
+    sys.version.split()[0], sys.executable))
 
 
 def engine_python():
@@ -2157,6 +2168,7 @@ class Generator:
         try:
             self._run(params)
         except Exception as e:
+            applog.exception("generation failed")
             self.q.put(("error", f"{type(e).__name__}: {e}"))
 
     def _run(self, params):
@@ -2573,6 +2585,8 @@ class App:
         self._wire_autosave()      # every change saved as it happens
         self._schedule_persist()   # baseline save right away
         root.protocol("WM_DELETE_WINDOW", self._on_close)
+        applog.tk_report(root)          # a raising callback goes to the log
+        self.status_var.trace_add("write", self._log_status)
         root.after(100, self._poll_queue)
         threading.Thread(target=self._boot_engine, daemon=True).start()
         threading.Thread(target=self._check_updates_bg, daemon=True).start()
@@ -3506,6 +3520,12 @@ class App:
                   "asks only before restarting; the window has a box to "
                   "turn that off.) This also brings back a version you "
                   "skipped.")
+        self.log_btn = ttk.Button(vrow2, text="📋 Log", command=self._open_log)
+        self.log_btn.pack(side="left", padx=(6, 0))
+        self._tip(self.log_btn,
+                  "Open app.log — every message the app showed and every "
+                  "error it caught, with the time. Send it along when "
+                  "reporting a problem.")
 
         # ---------- right column: preview + gallery ----------
         right = ttk.Frame(root, padding=(0, 12, 12, 12))
@@ -3664,6 +3684,7 @@ class App:
                 self.ui_queue.put(("ragmap_loaded", gen, path, rag, None,
                                    on_done))
             except Exception as e:
+                applog.exception("RAG map parse failed: " + str(path))
                 self.ui_queue.put(("ragmap_loaded", gen, path, None, e,
                                    on_done))
 
@@ -5296,6 +5317,17 @@ class App:
         threading.Thread(target=work, daemon=True).start()
         self.root.after(20000, self._force_quit)
 
+    def _log_status(self, *_a):
+        try:
+            applog.log("status: " + self.status_var.get())
+        except Exception:
+            pass
+
+    def _open_log(self):
+        """The Log button: open app.log, or say where it is."""
+        if not applog.open_log():
+            self.status_var.set(f"The log is at {applog.path()}.")
+
     def _force_quit(self):
         """Fallback for the close / relaunch hand-over: never leave a
         hidden window running because the engine shutdown got stuck."""
@@ -5328,6 +5360,7 @@ class App:
                 eng_ok = True
                 self.ui_queue.put(("status", "Engine updated — restarting…"))
             except Exception as e:
+                applog.exception("engine update failed")
                 # the engine is as it was (engine_files renames, never
                 # deletes in place) — but it was stopped above, and used to
                 # stay stopped until the next launch
@@ -5395,6 +5428,7 @@ class App:
             engine_files.repair_engine(
                 lambda s: self.ui_queue.put(("status", s)))
         except Exception as e:
+            applog.exception("engine repair failed")
             self.ui_queue.put(("error", f"Engine repair failed: {e}"))
             return False
         self.ui_queue.put(("status", "Engine files rebuilt — starting the "
@@ -6417,6 +6451,7 @@ class App:
                     self.status_var.set(f"Batch complete — {msg[1]} job(s) "
                                         "finished.")
                 elif kind == "error":
+                    applog.error("shown: " + str(msg[1]))
                     self.busy = False
                     self.go_btn.state(["!disabled"])
                     self.status_var.set(f"Error: {msg[1]}")
@@ -6966,6 +7001,7 @@ class App:
                                          "'Engine ready.', then Generate "
                                          "again."))
         except Exception as e:
+            applog.exception("IP-Adapter install failed")
             self.ui_queue.put(("error", f"IP-Adapter install failed: {e}"))
         finally:
             self._addon_lock.release()

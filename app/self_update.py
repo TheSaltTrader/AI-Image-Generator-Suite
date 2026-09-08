@@ -690,6 +690,7 @@ class UpdateWindow(Toplevel):
         self.cont_btn.configure(text="Later" if self.auto else "Continue")
         self.msg_var.set("Update failed: " + err + "\nYou can keep working, "
                          "or download it yourself from " + RELEASES_PAGE)
+        self.on_status("Update failed: " + err)
 
     def _succeeded(self, newexe):
         self._busy = False

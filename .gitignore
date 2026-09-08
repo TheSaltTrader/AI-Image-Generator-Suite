@@ -25,6 +25,7 @@ extra_model_paths.yaml
 engine.log
 engine_err.log
 gui_err.log
+app.log
 setup.log
 engine_version.json
 

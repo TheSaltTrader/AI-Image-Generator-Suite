@@ -267,7 +267,8 @@ wired into the real App window, engine stubbed out, automatic and manual
 startup paths, the RAG map parsed off the UI thread, the relaunch and
 close hand-overs), `app\startup_test.py` (12 checks — the relaunched
 copy waits for the copy that started it; a real child process holds the
-real mutex), `app\ragmap_test.py` (15 checks — the retrieval index gives
+real mutex), `app\applog_test.py` (log lines, tracebacks, thread and Tk
+hooks, message boxes, rotation), `app\ragmap_test.py` (15 checks — the retrieval index gives
 the walk's exact answers on a 60k-entry map, fast), `app\engine_files_test.py` (65 checks, 11 enumerated
 subjects — the engine swap against throw-away folders and a local HTTP
 server), and `app\rag_lora_e2e_test.py` (32 checks on a LIVE engine —
@@ -788,6 +789,20 @@ can combine LoRAs + RAG + a person in one pass.
   `_relaunch_after_update` does the same. Both arm a 20 s
   `_force_quit` so a stuck shutdown can never leave a hidden window
   running.
+- **`app.log` (v1.39.0) — `app\applog.py`.** A `--windowed` exe has no
+  console, so until v1.39 an exception in a worker thread or a Tk
+  callback vanished and the user reported "it said cannot import name"
+  from memory, unreproducible. `applog.configure(PROJECT/"app.log")` at
+  import, `install_hooks()` (sys + threading excepthooks),
+  `tk_report(root)` (report_callback_exception), `wrap_messagebox(
+  tkinter.messagebox)` (logs every box as it opens, on the MODULE so every
+  import style is covered), a `status_var` write-trace (`_log_status`,
+  immediate repeats deduped), `applog.error("shown: …")` in the "error"
+  queue handler, and `applog.exception(...)` in every except that shows a
+  message (Generator.run, RAG parse, add-on install, engine update/repair).
+  Capped at 3 MB / newest 1 MB kept. The 📋 Log button opens it. Rule for
+  new code: an except that turns an exception into a message must also
+  `applog.exception()` it — the message loses the traceback.
 - **The relaunched copy must WAIT for the copy that started it.** Right
   after every update the new exe took the single-instance mutex while
   the old one was still closing and asked "already running — open

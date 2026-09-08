@@ -1,5 +1,17 @@
 # Changelog — Comic Book Art Creator
 
+## v1.39.0 — 2026-09-08
+- **The app now keeps a log.** `app.log`, next to the program, records
+  every message the status bar showed, every message box, every error
+  the app reported and every exception it caught or failed to catch —
+  including ones in background work and in window callbacks, which a
+  windowed program otherwise loses without a trace — each with the
+  time. A **📋 Log** button next to *Check for updates* opens it. When
+  something goes wrong, send that file rather than describing the
+  message from memory. The file is capped at a few megabytes.
+- A failed self-update now also reports its reason in the status bar
+  (and so in the log), not only inside the update window.
+
 ## v1.38.0 — 2026-09-08
 - **Generate no longer pauses on a big RAG map.** Picking the example
   images for a prompt walked every entry of the map each time — on a map
