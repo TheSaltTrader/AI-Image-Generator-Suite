@@ -812,7 +812,16 @@ can combine LoRAs + RAG + a person in one pass.
   until those pids are gone, releases OUR mutex handle (while we hold
   one the name never disappears) and probes again. A genuinely separate
   copy still gets the question. `startup_test.py` covers it with a real
-  child process holding the real mutex.
+  child process holding the real mutex. **v1.40.0: the wait is
+  unconditional** — hiding the window first in `_on_close` (v1.37) made
+  "close, then reopen within a few seconds" hit the question too, with no
+  `_old_` file to name the closing pid. `main()` now shows a small
+  "waiting for the previous copy to finish closing…" window and polls the
+  mutex (`wait_for_previous_instance(pids=(), timeout=12, tick=
+  root.update)`); with named pids it stops early once they are gone and
+  the mutex is still held (a real second copy). The mutex is GLOBAL
+  across installs: a dev copy launch-tested on C: blocks the user's H:
+  copy — never launch-test while their app runs.
 - Settings persist on a 700 ms debounce (`_schedule_persist`) with a
   baseline save at startup, so a force-kill still keeps recent edits.
 - The left panel is a Canvas + inner frame; a global wheel router walks

@@ -45,7 +45,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.39.0"
+APP_VERSION = "1.40.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -359,19 +359,38 @@ def previous_instance_pids(argv=None):
     return pids
 
 
-def wait_for_previous_instance(pids, timeout=30, alive=None, probe=None):
-    """Wait (up to timeout s) for the listed copies to exit, then take the
-    single-instance mutex again. Returns (handle, already_running) — the
-    same shape as single_instance_handle(). Our own handle is released
-    before re-probing: while we hold one, the name never goes away."""
+def wait_for_previous_instance(pids=(), timeout=30, alive=None, probe=None,
+                               tick=None, poll=0.5):
+    """The single-instance mutex is held: wait (up to timeout s) for it to
+    free, re-probing every poll seconds. Returns (handle, already_running)
+    like single_instance_handle().
+
+    pids are copies known to be on their way out (an update's
+    *_old_<pid>.exe, --after-update); once all of them are gone but the
+    mutex is still held, whoever holds it is a real second copy and the
+    wait ends early. With no pids — the copy that is closing right now,
+    its window already hidden while its engine shuts down (v1.37 hides the
+    window first, which made "close, reopen" ask about a second copy) —
+    the mutex itself is the only signal, so it is simply polled. Our own
+    handle is released before each probe: while we hold one, the name
+    never goes away. tick() runs each cycle (the waiting window's update)."""
     alive = alive or _pid_alive
     probe = probe or single_instance_handle
     deadline = time.time() + timeout
-    while time.time() < deadline and any(alive(p) for p in pids):
-        time.sleep(0.5)
-    release_single_instance()
-    time.sleep(0.2)          # the name vanishes as the last handle closes
-    return probe()
+    while True:
+        release_single_instance()
+        time.sleep(0.2)          # the name vanishes as the last handle closes
+        h, already = probe()
+        if not already or time.time() >= deadline:
+            return h, already
+        if pids and not any(alive(p) for p in pids):
+            return h, already    # the leavers left; someone else holds it
+        if tick:
+            try:
+                tick()
+            except Exception:
+                pass
+        time.sleep(poll)
 
 
 def api_get(path):
@@ -7355,13 +7374,20 @@ def main():
     root = Tk()
     _mutex_handle, already = single_instance_handle()
     if already:
+        # a copy that is closing hides its window at once and frees the
+        # mutex a few seconds later (engine shutdown); a copy an update just
+        # replaced is on its way out too. Wait for either — with a small
+        # window that says so — before asking about a second copy.
         leaving = previous_instance_pids()
-        if leaving:
-            # the copy holding the mutex is the one that just updated and
-            # started us — it is closing, not competing: wait for it
-            root.withdraw()
-            _mutex_handle, already = wait_for_previous_instance(leaving)
-            root.deiconify()
+        root.title("Comic Book Art Creator")
+        root.geometry("480x110")
+        _wait = ttk.Label(root, text="Waiting for the previous copy to "
+                                     "finish closing…", padding=(24, 38))
+        _wait.pack()
+        root.update()
+        _mutex_handle, already = wait_for_previous_instance(
+            leaving, timeout=30 if leaving else 12, tick=root.update)
+        _wait.destroy()
     if already:
         from tkinter import messagebox as _mb
         if not _mb.askyesno(

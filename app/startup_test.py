@@ -55,26 +55,31 @@ with tempfile.TemporaryDirectory() as td:
     app.PROJECT = real
 
 print("the wait")
-calls = []
+# a copy that is closing (window hidden, engine shutting down): the mutex
+# is held on the first two probes and free on the third
 seq = iter([True, True, False])
-
-
-def fake_alive(pid):
-    calls.append(pid)
-    return next(seq, False)
-
-
+ticks = []
 t0 = time.time()
-got = app.wait_for_previous_instance({1}, timeout=10, alive=fake_alive,
-                                     probe=lambda: ("H", False))
-check("waits while the old copy is alive, then probes the mutex again",
-      got == ("H", False) and len(calls) == 3, (got, calls))
-check("…in about a second, not the full timeout", time.time() - t0 < 5)
+got = app.wait_for_previous_instance((), timeout=10,
+                                     probe=lambda: ("H", next(seq, False)),
+                                     tick=lambda: ticks.append(1), poll=0.05)
+check("a closing copy: the mutex is polled until it frees, the waiting "
+      "window ticked meanwhile", got == ("H", False) and len(ticks) == 2,
+      (got, ticks))
+check("…in well under the timeout", time.time() - t0 < 3)
+# copies known to be leaving (an update): once they are gone yet the mutex
+# is still held, someone else holds it — stop waiting and ask
+seq2 = iter([True, True, False])
+got = app.wait_for_previous_instance({1}, timeout=10,
+                                     alive=lambda p: next(seq2, False),
+                                     probe=lambda: ("H", True), poll=0.05)
+check("known leavers gone but the mutex still held: a real second copy",
+      got == ("H", True))
 t0 = time.time()
-got = app.wait_for_previous_instance({1}, timeout=1.2, alive=lambda p: True,
-                                     probe=lambda: ("H", True))
+got = app.wait_for_previous_instance((), timeout=1.0,
+                                     probe=lambda: ("H", True), poll=0.05)
 check("a copy that never exits: gives up at the timeout and the question "
-      "is still asked", got == ("H", True) and 1.0 < time.time() - t0 < 4,
+      "is still asked", got == ("H", True) and 0.9 < time.time() - t0 < 4,
       "%.1fs" % (time.time() - t0))
 
 print("the real mutex")

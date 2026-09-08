@@ -1,5 +1,16 @@
 # Changelog — Comic Book Art Creator
 
+## v1.40.0 — 2026-09-08
+- **Reopening the app right after closing it no longer asks about a
+  second copy.** Since v1.37 the window disappears the moment you close
+  it, while the program spends a few more seconds shutting the engine
+  down; opening the app again in that gap met the "appears to be
+  already running" question. A new copy now shows a small "waiting for
+  the previous copy to finish closing" window and carries on by itself
+  once the old one has gone. The question is only asked when a copy
+  really is open — its window is on screen, or it did not close within
+  twelve seconds.
+
 ## v1.39.0 — 2026-09-08
 - **The app now keeps a log.** `app.log`, next to the program, records
   every message the status bar showed, every message box, every error
