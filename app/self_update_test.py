@@ -445,6 +445,7 @@ try:
         check("all three buttons present",
               all(b.winfo_exists() for b in (w.update_btn, w.skip_btn,
                                              w.cont_btn)))
+        check("the third button is Not now", w.cont_btn.cget("text") == "Not now")
         check("notes are read-only",
               str(w.notes.cget("state")) == "disabled")
         check("notes rendered the bullets",
@@ -471,10 +472,10 @@ try:
         root.update()
         w2._continue()
         root.update()
-        check("Continue closes the window", not w2.winfo_exists())
-        check("Continue does not remember a skip",
+        check("Not now closes the window", not w2.winfo_exists())
+        check("Not now does not remember a skip",
               su.skipped_version() is None)
-        check("Continue downloaded nothing", not relaunched)
+        check("Not now downloaded nothing", not relaunched)
 
         # a failed update leaves the user able to carry on
         w3 = su.UpdateWindow(root, upd, "1.34.0",
@@ -515,16 +516,25 @@ try:
         su.clear_skip()
         su.requests.get = _real_get
 
-        applied = []
-        real_apply = su.apply_update
+        staged_tags, installs, discards = [], [], []
+        real_stage, real_install = su.stage_update, su.install_staged
 
-        def fake_apply(upd_, cur, status, progress, cancel):
-            applied.append(upd_.tag)
-            status("Installing…")
+        class FakeStaged:
+            def discard(self):
+                discards.append(1)
+
+        def fake_stage(upd_, cur, status, progress, cancel):
+            staged_tags.append(upd_.tag)
+            status("Checking the download…")
             progress(10, 10)
+            return FakeStaged()
+
+        def fake_install(staged, status):
+            installs.append(1)
             return Path(td) / "ComicArtCreator.exe"
 
-        su.apply_update = fake_apply
+        su.stage_update = fake_stage
+        su.install_staged = fake_install
         relaunched.clear()
         statuses.clear()
         w4 = su.UpdateWindow(root, upd, "1.34.0",
@@ -532,23 +542,21 @@ try:
                               "fg": "#e8e8f0"},
                              on_relaunch=lambda e, t: relaunched.append(t),
                              on_status=statuses.append, auto=True)
-        pump(root, lambda: w4._newexe is not None)
-        check("automatic: the download starts on its own", applied == ["v1.35.0"])
-        check("automatic: the window says it is updating",
-              "Updating" in w4.title())
-        check("automatic: no Skip button is offered",
-              not w4.skip_btn.winfo_manager() == "pack")
-        check("automatic: installed, but NOT restarted on its own",
-              w4._newexe is not None and not relaunched)
-        check("automatic: the primary button is Restart now, enabled",
-              w4.update_btn.cget("text") == "Restart now"
+        pump(root, lambda: w4._staged is not None)
+        check("automatic: the download starts on its own", staged_tags == ["v1.35.0"])
+        check("automatic: downloaded and verified, but NOTHING installed",
+              w4._staged is not None and not installs and not relaunched)
+        check("automatic: the primary button is Install and restart, enabled",
+              w4.update_btn.cget("text") == "Install and restart"
               and "disabled" not in w4.update_btn.state())
-        check("automatic: the other button is Later",
-              w4.cont_btn.cget("text") == "Later")
-        check("automatic: the message says a restart is the user's call",
-              "Restart now" in w4.msg_var.get() and "Later" in w4.msg_var.get())
-        check("automatic: the status bar says restart when ready",
-              statuses and "restart" in statuses[-1].lower())
+        check("automatic: Not now is offered", w4.cont_btn.cget("text") == "Not now"
+              and "disabled" not in w4.cont_btn.state())
+        check("automatic: Skip this version is offered too",
+              w4.skip_btn.winfo_manager() == "pack"
+              and "disabled" not in w4.skip_btn.state())
+        check("automatic: the message explains the three choices",
+              "Install" in w4.msg_var.get() and "Not now" in w4.msg_var.get()
+              and "Skip this version" in w4.msg_var.get())
         check("automatic: the checkbox reflects the setting", w4.auto_var.get())
         w4.auto_var.set(False)
         w4._toggle_auto()
@@ -556,50 +564,68 @@ try:
         w4.auto_var.set(True)
         w4._toggle_auto()
         check("automatic: …and on again", su.auto_update())
-        # Later: closes, nothing relaunched, told it starts next time
+        # Not now: the download is thrown away, nothing installed
         w4._continue()
         root.update()
-        check("Later closes the window without restarting",
-              not w4.winfo_exists() and not relaunched)
-        check("Later says the new version starts next time",
-              statuses and "next time" in statuses[-1])
+        check("Not now closes the window without installing",
+              not w4.winfo_exists() and not installs and not relaunched)
+        check("Not now discards the download", discards == [1])
+        check("Not now says it will ask again next time",
+              statuses and "asked again next time" in statuses[-1], statuses[-1:])
+        check("Not now remembers no skip", su.skipped_version() is None)
 
-        # Restart now: the approval
-        applied.clear()
+        # Install and restart: the approval
+        staged_tags.clear()
         w5 = su.UpdateWindow(root, upd, "1.34.0",
                              {"bg": "#17171c", "bg2": "#20202a",
                               "fg": "#e8e8f0"},
                              on_relaunch=lambda e, t: relaunched.append(t),
                              on_status=statuses.append, auto=True)
-        pump(root, lambda: w5._newexe is not None)
-        check("Restart now is inert until the install is done — it is done",
-              w5._newexe is not None)
+        pump(root, lambda: w5._staged is not None)
         w5._restart()
-        root.update()
-        check("Restart now hands over to the new exe", relaunched == ["v1.35.0"])
+        pump(root, lambda: relaunched)
+        check("Install and restart installs the verified download",
+              installs == [1])
+        check("…and hands over to the new exe", relaunched == ["v1.35.0"])
         w5._close()
 
-        # a failed automatic update offers Retry, never restarts
+        # Skip this version from the automatic window
+        installs.clear()
         relaunched.clear()
+        discards.clear()
+        w5b = su.UpdateWindow(root, upd, "1.34.0",
+                              {"bg": "#17171c", "bg2": "#20202a",
+                               "fg": "#e8e8f0"},
+                              on_relaunch=lambda e, t: relaunched.append(t),
+                              on_status=statuses.append, auto=True)
+        pump(root, lambda: w5b._staged is not None)
+        w5b._skip()
+        root.update()
+        check("Skip this version from the automatic window is remembered",
+              su.skipped_version() == "v1.35.0" and not installs
+              and discards == [1])
+        su.clear_skip()
 
-        def bad_apply(*a, **k):
+        # a failed automatic download offers Retry, never installs
+        def bad_stage(*a, **k):
             raise RuntimeError("the download was damaged")
 
-        su.apply_update = bad_apply
+        su.stage_update = bad_stage
         w6 = su.UpdateWindow(root, upd, "1.34.0",
                              {"bg": "#17171c", "bg2": "#20202a",
                               "fg": "#e8e8f0"},
                              on_relaunch=lambda e, t: relaunched.append(t),
                              on_status=statuses.append, auto=True)
         pump(root, lambda: not w6._busy)
-        check("automatic: a failed update offers Retry",
+        check("automatic: a failed download offers Retry",
               w6.update_btn.cget("text") == "Retry"
               and "disabled" not in w6.update_btn.state())
-        check("automatic: a failed update never restarts", not relaunched)
-        check("automatic: a failed update explains itself",
+        check("automatic: a failed download never installs or restarts",
+              not installs and not relaunched)
+        check("automatic: a failed download explains itself",
               "damaged" in w6.msg_var.get())
         w6._close()
-        su.apply_update = real_apply
+        su.stage_update, su.install_staged = real_stage, real_install
 
         # the manual window is unchanged by all this
         w7 = su.UpdateWindow(root, upd, "1.34.0",
@@ -608,10 +634,10 @@ try:
                              on_relaunch=lambda e, t: relaunched.append(t),
                              on_status=statuses.append)
         root.update()
-        check("manual: Update now / Skip / Continue as before",
+        check("manual: Update now / Skip this version / Not now",
               w7.update_btn.cget("text") == "Update now"
               and w7.skip_btn.winfo_manager() == "pack"
-              and w7.cont_btn.cget("text") == "Continue")
+              and w7.cont_btn.cget("text") == "Not now")
         check("manual: nothing downloads on open", not w7._busy)
         w7._close()
     root.destroy()

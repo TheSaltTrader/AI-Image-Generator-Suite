@@ -231,6 +231,18 @@ opens the manual window. The user asked for exactly this split:
 (exist_ok) — the shared-folder mkdir failure described under the engine
 section applied here too.
 
+**v1.47.0 — stage, then ask.** User rule: "always give an option to skip
+the upgrade for this time". `apply_update` is now `install_staged(
+stage_update(...))`: `stage_update` downloads + verifies into a `Staged`
+(tmp, new_app, new_setup; `.discard()`), touching nothing else;
+`install_staged` swaps + refreshes + removes the tmp. The automatic window
+stages on open and then shows **Install and restart / Skip this version /
+Not now** (`_ready`); Install runs `install_staged` off the UI thread
+(`_restart` → `_installed` → `on_relaunch`); Not now (`_continue`)
+discards the staged download and says "asked again next time"; the
+window's X is Not now. The manual window's third button is Not now too.
+Tests stub `su.stage_update` / `su.install_staged` (not `apply_update`).
+
 Things it does that are easy to get wrong, and why:
 
 - **`version_tuple()` pads to exactly 4 parts.** A git tag reads as three
@@ -850,6 +862,23 @@ can combine LoRAs + RAG + a person in one pass.
   copy — never launch-test while their app runs.
 - Settings persist on a 700 ms debounce (`_schedule_persist`) with a
   baseline save at startup, so a force-kill still keeps recent edits.
+- **The wheel over the left panel scrolls the panel, full stop (v1.47.0).**
+  Bindtags run instance → class → toplevel → all, so a `bind_all` router
+  runs AFTER a Combobox has changed its value or a Text has scrolled
+  itself, and "break" from "all" cannot undo that. `_arm_panel_wheel()`
+  (after `_build_ui`) puts a `PanelWheel` tag FIRST on every widget of the
+  three pages; `root.bind_class("PanelWheel", "<MouseWheel>", …)` scrolls
+  the page canvas under the pointer (`winfo_containing`) and returns
+  "break". Widgets created on a page LATER need the tag too. The old
+  `bind_all` router stays for the pointer-over-page, focus-elsewhere case.
+- **The readiness strip (v1.47.0).** `self._pending` {key: text} painted
+  by `_set_pending(key, text|None)` into `ready_frame` (row 0 of
+  `left_wrap`, above the notebook; `grid_remove`d when empty). Worker
+  threads post `("pending", key, text)`; keys today: engine (boot →
+  engine_ready / failures), ragmap (`_rag_progress` with the percentage →
+  `_rag_progress_done`), updates (`_check_updates_bg` wrapper), addons
+  (`_install_style_support`). Anything else that makes the user wait
+  should post its key too.
 - **Dialogs are placed, never left to Windows (v1.44.0).** A `Toplevel`
   with no geometry lands at the screen's top-left; a `messagebox` lands
   wherever. `_place_near(dlg, anchor)` puts a dialog just above an anchor

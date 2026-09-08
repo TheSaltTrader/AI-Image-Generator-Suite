@@ -1,5 +1,21 @@
 # Changelog — Comic Book Art Creator
 
+## v1.47.0 — 2026-09-08
+- **You can always say "not this time" to an update.** The automatic
+  update still downloads the new version on its own, but it now stops
+  and asks before touching anything: **Install and restart**, **Not now**
+  (nothing changes; you are asked again next time you open the app), or
+  **Skip this version** (quiet until a newer one). Previously the
+  automatic path installed first and only asked about the restart. The
+  manual window's third button is now called Not now as well.
+- **The mouse wheel over the left panel always scrolls the panel.** A
+  dropdown used to change its value, and a text box or the LoRA list
+  scrolled itself, when the wheel happened to be over them.
+- **A loading strip above the tabs** lists what is still starting up —
+  the engine, a RAG map (with its percentage), the update check, an
+  add-on install — and disappears once everything is ready, so you know
+  when to wait.
+
 ## v1.46.0 — 2026-09-08
 - **Deleting a gallery image also removes it from wherever it was in
   use.** The image editor, the border maker's references and the

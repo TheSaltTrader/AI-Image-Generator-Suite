@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.46.0"
+APP_VERSION = "1.47.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -2705,6 +2705,7 @@ class App:
         self._warned_vram = set()   # tight-fit warnings shown once each
 
         self._build_ui()
+        self._arm_panel_wheel()
         self.left_tabs.bind("<<NotebookTabChanged>>", self._schedule_persist,
                             add="+")
         self._apply_ui_state(self.settings.get("ui", {}))
@@ -2870,6 +2871,20 @@ class App:
                     insertbackground=FG, relief="flat", padx=8, pady=6,
                     font=("Segoe UI", 10), undo=True)
 
+    def _arm_panel_wheel(self):
+        """Put the PanelWheel tag first on every widget of the three pages,
+        so the wheel over the panel scrolls the panel before the widget
+        under the pointer can react."""
+        def walk(w):
+            yield w
+            for c in w.winfo_children():
+                yield from walk(c)
+        for page in (self._page_gen, self._page_anim, self._page_border):
+            for w in walk(page):
+                tags = w.bindtags()
+                if tags and tags[0] != "PanelWheel":
+                    w.bindtags(("PanelWheel",) + tags)
+
     def _scroll_page(self, notebook, title):
         """One tab: a canvas with a vertical scrollbar holding a padded
         frame; returns the frame to build into. The canvas is registered
@@ -2907,15 +2922,31 @@ class App:
         left_wrap.grid(row=0, column=0, sticky=NSEW)
         left_wrap.rowconfigure(0, weight=1)
         left_wrap.columnconfigure(0, weight=1)
+        # what is still starting up — engine, RAG map, update check, add-on
+        # installs — listed above the tabs until everything is ready
+        self._pending = {}
+        self.ready_frame = ttk.Frame(left_wrap, padding=(12, 6, 12, 2))
+        self.ready_frame.grid(row=0, column=0, sticky="ew")
+        self.ready_frame.columnconfigure(0, weight=1)
+        self.ready_bar = ttk.Progressbar(self.ready_frame, mode="indeterminate",
+                                         style="Gpu.Horizontal.TProgressbar")
+        self.ready_bar.grid(row=0, column=0, sticky="ew")
+        self.ready_var = StringVar(value="")
+        ttk.Label(self.ready_frame, textvariable=self.ready_var,
+                  style="Dim.TLabel", wraplength=410,
+                  justify="left").grid(row=1, column=0, sticky=W, pady=(2, 0))
+        self.ready_frame.grid_remove()
+        left_wrap.rowconfigure(0, weight=0)
+        left_wrap.rowconfigure(1, weight=1)
         self.left_tabs = ttk.Notebook(left_wrap)
-        self.left_tabs.grid(row=0, column=0, sticky=NSEW)
+        self.left_tabs.grid(row=1, column=0, sticky=NSEW)
         self._scroll_canvases = []
         self._page_gen = self._scroll_page(self.left_tabs, "Image generation")
         self._page_anim = self._scroll_page(self.left_tabs, "Animation")
         self._page_border = self._scroll_page(self.left_tabs, "Borders")
         self.left_canvas = self._scroll_canvases[0]
         self._page_bottom = ttk.Frame(left_wrap, padding=(12, 0, 12, 8))
-        self._page_bottom.grid(row=1, column=0, sticky=NSEW)
+        self._page_bottom.grid(row=2, column=0, sticky=NSEW)
         self._page_bottom.columnconfigure(0, weight=1)
 
         def _wheel_router(e):
@@ -2936,6 +2967,24 @@ class App:
                 w = w.master
             return None
         self.root.bind_all("<MouseWheel>", _wheel_router, add="+")
+
+        # over the left panel the wheel ALWAYS scrolls the panel: a
+        # dropdown would change its value, a text box or the LoRA list would
+        # scroll itself, because their class bindings run before "all".
+        # A tag placed FIRST on every widget of the pages runs before them
+        # and stops the event there (see _arm_panel_wheel, after the build).
+        def _panel_wheel(e):
+            try:
+                w = self.root.winfo_containing(e.x_root, e.y_root)
+            except Exception:
+                w = None
+            while w is not None:
+                if w in self._scroll_canvases:
+                    w.yview_scroll(-1 if e.delta > 0 else 1, "units")
+                    return "break"
+                w = w.master
+            return None
+        self.root.bind_class("PanelWheel", "<MouseWheel>", _panel_wheel)
         left = self._page_gen
         r = 0
 
@@ -3712,10 +3761,11 @@ class App:
                   "Ask GitHub whether a newer release of the app exists. If "
                   "there is one, a window shows what changed and you choose "
                   "whether to install it — nothing is downloaded until you "
-                  "say so. (At startup the app updates automatically and "
-                  "asks only before restarting; the window has a box to "
-                  "turn that off.) This also brings back a version you "
-                  "skipped.")
+                  "say so. (At startup the app downloads a new version on "
+                  "its own, then asks: Install and restart, Not now, or "
+                  "Skip this version; the window has a box to turn the "
+                  "automatic download off.) This also brings back a version "
+                  "you skipped.")
         self.log_btn = ttk.Button(vrow2, text="📋 Log", command=self._open_log)
         self.log_btn.pack(side="left", padx=(6, 0))
         self._tip(self.log_btn,
@@ -3916,6 +3966,29 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
+    # ------------------------------------------------ what is still loading
+    def _set_pending(self, key, text):
+        """Mark one start-up item as still loading (text) or done (None)
+        and repaint the strip above the tabs."""
+        if text:
+            self._pending[key] = text
+        else:
+            self._pending.pop(key, None)
+        if not hasattr(self, "ready_frame"):
+            return
+        if self._pending:
+            self.ready_var.set("Still loading — please wait: "
+                               + "; ".join(self._pending.values()))
+            self.ready_frame.grid()
+            try:
+                self.ready_bar.start(12)
+            except Exception:
+                pass
+        else:
+            self.ready_bar.stop()
+            self.ready_frame.grid_remove()
+            self.ready_var.set("")
+
     def _rag_progress(self, gen, phase, done, total):
         """Paint the RAG-map loading bar — for the newest load only."""
         if gen != self._ragmap_load_gen or not hasattr(self, "rag_prog"):
@@ -3931,7 +4004,10 @@ class App:
             self.rag_prog_var.set(
                 f"Loading {name}: checking references {done:,} / {total:,} "
                 f"({done * 100 // total}%)")
+            self._set_pending("ragmap", f"RAG map {name} "
+                                        f"({done * 100 // total}%)")
         else:
+            self._set_pending("ragmap", f"RAG map {name} ({phase})")
             text = {"reading": f"reading and parsing the map file{size}",
                     "embeddings": "reading the embeddings",
                     "indexing": "building the word index"}.get(phase, phase)
@@ -3940,6 +4016,7 @@ class App:
             self.rag_prog_var.set(f"Loading {name}: {text}…")
 
     def _rag_progress_done(self):
+        self._set_pending("ragmap", None)
         if hasattr(self, "rag_prog"):
             self.rag_prog.stop()
             self.rag_prog.grid_remove()
@@ -5474,11 +5551,14 @@ class App:
         """The startup housekeeping + update check, in a worker thread. A
         failure here (no network, a broken certificate bundle) used to
         kill the thread silently; now it is logged and said."""
+        self.ui_queue.put(("pending", "updates", "checking for updates"))
         try:
             self._check_updates_bg_inner()
         except Exception as e:
             applog.exception("update check failed")
             self.ui_queue.put(("status", f"Update check failed: {e}"))
+        finally:
+            self.ui_queue.put(("pending", "updates", None))
 
     def _check_updates_bg_inner(self):
         # clear the exes an earlier update renamed aside — they could not be
@@ -5734,6 +5814,7 @@ class App:
             pass
 
     def _boot_engine(self):
+        self.ui_queue.put(("pending", "engine", "engine starting"))
         self._repair_engine_dirs()
         self._repair_engine_files()
         if engine_alive() and not engine_is_ours():
@@ -5750,6 +5831,7 @@ class App:
             try:
                 start_engine()
             except Exception as e:
+                self.ui_queue.put(("pending", "engine", None))
                 self.ui_queue.put(("error", f"Could not start engine: {e}"))
                 return
             for _ in range(180):
@@ -5759,6 +5841,7 @@ class App:
             else:
                 if self._repair_engine_files(from_log=True):
                     return          # the repair started the engine again
+                self.ui_queue.put(("pending", "engine", None))
                 self.ui_queue.put(("error", "Engine did not come up — see "
                                             "engine.log in the project folder."))
                 return
@@ -5791,6 +5874,7 @@ class App:
             self.ui_queue.put(("vram", vram))
         except Exception:
             pass
+        self.ui_queue.put(("pending", "engine", None))
         self.ui_queue.put(("engine_ready", None))
         self._autoheal_addons()
 
@@ -6736,6 +6820,8 @@ class App:
                         threading.Thread(target=self._download_updates,
                                          args=(ups, eng),
                                          daemon=True).start()
+                elif kind == "pending":
+                    self._set_pending(msg[1], msg[2])
                 elif kind == "ragmap_progress":
                     self._rag_progress(*msg[1:5])
                 elif kind == "ragmap_loaded":
@@ -7503,6 +7589,7 @@ class App:
                                          "installed — wait for 'Engine "
                                          "ready.'"))
             return
+        self.ui_queue.put(("pending", "addons", "installing IP-Adapter"))
         try:
             node_dir = ENGINE_DIR / "custom_nodes" / "ComfyUI_IPAdapter_plus"
             if not node_dir.exists():
@@ -7535,6 +7622,7 @@ class App:
             applog.exception("IP-Adapter install failed")
             self.ui_queue.put(("error", f"IP-Adapter install failed: {e}"))
         finally:
+            self.ui_queue.put(("pending", "addons", None))
             self._addon_lock.release()
 
     # -------------------------------------------------- animator

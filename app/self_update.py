@@ -4,11 +4,12 @@ The app checks its GitHub releases at startup (and on demand from the
 "Check for updates" button). When a newer release exists an update window
 opens showing what changed. Two modes:
 
-* automatic (the default, since v1.36): the download and install start as
-  soon as the window opens, and the user is asked only to approve the
-  RESTART — Restart now, or Later, in which case the new version simply
-  starts the next time the app is opened. An install that is never updated
-  is how the bugs a release fixed live on.
+* automatic (the default, since v1.36): the download starts as soon as the
+  window opens and is verified, and THEN the user is asked — Install and
+  restart, Not now (nothing changes; asked again next launch), or Skip
+  this version. Since v1.47 nothing is swapped until the user says so:
+  "always give an option to skip the upgrade for this time". An install
+  that is never updated is how the bugs a release fixed live on.
 * manual (the checkbox in the window turns automatic off, and the Check for
   updates button always uses it): nothing is downloaded until the user
   presses Update now; Skip this version and Continue are offered.
@@ -322,12 +323,24 @@ def _download_and_unpack(upd, tmp, status, progress, cancel):
         z.extractall(tmp)
 
 
-def apply_update(upd, current_version, status, progress, cancel):
-    """Download the release, verify it, swap the exes in, refresh the data
-    files the release ships, and return the exe to relaunch.
+class Staged:
+    """A downloaded and verified release that is NOT installed yet. The
+    automatic window holds one of these while it asks; Not now discards
+    it and nothing on disk has changed."""
 
-    Raises on any problem, having first put back whatever it moved.
-    """
+    def __init__(self, tmp, new_app, new_setup):
+        self.tmp = tmp
+        self.new_app = new_app
+        self.new_setup = new_setup
+
+    def discard(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+
+def stage_update(upd, current_version, status, progress, cancel):
+    """Download the release and verify it. Nothing outside the temp folder
+    changes. Returns a Staged for install_staged(); raises on any problem
+    (the temp folder is removed)."""
     tmp = _make_tmp()
     try:
         _download_and_unpack(upd, tmp, status, progress, cancel)
@@ -347,7 +360,18 @@ def apply_update(upd, current_version, status, progress, cancel):
                 + ", which is not newer than the v" + current_version
                 + " you are running — the release looks mis-tagged")
         new_setup = next(tmp.rglob(SETUP_EXE), None)
+        return Staged(tmp, new_app, new_setup)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
 
+
+def install_staged(staged, status):
+    """Swap the verified exes in, refresh the data files the release ships,
+    and return the exe to relaunch. Raises on any problem, having first
+    put back whatever it moved. The staged folder is removed either way."""
+    tmp, new_app, new_setup = staged.tmp, staged.new_app, staged.new_setup
+    try:
         status("Installing…")
         moved = []          # (live path, renamed-aside path) for roll-back
         try:
@@ -384,6 +408,13 @@ def apply_update(upd, current_version, status, progress, cancel):
         return _PROJECT / APP_EXE
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def apply_update(upd, current_version, status, progress, cancel):
+    """Download, verify, swap, refresh, in one go — the manual window's
+    Update now, where pressing the button was the approval."""
+    return install_staged(stage_update(upd, current_version, status,
+                                       progress, cancel), status)
 
 
 def _refresh_data_files(tmp, status):
@@ -460,11 +491,11 @@ class UpdateWindow(Toplevel):
     quiet until there is a newer one still; Continue just closes and leaves
     the install alone.
 
-    Automatic mode (auto=True, the startup default): the download and
-    install begin as the window opens and the main window stays usable —
-    nothing changes for the running app until the user presses Restart now.
-    Later closes the window; the installed new version starts the next time
-    the app is opened. There is no Skip: automatic means the latest.
+    Automatic mode (auto=True, the startup default): the download begins
+    as the window opens and the main window stays usable; once the release
+    is downloaded and verified the user is ASKED — Install and restart,
+    Not now (nothing installed; asked again next launch), or Skip this
+    version. Nothing on disk changes until Install and restart.
 
     A checkbox in both modes turns automatic updates on or off.
     """
@@ -481,12 +512,13 @@ class UpdateWindow(Toplevel):
         self._busy = False
         self._done = False
         self._newexe = None
+        self._staged = None      # the verified download, awaiting a yes
 
         bg = theme.get("bg", "#17171c")
         bg2 = theme.get("bg2", "#20202a")
         fg = theme.get("fg", "#e8e8f0")
 
-        self.title("Updating to " + upd.tag if self.auto
+        self.title("Update to " + upd.tag if self.auto
                    else "Update available")
         self.configure(bg=bg)
         self.transient(parent)
@@ -556,18 +588,17 @@ class UpdateWindow(Toplevel):
         btns = ttk.Frame(pad)
         btns.grid(row=r, column=0, sticky="ew", pady=(14, 0))
         self.update_btn = ttk.Button(
-            btns, text="Restart now" if self.auto else "Update now",
+            btns, text="Install and restart" if self.auto else "Update now",
             style="Go.TButton",
             command=self._restart if self.auto else self._start)
         self.update_btn.pack(side="left")
+        # every mode offers both ways out: this time, or this version
         self.skip_btn = ttk.Button(btns, text="Skip this version",
                                    command=self._skip)
-        if not self.auto:
-            self.skip_btn.pack(side="left", padx=8)
-        self.cont_btn = ttk.Button(
-            btns, text="Later" if self.auto else "Continue",
-            command=self._continue)
-        self.cont_btn.pack(side="left", padx=(8, 0))
+        self.skip_btn.pack(side="left", padx=8)
+        self.cont_btn = ttk.Button(btns, text="Not now",
+                                   command=self._continue)
+        self.cont_btn.pack(side="left")
 
         self.bind("<Escape>", lambda _e: self._continue())
         self.update_idletasks()
@@ -597,20 +628,36 @@ class UpdateWindow(Toplevel):
                        + ("on." if self.auto_var.get() else
                           "off — the app will ask before downloading."))
 
+    def _discard_staged(self):
+        if self._staged is not None:
+            try:
+                self._staged.discard()
+            except Exception:
+                pass
+            self._staged = None
+
     def _skip(self):
+        if self._busy:
+            self.cancel.set()
+        self._discard_staged()
         skip_version(self.upd.tag)
         self.on_status(self.upd.tag + " skipped — use Check for updates "
                                       "when you want it.")
         self._close()
 
     def _continue(self):
+        """Not now: this time, no. A download in progress is stopped; a
+        verified download is thrown away; nothing on disk has changed and
+        the question comes back next launch."""
         if self._busy:
-            # mid-download: Continue/Later means stop and keep the current
-            # build (an automatic update simply tries again next launch)
             self.cancel.set()
             self.msg_var.set("Stopping…")
             return
-        if self._newexe is not None:
+        if self._staged is not None:
+            self._discard_staged()
+            self.on_status("Update to " + self.upd.tag + " skipped for now — "
+                           "you will be asked again next time.")
+        elif self._newexe is not None:
             self.on_status("Updated to " + self.upd.tag + " — it starts the "
                            "next time you open the app.")
         self._close()
@@ -628,21 +675,41 @@ class UpdateWindow(Toplevel):
     def _start(self):
         self._busy = True
         self.update_btn.state(["disabled"])
-        self.skip_btn.state(["disabled"])
-        self.cont_btn.configure(text="Cancel")
+        self.cont_btn.configure(text="Not now")
         self.msg_var.set("Downloading — you can keep working; nothing "
-                         "changes until you restart." if self.auto
+                         "changes until you say so." if self.auto
                          else "Starting…")
         threading.Thread(target=self._worker, daemon=True).start()
 
     def _restart(self):
-        """The approval, in automatic mode: hand over to the new exe."""
-        if self._newexe is None:
+        """The approval, in automatic mode: install the verified download
+        (off the UI thread — a few file copies) and hand over to it."""
+        if self._staged is None:
             return
+        self._busy = True
         self.update_btn.state(["disabled"])
+        self.skip_btn.state(["disabled"])
         self.cont_btn.state(["disabled"])
-        self.msg_var.set("Restarting…")
-        self.on_relaunch(self._newexe, self.upd.tag)
+        self.msg_var.set("Installing…")
+        staged, self._staged = self._staged, None
+
+        def work():
+            try:
+                newexe = install_staged(staged,
+                                        lambda s: self.after(0, self.msg_var.set, s))
+            except Exception as e:
+                self.after(0, self._failed, str(e))
+                return
+            self.after(0, self._installed, newexe)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _installed(self, newexe):
+        self._busy = False
+        clear_skip()
+        self._newexe = newexe
+        self.msg_var.set("Installed " + self.upd.tag + ". Restarting…")
+        self.on_relaunch(newexe, self.upd.tag)
 
     # the worker runs off the UI thread; every touch of a widget goes back
     # through after(), because Tk is not safe to call from another thread
@@ -662,15 +729,22 @@ class UpdateWindow(Toplevel):
             self.after(0, paint)
 
         try:
-            newexe = apply_update(self.upd, self.current_version,
-                                  status, progress, self.cancel)
+            if self.auto:
+                staged = stage_update(self.upd, self.current_version,
+                                      status, progress, self.cancel)
+            else:
+                newexe = apply_update(self.upd, self.current_version,
+                                      status, progress, self.cancel)
         except _Cancelled:
             self.after(0, self._cancelled)
             return
         except Exception as e:
             self.after(0, self._failed, str(e))
             return
-        self.after(0, self._succeeded, newexe)
+        if self.auto:
+            self.after(0, self._ready, staged)
+        else:
+            self.after(0, self._succeeded, newexe)
 
     def _cancelled(self):
         self._busy = False
@@ -678,6 +752,25 @@ class UpdateWindow(Toplevel):
         self.on_status("Update cancelled — you are still on v"
                        + self.current_version + ".")
         self._close()
+
+    def _ready(self, staged):
+        """Automatic mode: downloaded and verified — now ask."""
+        self._busy = False
+        self._staged = staged
+        self.msg_var.set(
+            "Downloaded and checked. Install " + self.upd.tag + " and "
+            "restart now? Not now keeps v" + self.current_version + " for "
+            "this session and asks again next time; Skip this version "
+            "stays quiet until there is a newer one.")
+        self.update_btn.configure(text="Install and restart",
+                                  command=self._restart)
+        self.update_btn.state(["!disabled"])
+        self.skip_btn.state(["!disabled"])
+        self.cont_btn.configure(text="Not now")
+        self.cont_btn.state(["!disabled"])
+        self.update_btn.focus_set()
+        self.on_status(self.upd.tag + " is downloaded — Install and restart, "
+                       "Not now, or Skip this version.")
 
     def _failed(self, err):
         self._busy = False
@@ -687,28 +780,16 @@ class UpdateWindow(Toplevel):
             self.update_btn.configure(text="Retry", command=self._start)
         self.update_btn.state(["!disabled"])
         self.skip_btn.state(["!disabled"])
-        self.cont_btn.configure(text="Later" if self.auto else "Continue")
+        self.cont_btn.configure(text="Not now")
         self.msg_var.set("Update failed: " + err + "\nYou can keep working, "
                          "or download it yourself from " + RELEASES_PAGE)
         self.on_status("Update failed: " + err)
 
     def _succeeded(self, newexe):
+        """Manual mode: Update now was the approval — installed, relaunch."""
         self._busy = False
         clear_skip()
         self._newexe = newexe
-        if self.auto:
-            # installed; the running app is untouched until the user says
-            self.msg_var.set("Update installed. Restart now to use "
-                             + self.upd.tag + " — or Later, and the new "
-                             "version starts the next time you open the app.")
-            self.update_btn.configure(text="Restart now",
-                                      command=self._restart)
-            self.update_btn.state(["!disabled"])
-            self.cont_btn.configure(text="Later")
-            self.update_btn.focus_set()
-            self.on_status("Updated to " + self.upd.tag
-                           + " — restart when you are ready.")
-            return
         self.msg_var.set("Updated to " + self.upd.tag + ". Restarting…")
         self.cont_btn.state(["disabled"])
         self.on_relaunch(newexe, self.upd.tag)

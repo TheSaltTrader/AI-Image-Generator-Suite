@@ -176,6 +176,40 @@ root.update()
 check("the bar hides when the load ends", not ui.rag_prog.grid_info()
       and ui.rag_prog_var.get() == "")
 
+# ---- the wheel over the panel scrolls the panel; the readiness strip ----
+print("wheel + readiness strip")
+check("every widget on the pages carries the PanelWheel tag first",
+      all(w.bindtags()[0] == "PanelWheel" for w in _walk(ui._page_gen))
+      and ui.lora_list.bindtags()[0] == "PanelWheel"
+      and ui.prompt_box.bindtags()[0] == "PanelWheel")
+check("the PanelWheel binding exists",
+      bool(root.bind_class("PanelWheel", "<MouseWheel>")))
+check("widgets outside the pages are untouched",
+      ui.queue_list.bindtags()[0] != "PanelWheel")
+check("the readiness strip is hidden when nothing is loading",
+      not ui.ready_frame.grid_info())
+ui.ui_queue.put(("pending", "engine", "engine starting"))
+ui._poll_queue()
+root.update()
+check("a pending item shows the strip with its text",
+      bool(ui.ready_frame.grid_info()) and "engine starting" in ui.ready_var.get(),
+      ui.ready_var.get())
+ui._ragmap_loading = ("big.ragmap.json", 925.0)
+ui._rag_progress(ui._ragmap_load_gen, "resolving", 2500, 10000)
+root.update()
+check("the RAG map load joins the list with its percentage",
+      "RAG map big.ragmap.json (25%)" in ui.ready_var.get(), ui.ready_var.get())
+ui.ui_queue.put(("pending", "engine", None))
+ui._poll_queue()
+root.update()
+check("the engine leaving the list keeps the RAG map",
+      "engine" not in ui.ready_var.get() and "RAG map" in ui.ready_var.get(),
+      ui.ready_var.get())
+ui._rag_progress_done()
+root.update()
+check("the strip hides once everything is ready",
+      not ui.ready_frame.grid_info() and ui.ready_var.get() == "")
+
 # ---- tagging images for deletion ---------------------------------------
 print("tag and delete")
 from PIL import Image as _Img
@@ -324,14 +358,23 @@ with tempfile.TemporaryDirectory() as td:
     su.configure(td, td)
     upd = su.Update("v1.99.0", "http://x/a.zip", 75 * 1024 * 1024,
                     "- something new", "2026-08-20")
-    applied = []
-    real_apply = su.apply_update
+    staged_tags, installs, discards = [], [], []
+    real_stage, real_install = su.stage_update, su.install_staged
 
-    def fake_apply(upd_, cur, status, progress, cancel):
-        applied.append(upd_.tag)
+    class FakeStaged:
+        def discard(self):
+            discards.append(1)
+
+    def fake_stage(upd_, cur, status, progress, cancel):
+        staged_tags.append(upd_.tag)
+        return FakeStaged()
+
+    def fake_install(staged, status):
+        installs.append(1)
         return Path(td) / "ComicArtCreator.exe"
 
-    su.apply_update = fake_apply
+    su.stage_update = fake_stage
+    su.install_staged = fake_install
     _started.clear()          # the app shells out to nvidia-smi on start;
     #                           only launches AFTER this point are ours
     check("automatic updates are on by default", su.auto_update())
@@ -342,13 +385,16 @@ with tempfile.TemporaryDirectory() as td:
     check("a queued update opens the window", win is not None
           and win.winfo_exists())
     check("the startup window is in automatic mode", win is not None and win.auto)
-    pump(root, lambda: win._newexe is not None)
-    check("the update downloaded and installed on its own",
-          applied == ["v1.99.0"] and win._newexe is not None)
-    check("the app was NOT restarted without approval",
-          not _started and ui.root.winfo_exists())
-    check("Restart now is offered", win.update_btn.cget("text") == "Restart now"
-          and "disabled" not in win.update_btn.state())
+    pump(root, lambda: win._staged is not None)
+    check("the update downloaded and verified on its own",
+          staged_tags == ["v1.99.0"] and win._staged is not None)
+    check("NOTHING was installed or restarted without approval",
+          not installs and not _started and ui.root.winfo_exists())
+    check("Install and restart / Not now / Skip this version are offered",
+          win.update_btn.cget("text") == "Install and restart"
+          and "disabled" not in win.update_btn.state()
+          and win.cont_btn.cget("text") == "Not now"
+          and win.skip_btn.winfo_manager() == "pack")
 
     # a second notification must not stack a second window
     ui.ui_queue.put(("app_update", upd))
@@ -357,15 +403,17 @@ with tempfile.TemporaryDirectory() as td:
     check("a second notification reuses the open window",
           getattr(ui, "_upd_win") is win)
 
-    # Later leaves the app running; the new exe starts next launch
+    # Not now: nothing changes, the app runs on, asked again next time
     win._continue()
     root.update()
-    check("Later closes the window", not win.winfo_exists())
-    check("Later leaves the app running", ui.root.winfo_exists())
-    check("Later starts no new process", not _started)
-    check("Later says the new version starts next time",
+    check("Not now closes the window", not win.winfo_exists())
+    check("Not now leaves the app running on the old version",
+          ui.root.winfo_exists() and not installs)
+    check("Not now discards the download", discards == [1])
+    check("Not now starts no new process", not _started)
+    check("Not now says it will ask again next time",
           "next time" in ui.status_var.get(), ui.status_var.get())
-    su.apply_update = real_apply
+    su.stage_update, su.install_staged = real_stage, real_install
 
 # manual mode (automatic turned off): nothing downloads until Update now
 print("startup check — manual")
