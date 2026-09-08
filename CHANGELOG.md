@@ -1,5 +1,14 @@
 # Changelog — Comic Book Art Creator
 
+## v1.43.0 — 2026-09-08
+- **The left panel is now three tabs.** *Image generation* holds the
+  prompt, model, presets, LoRAs, RAG map, reference database, canvas
+  settings, the image editor and Generate; *Animation* holds the
+  animator; *Borders* holds the border maker. Each tab scrolls on its
+  own, so nothing is buried at the bottom of one long column. The batch
+  queue and the version row stay under the tabs whichever one is open,
+  and the app remembers which tab you had open.
+
 ## v1.42.0 — 2026-09-08
 - **The copy started by an older version's update now restarts itself
   cleanly, always.** v1.41 recognised an inherited program folder only

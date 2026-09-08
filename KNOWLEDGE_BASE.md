@@ -850,8 +850,19 @@ can combine LoRAs + RAG + a person in one pass.
   copy — never launch-test while their app runs.
 - Settings persist on a 700 ms debounce (`_schedule_persist`) with a
   baseline save at startup, so a force-kill still keeps recent edits.
-- The left panel is a Canvas + inner frame; a global wheel router walks
-  `winfo_containing` so scrolling works over child widgets.
+- **The left panel is a `ttk.Notebook` of three scrollable pages
+  (v1.43.0)** — Image generation / Animation / Borders — each built by
+  `_scroll_page(notebook, title)` (Canvas + scrollbar + padded inner
+  frame, registered in `self._scroll_canvases`); the batch queue and the
+  version row live in `self._page_bottom` under the notebook. The
+  section-building code was NOT moved: `_build_ui` still builds top to
+  bottom into a local `left` with a row counter `r`, and the tab split is
+  three lines at the section boundaries (`left = self._page_anim; r = 0`
+  …). A global wheel router walks `winfo_containing` up to whichever page
+  canvas holds the pointer. The chosen tab persists as `ui.tab`
+  (`<<NotebookTabChanged>>` → `_schedule_persist`). Page headings need
+  `wraplength=400` — the pages are 432 px wide and a long heading clips.
+  `update_ui_test` asserts which page each key widget sits on.
 
 ---
 

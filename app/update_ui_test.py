@@ -96,6 +96,42 @@ root.update()
 check("a reading without utilisation leaves the badge blank, not broken",
       ui.gpu_var.get() == "GPU —%", ui.gpu_var.get())
 
+# ---- the left panel is three tabs ---------------------------------------
+print("three tabs")
+tabs = [ui.left_tabs.tab(t, "text") for t in ui.left_tabs.tabs()]
+check("three tabs, in order", tabs == ["Image generation", "Animation", "Borders"], tabs)
+
+
+def page_of(widget):
+    """The tab page a widget sits on, or None when it is outside the tabs."""
+    w = widget
+    while w is not None and w.master is not ui.left_tabs:
+        w = w.master
+    return str(w) if w is not None else None
+
+
+pages = list(ui.left_tabs.tabs())
+check("the prompt and Generate live on Image generation",
+      page_of(ui.prompt_box) == pages[0] and page_of(ui.go_btn) == pages[0])
+check("the LoRA list lives on Image generation", page_of(ui.lora_list) == pages[0])
+check("the animator lives on Animation", page_of(ui.anim_prompt_box) == pages[1])
+check("the border maker lives on Borders", page_of(ui.border_prompt_box) == pages[2])
+check("the batch queue stays under the tabs, on every tab",
+      page_of(ui.queue_list) is None and ui.queue_list.winfo_toplevel() is ui.root)
+check("the version row stays under the tabs", page_of(ui.upd_btn) is None)
+check("every page scrolls with the wheel", len(ui._scroll_canvases) == 3)
+ui.left_tabs.select(2)
+root.update()
+check("the chosen tab is remembered", ui._collect_ui_state().get("tab") == 2,
+      ui._collect_ui_state().get("tab"))
+st = dict(ui._collect_ui_state())
+st["tab"] = 1
+ui._apply_ui_state(st)
+root.update()
+check("…and restored", ui.left_tabs.index("current") == 1)
+ui.left_tabs.select(0)
+root.update()
+
 # ---- the startup path: a queued app_update opens the window -------------
 # automatic mode (the default): the download starts on its own, the app
 # keeps running, and only Restart now hands over to the new exe

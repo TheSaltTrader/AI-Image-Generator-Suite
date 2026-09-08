@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.42.0"
+APP_VERSION = "1.43.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -2660,6 +2660,8 @@ class App:
         self._warned_vram = set()   # tight-fit warnings shown once each
 
         self._build_ui()
+        self.left_tabs.bind("<<NotebookTabChanged>>", self._schedule_persist,
+                            add="+")
         self._apply_ui_state(self.settings.get("ui", {}))
         self._refresh_models()     # disk scan — fills dropdowns before engine
         self._refresh_editor_state()   # initial badge colours + button gating
@@ -2743,6 +2745,12 @@ class App:
         s.map("TButton", background=[("active", "#3a3a4e")])
         s.configure("Go.TButton", background=ACCENT, foreground="white",
                     font=("Segoe UI", 12, "bold"), padding=10)
+        s.configure("TNotebook", background=BG, borderwidth=0,
+                    tabmargins=(6, 6, 0, 0))
+        s.configure("TNotebook.Tab", background=BG3, foreground=FG_DIM,
+                    padding=(16, 7), font=("Segoe UI", 10, "bold"))
+        s.map("TNotebook.Tab", background=[("selected", BG2)],
+              foreground=[("selected", ACCENT2)])
         s.map("Go.TButton", background=[("active", "#ff5e7a"),
                                         ("disabled", BG3)])
         s.configure("Danger.TButton", background="#c0392b",
@@ -2817,37 +2825,57 @@ class App:
                     insertbackground=FG, relief="flat", padx=8, pady=6,
                     font=("Segoe UI", 10), undo=True)
 
+    def _scroll_page(self, notebook, title):
+        """One tab: a canvas with a vertical scrollbar holding a padded
+        frame; returns the frame to build into. The canvas is registered
+        so the wheel router can scroll it."""
+        page = ttk.Frame(notebook)
+        page.rowconfigure(0, weight=1)
+        page.columnconfigure(0, weight=1)
+        notebook.add(page, text=title)
+        canvas = Canvas(page, bg=BG, highlightthickness=0, width=432)
+        canvas.grid(row=0, column=0, sticky=NSEW)
+        sb = ttk.Scrollbar(page, orient="vertical", command=canvas.yview)
+        sb.grid(row=0, column=1, sticky="ns")
+        canvas.configure(yscrollcommand=sb.set)
+        inner = ttk.Frame(canvas, padding=12)
+        win = canvas.create_window((0, 0), window=inner, anchor="nw")
+        inner.bind("<Configure>", lambda _e, c=canvas: c.configure(
+            scrollregion=c.bbox("all")))
+        canvas.bind("<Configure>", lambda e, c=canvas, w=win: c.itemconfigure(
+            w, width=e.width))
+        inner.columnconfigure(0, weight=1)
+        self._scroll_canvases.append(canvas)
+        return inner
+
     def _build_ui(self):
         root = self.root
         root.columnconfigure(0, weight=0, minsize=450)
         root.columnconfigure(1, weight=1)
         root.rowconfigure(0, weight=1)
 
-        # ---------- left column: controls (scrollable) ----------
+        # ---------- left column: three tabs of controls, each scrollable ----------
+        # Image generation / Animation / Borders keep the long panel in
+        # three short ones; the batch queue and the version row sit under
+        # the tabs and stay visible whichever tab is open.
         left_wrap = ttk.Frame(root)
         left_wrap.grid(row=0, column=0, sticky=NSEW)
         left_wrap.rowconfigure(0, weight=1)
         left_wrap.columnconfigure(0, weight=1)
-        self.left_canvas = Canvas(left_wrap, bg=BG, highlightthickness=0,
-                                  width=432)
-        self.left_canvas.grid(row=0, column=0, sticky=NSEW)
-        left_sb = ttk.Scrollbar(left_wrap, orient="vertical",
-                                command=self.left_canvas.yview)
-        left_sb.grid(row=0, column=1, sticky="ns")
-        self.left_canvas.configure(yscrollcommand=left_sb.set)
-        left = ttk.Frame(self.left_canvas, padding=12)
-        left_win = self.left_canvas.create_window((0, 0), window=left,
-                                                  anchor="nw")
-        left.bind("<Configure>",
-                  lambda _e: self.left_canvas.configure(
-                      scrollregion=self.left_canvas.bbox("all")))
-        self.left_canvas.bind(
-            "<Configure>",
-            lambda e: self.left_canvas.itemconfigure(left_win, width=e.width))
+        self.left_tabs = ttk.Notebook(left_wrap)
+        self.left_tabs.grid(row=0, column=0, sticky=NSEW)
+        self._scroll_canvases = []
+        self._page_gen = self._scroll_page(self.left_tabs, "Image generation")
+        self._page_anim = self._scroll_page(self.left_tabs, "Animation")
+        self._page_border = self._scroll_page(self.left_tabs, "Borders")
+        self.left_canvas = self._scroll_canvases[0]
+        self._page_bottom = ttk.Frame(left_wrap, padding=(12, 0, 12, 8))
+        self._page_bottom.grid(row=1, column=0, sticky=NSEW)
+        self._page_bottom.columnconfigure(0, weight=1)
 
         def _wheel_router(e):
-            # children swallow wheel events; route them to the panel
-            # whenever the pointer is anywhere inside the left canvas
+            # children swallow wheel events; route them to the page whenever
+            # the pointer is anywhere inside one of the tab canvases
             try:
                 w = self.root.winfo_containing(e.x_root, e.y_root)
             except Exception:
@@ -2857,14 +2885,13 @@ class App:
             while w is not None:
                 if w is self.lora_list:
                     return None      # its own scrollbar handles it
-                if w is self.left_canvas:
-                    self.left_canvas.yview_scroll(
-                        -1 if e.delta > 0 else 1, "units")
+                if w in self._scroll_canvases:
+                    w.yview_scroll(-1 if e.delta > 0 else 1, "units")
                     return "break"
                 w = w.master
             return None
         self.root.bind_all("<MouseWheel>", _wheel_router, add="+")
-        left.columnconfigure(0, weight=1)
+        left = self._page_gen
         r = 0
 
         prompt_head = ttk.Label(left, text="PROMPT", style="Head.TLabel")
@@ -3303,8 +3330,9 @@ class App:
         ttk.Label(left, textvariable=self.status_var,
                   style="Dim.TLabel", wraplength=400).grid(row=r, sticky=W); r += 1
 
-        # ---------- animator (old-school sprite animation) ----------
-        r = self._rule(left, r)
+        # ---------- animator (old-school sprite animation) — its own tab ----------
+        left = self._page_anim
+        r = 0
         anim_head = ttk.Label(left, text="ANIMATOR — animate a character image "
                                          "into sprite frames & GIF",
                               style="Head.TLabel", wraplength=400,
@@ -3457,10 +3485,12 @@ class App:
                    command=self._cancel_generation).grid(row=0, column=2,
                                                          padx=(4, 0))
 
-        # ---------- border maker (very bottom) ----------
-        r = self._rule(left, r)
+        # ---------- border maker — its own tab ----------
+        left = self._page_border
+        r = 0
         ttk.Label(left, text="BORDER MAKER — themed frame, transparent "
-                             "center, no text", style="Head.TLabel").grid(
+                             "center, no text", style="Head.TLabel",
+                  wraplength=400, justify="left").grid(
             row=r, sticky=W, pady=(14, 0)); r += 1
         ttk.Label(left, text="Border prompt — a theme (franchise, movie, "
                              "game, material) or a full precise prompt:",
@@ -3495,7 +3525,7 @@ class App:
                                             exportselection=False, width=34)
         self.border_style_dd.grid(row=0, column=1, sticky="ew", padx=(4, 0))
         ttk.Label(left, text="LoRAs, Variations, Steps, Seed and Editor "
-                             "still come from the main controls.",
+                             "still come from the Image generation tab.",
                   style="Dim.TLabel", wraplength=400,
                   justify="left").grid(row=r, sticky=W); r += 1
         barow = ttk.Frame(left); barow.grid(row=r, sticky=NSEW, pady=2); r += 1
@@ -3516,7 +3546,8 @@ class App:
                                                            sticky=W, padx=6)
         ttk.Button(brefrow, text="✕", width=3,
                    command=self._clear_border_refs).grid(row=0, column=2)
-        ttk.Label(left, text="Refs use the Image editor above: they are "
+        ttk.Label(left, text="Refs use the Image editor (Image generation "
+                             "tab): they are "
                              "redrawn as the border (style, characters and "
                              "composition carry over).",
                   style="Dim.TLabel", wraplength=400,
@@ -3567,8 +3598,9 @@ class App:
                    command=self._cancel_generation).grid(row=0, column=2,
                                                          padx=(4, 0))
 
-        # ---------- batch queue (very bottom) ----------
-        r = self._rule(left, r)
+        # ---------- batch queue (under the tabs, always visible) ----------
+        left = self._page_bottom
+        r = 0
         self.queue_count_var = StringVar(value="Batch queue (0)")
         ttk.Label(left, textvariable=self.queue_count_var,
                   style="Head.TLabel").grid(row=r, sticky=W,
@@ -5113,6 +5145,8 @@ class App:
             "batch": self.batch_var.get(),
             "transparent": self.transparent_var.get(),
             "upscale": self.upscale_var.get(),
+            "tab": (self.left_tabs.index("current")
+                    if hasattr(self, "left_tabs") else 0),
             "ragmap_path": self.ragmap_path,
             "actordb_path": self.actordb_path,
             "actor_imdb": (self.actor_sel or {}).get("imdb_id"),
@@ -5207,6 +5241,10 @@ class App:
             self._want_ollama_model = st.get("ollama_model", "") or ""
             if self._want_ollama_model:
                 self.ollama_var.set(self._want_ollama_model)
+            try:
+                self.left_tabs.select(int(st.get("tab", 0) or 0))
+            except Exception:
+                pass
             rmp = st.get("ragmap_path")
             if rmp and Path(rmp).exists():
                 # parsed off the UI thread — see _load_ragmap_async; the
@@ -6926,7 +6964,7 @@ class App:
             if not model:
                 messagebox.showerror("Model", "No model selected — pick "
                                               "one in the Border maker or "
-                                              "the main controls.")
+                                              "the Image generation tab.")
                 return
             have_border_lora = BORDER_LORA_FILE in list_loras()
             # the trained border LoRA is SDXL-only and is what makes a real
