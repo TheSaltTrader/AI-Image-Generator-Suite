@@ -969,10 +969,30 @@ the run.
   `actor_excluded` (sets -> sorted lists), restored BEFORE `_set_actor`
   so the view reflects it. `_refresh_actor_view` shows "photo i/N
   (dropped) · K sent"; the Using list lists the kept photos.
+- **A loaded Edit image must not put the whole app in edit mode
+  (v1.60.0).** THE ROOT CAUSE behind "LoRA and RAG still not enabling."
+  Once editing moved to its own tab (v1.56), `_generate` and
+  `_refresh_mode_badges` still decided edit-vs-generate from
+  `editing = bool(self.ref_paths)` — a global. So an image left sitting
+  on the Edit tab silently forced *every* GENERATE into an edit (no
+  LoRA, no RAG, both badges red) even though the user was on the
+  Image-generation tab with a LoRA ticked and a RAG map ready. The
+  app.log tell was `"Editing with Flux Kontext — preset and LoRAs are
+  ignored"` firing on a plain Generate. Fix: `_generate(…, edit=False)`
+  takes an explicit flag — only the Edit tab's **Apply edit** button
+  passes `edit=True`. Inside `_generate` a local `ref_paths =
+  self.ref_paths if editing0 else []` shadows the attribute for the whole
+  method (swap gate, style-override, editor path, `edit_refs`), so
+  GENERATE ignores the loaded image entirely. `_refresh_mode_badges` now
+  hard-codes `editing = False` (GENERATE never edits) and drops the
+  `and not bool(self.ref_paths)` clause from `swap_mode`. LESSON (the
+  recurring one across these apps): a boolean derived from shared state
+  is a landmine once the UI splits that state across two independent
+  places — pass intent explicitly instead of re-deriving it.
 - **Edit on its own tab + clone toggle (v1.56.0).** A 4th notebook tab
   "Edit image" (`_page_edit`) holds the loaded-image editor with its OWN
   instruction box (`edit_prompt_box`) — `_generate` uses it when
-  `ref_paths` is set, the main prompt otherwise. A "Common edits" Menu
+  `ref_paths` is set (v1.60: AND the edit flag), the main prompt otherwise. A "Common edits" Menu
   (`_build_edit_menu`/`_popup_edit_menu`/`EDIT_ACTIONS`, right-click too)
   fills it. The face-swap checkbox (`swap_cb`) is at the TOP of the Clone
   section; `_on_clone_toggle`/`_apply_clone_enabled` grey `clone_body`

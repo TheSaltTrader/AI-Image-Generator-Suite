@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.59.0"
+APP_VERSION = "1.60.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -3595,7 +3595,8 @@ class App:
                   "Which engine edits the image: Flux Kontext (best at "
                   "keeping identity and style) or Qwen Image Edit.")
         ttk.Button(left, text="\u26a1  Apply edit", style="Go.TButton",
-                   command=self._generate).grid(row=r, sticky="ew", pady=(4, 0))
+                   command=lambda: self._generate(edit=True)).grid(
+                       row=r, sticky="ew", pady=(4, 0))
         r += 1
         self.editor_canvas_var = BooleanVar(value=True)
 
@@ -7001,9 +7002,8 @@ class App:
         # target — LoRAs/RAG still drive the base generation
         swap_mode = hasattr(self, "swap_rag_var") \
             and self.swap_rag_var.get() \
-            and (bool(getattr(self, "face_paths", [])) or bool(self.actor_sel)) \
-            and not bool(self.ref_paths)
-        editing = bool(self.ref_paths)
+            and (bool(getattr(self, "face_paths", [])) or bool(self.actor_sel))
+        editing = False   # Edit is its own tab; GENERATE never edits
         model = self._model_raw()
         fam = model_family(model) if model else ""
         sdxl = bool(fam) and fam not in ("flux", "schnell")
@@ -7062,13 +7062,24 @@ class App:
             self.random_seed_var.set(False)
 
     # -------------------------------------------------- generation
-    def _generate(self, queue=False, swap_face=None):
+    def _generate(self, queue=False, swap_face=None, edit=False):
         if not queue and self._busy_guard():
             return
         if not engine_alive():
             messagebox.showerror("Engine", "Engine is not running yet.")
             return
-        editing0 = bool(self.ref_paths)
+        # Edit lives on its own tab now: a loaded image only drives an
+        # edit when the user pressed "Apply edit" (edit=True). GENERATE
+        # ignores it, so LoRA/RAG and face-swap run normally even while an
+        # image is sitting on the Edit tab.
+        editing0 = edit and bool(self.ref_paths)
+        if edit and not self.ref_paths:
+            messagebox.showinfo(
+                "Edit image", "Load an image on the Edit image tab first "
+                              "(\U0001f5bc Load\u2026 or Use selected), "
+                              "then Apply edit.")
+            return
+        ref_paths = self.ref_paths if editing0 else []
         prompt = (self._get(self.edit_prompt_box) if editing0
                   else self._get(self.prompt_box))
         if not prompt:
@@ -7088,7 +7099,7 @@ class App:
         swap_editor = "kontext"
         if isinstance(swap_face, str):
             swap_face = [swap_face]
-        if swap_face is None and self.swap_rag_var.get() and not self.ref_paths:
+        if swap_face is None and self.swap_rag_var.get() and not ref_paths:
             swap_face = self._swap_face_source()
             missing = [p for p in swap_face if not Path(p).exists()]
             if missing:
@@ -7140,13 +7151,13 @@ class App:
         # swap_face set = a gen-then-swap run: force a fresh RAG/LoRA
         # generation (the loaded image / person is the face for the later
         # Kontext pass, NOT an edit target or an IP-Adapter guide).
-        if self.ref_paths and not swap_face:
+        if ref_paths and not swap_face:
             # a reference is a full override: the image supplies the art
             # style, so the preset's style text (and LoRAs) are not applied
             full_prompt = prompt
         else:
             full_prompt = f"{prompt}, {style}" if style else prompt
-        editing = bool(self.ref_paths)
+        editing = editing0
         editor = self._editor_engine()
         model = self._model_raw()
         if editing:
@@ -7264,7 +7275,7 @@ class App:
 
         # Reference DB person, editing: the photo joins the loaded
         # reference images, exactly as if it had been loaded with 🖼 Load…
-        edit_refs = [] if swap_face else list(self.ref_paths)
+        edit_refs = [] if swap_face else list(ref_paths)
         if editing and self.actor_sel:
             ap = self._actor_ref_path()
             if ap and ap not in edit_refs:

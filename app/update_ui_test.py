@@ -518,6 +518,44 @@ ui.swap_rag_var.set(False)
 ui._set(ui.prompt_box, "")
 app.engine_alive = real_alive
 
+# ---- a loaded Edit image no longer forces LoRA/RAG off for GENERATE ------
+print("edit image doesn't disable generate")
+ui.lora_list.delete(0, "end")
+ui.lora_list.insert("end", "some_style.safetensors")
+ui.lora_list.selection_set(0)
+ui.model_var.set("Juggernaut-XL")          # SDXL family
+ui.ragmap = {"weight": 0.8}
+ui.swap_rag_var.set(False)
+ui.actor_sel = None
+ui.ref_paths = ["C:/some/loaded_edit.png"]  # an image sitting on the Edit tab
+ui._refresh_mode_badges()
+root.update()
+check("a loaded Edit image does NOT turn the LoRA badge red",
+      str(ui.lora_badge.cget("style")) == "BadgeOn.TLabel",
+      ui.lora_badge.cget("style"))
+check("…nor the RAG badge — GENERATE ignores the Edit image",
+      str(ui.rag_badge.cget("style")) == "BadgeOn.TLabel",
+      ui.rag_badge.cget("style"))
+# and "Apply edit" with no image loaded asks for one instead of running
+ui.ref_paths = []
+app.engine_alive = lambda *a, **k: True
+_info_calls = []
+_real_info = app.messagebox.showinfo
+app.messagebox.showinfo = lambda *a, **k: _info_calls.append(a)
+ui._generate(edit=True)
+root.update()
+app.messagebox.showinfo = _real_info
+check("Apply edit with nothing loaded asks for an image, does not run",
+      not ui.busy and any("Edit image" in str(a) for a in _info_calls),
+      _info_calls)
+app.engine_alive = real_alive
+ui.ragmap = None
+ui.lora_list.selection_clear(0, "end")
+ui.lora_list.delete(0, "end")
+ui._set(ui.prompt_box, "")
+ui._set(ui.edit_prompt_box, "")
+ui._refresh_mode_badges()
+
 # ---- settings: theme + menu size ----------------------------------------
 print("settings (theme + size)")
 check("apply_theme switches the palette",

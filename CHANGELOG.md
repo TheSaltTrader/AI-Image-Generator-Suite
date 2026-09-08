@@ -1,5 +1,23 @@
 # Changelog — Comic Book Art Creator
 
+## v1.60.0 — 2026-09-08
+- **A loaded Edit image no longer switches off LoRA and RAG.** Now that
+  editing lives on its own **Edit image** tab, leaving an image loaded
+  there used to quietly put the *whole* app into edit mode — so pressing
+  **GENERATE** ran an edit and the LoRA/RAG badges went red even with a
+  LoRA ticked and a RAG map ready. GENERATE now always generates with
+  your preset, LoRAs and RAG map (and any face swap), whatever is sitting
+  on the Edit tab. The Edit tab's **Apply edit** button is the only thing
+  that edits the loaded image; pressing it with nothing loaded now asks
+  you to load an image instead of doing nothing.
+
+## v1.59.0 — 2026-09-08
+- **Readable info pop-ups under the Daylight theme.** The hover tooltips
+  (including the LoRA and RAG explanations) were pale text on a near-white
+  box under Daylight and could not be read. Tooltips are now a soft cream
+  background with dark text in Daylight, and light text on dark in the
+  default theme — clear contrast in both.
+
 ## v1.58.0 — 2026-09-08
 - **Cycle through a person's photos and drop the ones that don't fit.**
   When a database person has more than one picture, ◀ ▶ arrows appear
