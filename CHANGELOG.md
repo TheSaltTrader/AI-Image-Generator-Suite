@@ -1,5 +1,22 @@
 # Changelog — Comic Book Art Creator
 
+## v1.44.0 — 2026-09-08
+- **Tag several images and delete just those.** Ctrl+click or right-click
+  a thumbnail (or select it and press **☑ Tag**) to tag it; tagged
+  thumbnails wear a red frame. **🗑 Delete** then reads "Delete 3 tagged"
+  and removes exactly those, from disk and from the gallery. With
+  nothing tagged it deletes the selected image as before.
+- **The delete confirmation opens right above the thumbnail it is
+  about**, not wherever Windows drops a message box. Enter confirms,
+  Escape cancels. The "Delete art files" confirmation now opens above
+  its own button too.
+- **A RAG map no longer gives you the same person every time.** For a
+  given prompt the map used to return the same best-matching references
+  on every Generate, so only the pose changed with the seed. The
+  references are now drawn at random from the strongest matches, seeded
+  like the image: a random seed brings a different person each time, a
+  fixed seed brings the same references again.
+
 ## v1.43.0 — 2026-09-08
 - **The left panel is now three tabs.** *Image generation* holds the
   prompt, model, presets, LoRAs, RAG map, reference database, canvas

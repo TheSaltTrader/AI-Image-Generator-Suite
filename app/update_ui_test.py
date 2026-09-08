@@ -132,6 +132,109 @@ check("…and restored", ui.left_tabs.index("current") == 1)
 ui.left_tabs.select(0)
 root.update()
 
+# ---- tagging images for deletion ---------------------------------------
+print("tag and delete")
+from PIL import Image as _Img
+from tkinter import Toplevel as _Top
+with tempfile.TemporaryDirectory() as td:
+    paths = []
+    for i in range(3):
+        p = Path(td) / f"img{i}.png"
+        _Img.new("RGB", (64, 64), ("red", "green", "blue")[i]).save(p)
+        paths.append(p)
+    ui.session = [(_Img.open(p).convert("RGB"),
+                   {"model": "m.safetensors", "seed": i}, p)
+                  for i, p in enumerate(paths)]
+    ui.current = 2
+    ui._rebuild_gallery()
+    root.update()
+    check("one thumbnail per image", len(ui._thumb_btns) == 3)
+    check("nothing tagged: the button deletes the selected image",
+          ui.delimg_btn.cget("text") == "🗑 Delete image")
+    ui._toggle_tag(0)
+    ui._toggle_tag(1)
+    root.update()
+    check("two tagged, by path", ui.tagged == {str(paths[0]), str(paths[1])},
+          ui.tagged)
+    check("the button says how many it will delete",
+          ui.delimg_btn.cget("text") == "🗑 Delete 2 tagged",
+          ui.delimg_btn.cget("text"))
+    ui._toggle_tag(1)
+    root.update()
+    check("toggling again untags", ui.tagged == {str(paths[0])})
+    ui._tag_current()
+    root.update()
+    check("the Tag button tags the selected image, and offers to untag",
+          str(paths[2]) in ui.tagged and ui.tag_btn.cget("text") == "☐ Untag",
+          ui.tag_btn.cget("text"))
+
+    def find_box():
+        for w in ui.root.winfo_children():
+            if isinstance(w, _Top) and w.winfo_exists() \
+                    and w.title() == "Delete tagged images":
+                return w
+        return None
+
+    from tkinter import ttk as _ttk
+
+    def walk(w):
+        yield w
+        for c in w.winfo_children():
+            yield from walk(c)
+
+    def click(label_start, tries=100):
+        """Press the box's button whose text starts with label_start —
+        polling until the box exists, since it is modal."""
+        w = find_box()
+        if w is None:
+            if tries:
+                root.after(30, lambda: click(label_start, tries - 1))
+            return
+        for b in walk(w):
+            if isinstance(b, _ttk.Button) \
+                    and str(b.cget("text")).startswith(label_start):
+                b.invoke()
+                return
+
+    seen = {}
+
+    def inspect():
+        w = find_box()
+        if w is None:
+            root.after(30, inspect)
+            return
+        seen["geom"] = w.geometry()
+        seen["title"] = w.title()
+
+    def watchdog():          # never let a modal box hang the suite
+        w = find_box()
+        if w is not None:
+            w.destroy()
+
+    root.after(40, inspect)
+    root.after(200, lambda: click("Cancel"))
+    root.after(6000, watchdog)
+    ui._delete_current()
+    root.update()
+    check("Cancel: nothing deleted",
+          all(p.exists() for p in paths) and len(ui.session) == 3)
+    check("the box was placed (it has a position, not Windows' default)",
+          "+" in seen.get("geom", ""), seen)
+    root.after(120, lambda: click("Delete"))
+    root.after(6000, watchdog)
+    ui._delete_current()
+    root.update()
+    check("Delete removes exactly the tagged images from disk",
+          not paths[0].exists() and paths[1].exists() and not paths[2].exists())
+    check("…and from the gallery",
+          [str(t[2]) for t in ui.session] == [str(paths[1])]
+          and len(ui._thumb_btns) == 1)
+    check("tags are cleared afterwards",
+          not ui.tagged and ui.delimg_btn.cget("text") == "🗑 Delete image")
+    check("the remaining image is selected", ui.current == 0)
+    ui._clear_history()
+    root.update()
+
 # ---- the startup path: a queued app_update opens the window -------------
 # automatic mode (the default): the download starts on its own, the app
 # keeps running, and only Restart now hands over to the new exe

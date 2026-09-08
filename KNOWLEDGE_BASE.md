@@ -850,6 +850,32 @@ can combine LoRAs + RAG + a person in one pass.
   copy — never launch-test while their app runs.
 - Settings persist on a 700 ms debounce (`_schedule_persist`) with a
   baseline save at startup, so a force-kill still keeps recent edits.
+- **Dialogs are placed, never left to Windows (v1.44.0).** A `Toplevel`
+  with no geometry lands at the screen's top-left; a `messagebox` lands
+  wherever. `_place_near(dlg, anchor)` puts a dialog just above an anchor
+  widget (below it when there is no room), clamped to the root window;
+  `_confirm_near(anchor, title, text, ok_label)` is the Delete/Cancel box
+  built on it (Enter/Escape bound, modal via `wait_window`). Build the
+  dialog withdrawn, place, then deiconify — otherwise it flashes at the
+  corner first. Tests drive a modal box by polling for it with
+  `root.after` and `invoke()`-ing its button — `event_generate("<Return>")`
+  on an unmapped toplevel hung the suite; keep a watchdog `after` that
+  destroys the box.
+- **Gallery tags follow the image PATH** (`self.tagged` is a set of
+  paths, `_toggle_tag(idx)` repaints one thumbnail via `_thumb_image(img,
+  tagged)` with a red frame), so a rebuild after a delete never shifts a
+  tag onto the wrong picture; `_rebuild_gallery` intersects the tags with
+  the live session. `_delete_paths(paths)` is the one deletion routine
+  (disk + session + tags + reselect); `_delete_current` routes to
+  `_delete_tagged` when anything is tagged.
+- **RAG retrieval is a seeded draw, not a fixed top-k (v1.44.0).** User
+  report: "one prompt gives the same person in different poses". The
+  index/walk both rank, then `_rag_shuffle(cands, k, rng)` reorders the
+  best `max(8k, 32)` with rank-weighted sampling before `_rag_diverse`;
+  `ragmap_retrieve(..., rng=None)` stays deterministic without an rng (the
+  equivalence tests rely on that), and the app passes `_rag_rng()` — a
+  fresh `random.Random()` when the seed is random, `Random(seed)` when
+  fixed — so results are reproducible exactly when the picture is.
 - **The left panel is a `ttk.Notebook` of three scrollable pages
   (v1.43.0)** — Image generation / Animation / Borders — each built by
   `_scroll_page(notebook, title)` (Canvas + scrollbar + padded inner

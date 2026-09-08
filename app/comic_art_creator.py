@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "1.43.0"
+APP_VERSION = "1.44.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -2064,7 +2064,7 @@ def _build_rag_index(entries):
     return (vocab, has_ref, np)
 
 
-def ragmap_retrieve(ragmap, prompt, k=None, require_image=True):
+def ragmap_retrieve(ragmap, prompt, k=None, require_image=True, rng=None):
     """Return the top-k entries whose keywords/caption best match the
     prompt words (falls back to the first k valid entries if nothing
     matches, so the LoRA always gets representative guidance). When the
@@ -2097,6 +2097,8 @@ def ragmap_retrieve(ragmap, prompt, k=None, require_image=True):
         if require_image:
             order = order[counts[order] >= 0]
         cands = [(int(i), entries[i]) for i in order[:max(k * 50, 200)]]
+        if rng is not None:
+            cands = _rag_shuffle(cands, k, rng)
         return _rag_diverse(cands, ragmap.get("_emb"), k)
     scored = []
     for i, e in enumerate(entries):
@@ -2108,7 +2110,31 @@ def ragmap_retrieve(ragmap, prompt, k=None, require_image=True):
             ewords = frozenset(re.findall(r"[a-z0-9]+", text.lower()))
         scored.append((len(words & ewords), i, e))
     scored.sort(key=lambda t: t[0], reverse=True)   # stable → original order on ties
-    return _rag_diverse([(i, e) for _s, i, e in scored], ragmap.get("_emb"), k)
+    cands = [(i, e) for _s, i, e in scored]
+    if rng is not None:
+        cands = _rag_shuffle(cands, k, rng)
+    return _rag_diverse(cands, ragmap.get("_emb"), k)
+
+
+def _rag_shuffle(cands, k, rng, pool=None):
+    """Reorder the strongest candidates at random, favouring better ranks,
+    so the same prompt does not fetch the same references every time.
+
+    Retrieval used to be fully deterministic: one prompt -> the same top-k
+    entries -> the same reference faces -> the same person in every
+    picture, only the pose changing with the seed. Now the head of the
+    ranked list (the best `pool` entries) is drawn without replacement
+    with weights that fall off gently with rank, and the rest follows in
+    rank order for the diversity top-up. A fixed seed gives a fixed draw."""
+    pool = pool or max(k * 8, 32)
+    head, tail = list(cands[:pool]), cands[pool:]
+    weights = [1.0 / (1.0 + i / 8.0) for i in range(len(head))]
+    order = []
+    while head:
+        j = rng.choices(range(len(head)), weights=weights, k=1)[0]
+        order.append(head.pop(j))
+        weights.pop(j)
+    return order + list(tail)
 
 
 def _rag_diverse(cands, emb, k):
@@ -2632,6 +2658,8 @@ class App:
         self.ui_queue = queue_mod.Queue()
         self.session = []          # list of (PIL image, params, path)
         self.current = None        # index into session
+        self.tagged = set()        # image paths tagged for deletion
+        self._thumb_btns = []      # gallery buttons, one per session entry
         self.busy = False
         self.job_queue = []        # batch queue of pending jobs
         self._batch_active = False
@@ -3723,11 +3751,21 @@ class App:
         self._tip(saveas_btn, "Save the selected image (or GIF) somewhere of "
                               "your choosing. Every image is also auto-saved to "
                               "the output folder.")
-        delimg_btn = ttk.Button(brow, text="🗑 Delete image",
-                                command=self._delete_current)
-        delimg_btn.pack(side="left", padx=6)
-        self._tip(delimg_btn, "Delete the selected image file and remove it "
-                              "from the gallery.")
+        self.delimg_btn = ttk.Button(brow, text="🗑 Delete image",
+                                     command=self._delete_current)
+        self.delimg_btn.pack(side="left", padx=6)
+        self._tip(self.delimg_btn,
+                  "Delete the selected image file and remove it from the "
+                  "gallery — or, when images are tagged, delete exactly the "
+                  "tagged ones. Tag with Ctrl+click or right-click on a "
+                  "thumbnail, or with the Tag button.")
+        self.tag_btn = ttk.Button(brow, text="☑ Tag", command=self._tag_current)
+        self.tag_btn.pack(side="left", padx=(0, 6))
+        self._tip(self.tag_btn,
+                  "Tag or untag the selected image for deletion. Tagged "
+                  "thumbnails get a red frame; 🗑 Delete then removes only "
+                  "the tagged images. Ctrl+click or right-click on a "
+                  "thumbnail does the same.")
         openout_btn = ttk.Button(brow, text="📁 Open output folder",
                                  command=lambda: os.startfile(OUTPUT))
         openout_btn.pack(side="left", padx=6)
@@ -3781,11 +3819,12 @@ class App:
         clrhist_btn.pack(fill="x", pady=(0, 3))
         self._tip(clrhist_btn, "Clear the gallery strip for this session. The "
                                "image files on disk are kept.")
-        delfiles_btn = ttk.Button(gbtns, text="❌ Delete art files…",
-                                  command=self._delete_history_files)
-        delfiles_btn.pack(fill="x")
-        self._tip(delfiles_btn, "Permanently delete the generated image files "
-                                "from the output folder (asks first).")
+        self.delfiles_btn = ttk.Button(gbtns, text="❌ Delete art files…",
+                                       command=self._delete_history_files)
+        self.delfiles_btn.pack(fill="x")
+        self._tip(self.delfiles_btn,
+                  "Permanently delete the generated image files from the "
+                  "output folder (asks first).")
 
     # -------------------------------------------------- persistence
     def _get(self, box):
@@ -6165,6 +6204,17 @@ class App:
             self._tooltips = []
         self._tooltips.append(Tooltip(widget, text))
 
+    def _rag_rng(self):
+        """The random draw behind RAG retrieval: a fresh one on every
+        Generate when the seed is random (a different person each time),
+        fixed by the seed otherwise (the same references again)."""
+        try:
+            if not self.random_seed_var.get():
+                return random.Random(int(str(self.seed_var.get()).strip()))
+        except (ValueError, AttributeError):
+            pass
+        return random.Random()
+
     def _refresh_mode_badges(self):
         """Colour the top-right LoRA/RAG badges: green only when each will
         actually affect the next generation, red otherwise (editing a loaded
@@ -6322,7 +6372,8 @@ class App:
                                     "(Juggernaut/DreamShaper) — skipped for "
                                     "this Flux model.")
             else:
-                hits = ragmap_retrieve(self.ragmap, prompt)
+                hits = ragmap_retrieve(self.ragmap, prompt,
+                                       rng=self._rag_rng())
                 rag_weight = float(self.ragmap.get("weight") or 0.8)
                 lf = ragmap_lora(self.ragmap)
                 if lf and lf not in [n for n, _s in loras]:
@@ -6344,7 +6395,8 @@ class App:
                     # no IP-Adapter, or the references didn't travel with the
                     # map — use what is there, which is the captions
                     text_hits = hits or ragmap_retrieve(
-                        self.ragmap, prompt, require_image=False)
+                        self.ragmap, prompt, require_image=False,
+                        rng=self._rag_rng())
                     caps = "; ".join(h.get("caption", "") for h in text_hits
                                      if h.get("caption"))
                     if caps:
@@ -6797,11 +6849,23 @@ class App:
         self.info_var.set(f"{params['model'].split('.')[0]}  ·  "
                           f"{img.width}×{img.height}  ·  seed {params['seed']}")
 
-    def _add_thumb(self, idx):
-        img, _p, _path = self.session[idx]
+    def _thumb_image(self, img, tagged):
+        """The gallery thumbnail; a tagged one wears a red frame and a
+        corner mark so what 🗑 Delete will take is visible at a glance."""
         th = img.copy()
         th.thumbnail((84, 84))
-        tk_th = ImageTk.PhotoImage(th)
+        th = th.convert("RGB")
+        if tagged:
+            d = ImageDraw.Draw(th)
+            w, h = th.size
+            d.rectangle([0, 0, w - 1, h - 1], outline="#e74c3c", width=3)
+            d.rectangle([w - 22, 0, w - 1, 18], fill="#e74c3c")
+            d.text((w - 17, 2), "X", fill="white")
+        return ImageTk.PhotoImage(th)
+
+    def _add_thumb(self, idx):
+        img, _p, path = self.session[idx]
+        tk_th = self._thumb_image(img, str(path) in self.tagged)
         btn = ttk.Button(self.gallery, image=tk_th,
                          command=lambda i=idx: self._select(i))
         btn.image = tk_th
@@ -6809,6 +6873,11 @@ class App:
         # double-click sends the image straight to the Animator
         btn.bind("<Double-Button-1>",
                  lambda _e, i=idx: self._thumb_to_animator(i))
+        # Ctrl+click / right-click tag it for deletion (or untag it)
+        btn.bind("<Control-Button-1>",
+                 lambda _e, i=idx: (self._toggle_tag(i), "break")[1])
+        btn.bind("<Button-3>", lambda _e, i=idx: self._toggle_tag(i))
+        self._thumb_btns.append(btn)
         # keep the newest thumbnail in view
         self.gallery.update_idletasks()
         self.gallery_canvas.xview_moveto(1.0)
@@ -6816,36 +6885,188 @@ class App:
     def _rebuild_gallery(self):
         for child in self.gallery.winfo_children():
             child.destroy()
+        self._thumb_btns = []
+        live = {str(p) for _i, _p, p in self.session}
+        self.tagged &= live          # a tag on an image no longer here is moot
         for idx in range(len(self.session)):
             self._add_thumb(idx)
         if not self.session:
             self.gallery_canvas.xview_moveto(0.0)
+        self._refresh_tag_ui()
 
-    def _delete_current(self):
-        """Delete the selected image from disk and the history strip —
-        keep only the results worth keeping."""
+    # ------------------------------------------------ tagging for deletion
+    def _toggle_tag(self, idx):
+        """Tag / untag one gallery image for deletion and repaint its
+        thumbnail. Tags follow the image PATH, so they survive a gallery
+        rebuild and never point at the wrong picture."""
+        if idx is None or not (0 <= idx < len(self.session)):
+            return
+        img, _p, path = self.session[idx]
+        key = str(path)
+        if key in self.tagged:
+            self.tagged.discard(key)
+        else:
+            self.tagged.add(key)
+        if idx < len(self._thumb_btns):
+            btn = self._thumb_btns[idx]
+            tk_th = self._thumb_image(img, key in self.tagged)
+            btn.configure(image=tk_th)
+            btn.image = tk_th
+        self._refresh_tag_ui()
+
+    def _tag_current(self):
         if self.current is None or not self.session:
             self.status_var.set("Select an image in the gallery first.")
             return
-        _img, _params, path = self.session[self.current]
-        if not messagebox.askyesno(
-                "Delete image",
-                f"Permanently delete {Path(path).name} from disk?"):
+        self._toggle_tag(self.current)
+
+    def _refresh_tag_ui(self):
+        """The Delete button says what it will do."""
+        if not hasattr(self, "delimg_btn"):
             return
+        k = len(self.tagged)
+        if k:
+            self.delimg_btn.configure(text=f"🗑 Delete {k} tagged")
+            self.status_var.set(
+                f"{k} image{'s' if k != 1 else ''} tagged — 🗑 deletes exactly "
+                "those. Ctrl+click or right-click a thumbnail to tag or untag.")
+        else:
+            self.delimg_btn.configure(text="🗑 Delete image")
+        cur_tagged = (self.current is not None and self.session
+                      and str(self.session[self.current][2]) in self.tagged)
+        self.tag_btn.configure(text="☐ Untag" if cur_tagged else "☑ Tag")
+
+    def _thumb_anchor(self, idx):
+        """The widget a confirmation about image idx should sit above:
+        its thumbnail when it is on screen, else the Delete button."""
+        if idx is not None and 0 <= idx < len(self._thumb_btns):
+            btn = self._thumb_btns[idx]
+            if btn.winfo_exists() and btn.winfo_ismapped():
+                return btn
+        return self.delimg_btn
+
+    def _place_near(self, dlg, anchor):
+        """Put a dialog just above an anchor widget (below it when there
+        is no room), kept inside the app window — never wherever Windows
+        happens to drop a message box."""
         try:
-            Path(path).unlink()
-        except FileNotFoundError:
+            dlg.update_idletasks()
+            w, h = dlg.winfo_reqwidth(), dlg.winfo_reqheight()
+            ax, ay = anchor.winfo_rootx(), anchor.winfo_rooty()
+            aw, ah = anchor.winfo_width(), anchor.winfo_height()
+            rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+            rw, rh = self.root.winfo_width(), self.root.winfo_height()
+            x = ax + aw // 2 - w // 2
+            y = ay - h - 10
+            if y < ry:
+                y = ay + ah + 10
+            x = max(rx, min(x, rx + max(rw - w, 0)))
+            y = max(ry, min(y, ry + max(rh - h, 0)))
+            dlg.geometry("+%d+%d" % (x, y))
+        except Exception:
             pass
-        except OSError as e:
-            self.status_var.set(f"Could not delete {Path(path).name}: {e}")
-            return
-        del self.session[self.current]
+
+    def _confirm_near(self, anchor, title, text, ok_label="Delete"):
+        """A small confirmation box just above `anchor`. Enter confirms,
+        Escape cancels. Returns True to go ahead."""
+        from tkinter import Label as TkLabel
+        dlg = Toplevel(self.root)
+        dlg.withdraw()
+        dlg.title(title)
+        dlg.configure(bg=BG)
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        frm = ttk.Frame(dlg, padding=14)
+        frm.pack(fill="both", expand=True)
+        TkLabel(frm, text=text, fg="#e74c3c", bg=BG,
+                font=("Segoe UI", 10, "bold"), justify="left",
+                wraplength=380).pack(anchor="w")
+        brow = ttk.Frame(frm)
+        brow.pack(fill="x", pady=(12, 0))
+        result = {"ok": False}
+
+        def ok(_e=None):
+            result["ok"] = True
+            dlg.destroy()
+
+        ok_btn = ttk.Button(brow, text=ok_label, style="Danger.TButton",
+                            command=ok)
+        ok_btn.pack(side="right")
+        ttk.Button(brow, text="Cancel",
+                   command=dlg.destroy).pack(side="right", padx=(0, 8))
+        dlg.bind("<Return>", ok)
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+        self._place_near(dlg, anchor)
+        dlg.deiconify()
+        try:
+            dlg.grab_set()
+        except Exception:
+            pass
+        ok_btn.focus_set()
+        self.root.wait_window(dlg)
+        return result["ok"]
+
+    def _delete_paths(self, paths):
+        """Delete these session images from disk and the gallery."""
+        gone, failed = [], []
+        for p in paths:
+            try:
+                Path(p).unlink()
+                gone.append(str(p))
+            except FileNotFoundError:
+                gone.append(str(p))
+            except OSError as e:
+                failed.append(f"{Path(p).name} ({e})")
+        goneset = set(gone)
+        self.session = [t for t in self.session if str(t[2]) not in goneset]
+        self.tagged -= goneset
         self.current = len(self.session) - 1 if self.session else None
         self._rebuild_gallery()
         self._show_current()
         self._update_editor_btn()
-        self.status_var.set(f"Deleted {Path(path).name} — "
-                            f"{len(self.session)} image(s) left in history.")
+        note = (f"Deleted {len(gone)} image{'s' if len(gone) != 1 else ''} — "
+                f"{len(self.session)} left in history.")
+        if failed:
+            note += " Could not delete: " + ", ".join(failed)
+        self.status_var.set(note)
+
+    def _delete_tagged(self):
+        paths = [p for _i, _p, p in self.session if str(p) in self.tagged]
+        if not paths:
+            return
+        names = ", ".join(Path(p).name for p in paths[:6])
+        if len(paths) > 6:
+            names += f", … ({len(paths) - 6} more)"
+        anchor_idx = next((i for i, t in enumerate(self.session)
+                           if str(t[2]) in self.tagged), None)
+        if self.current is not None and self.session \
+                and str(self.session[self.current][2]) in self.tagged:
+            anchor_idx = self.current
+        if not self._confirm_near(
+                self._thumb_anchor(anchor_idx), "Delete tagged images",
+                f"Permanently delete {len(paths)} tagged image"
+                f"{'s' if len(paths) != 1 else ''} from disk?\n{names}",
+                ok_label=f"Delete {len(paths)}"):
+            return
+        self._delete_paths(paths)
+
+    def _delete_current(self):
+        """🗑 Delete: the tagged images when any are tagged, else the
+        selected one. The confirmation opens just above the thumbnail it
+        is about."""
+        if self.tagged:
+            self._delete_tagged()
+            return
+        if self.current is None or not self.session:
+            self.status_var.set("Select an image in the gallery first — or "
+                                "tag several with Ctrl+click / right-click.")
+            return
+        _img, _params, path = self.session[self.current]
+        if not self._confirm_near(
+                self._thumb_anchor(self.current), "Delete image",
+                f"Permanently delete {Path(path).name} from disk?"):
+            return
+        self._delete_paths([path])
 
     def _clear_history(self):
         """Empty the session gallery. Files already saved in output\\ are
@@ -6854,9 +7075,12 @@ class App:
             return
         self.session = []
         self.current = None
+        self.tagged.clear()
+        self._thumb_btns = []
         for child in self.gallery.winfo_children():
             child.destroy()
         self.gallery_canvas.xview_moveto(0.0)
+        self._refresh_tag_ui()
         self._show_current()
         self._update_editor_btn()
         self.status_var.set("History cleared — saved images remain in the "
@@ -6873,6 +7097,7 @@ class App:
         mb = sum(f.stat().st_size for f in files) / (1 << 20)
 
         dlg = Toplevel(self.root)
+        dlg.withdraw()            # placed above its button before it shows
         dlg.title("Delete generated art")
         dlg.configure(bg=BG)
         dlg.resizable(False, False)
@@ -6906,6 +7131,8 @@ class App:
                    command=do_delete).pack(side="right")
         ttk.Button(brow, text="Cancel",
                    command=dlg.destroy).pack(side="right", padx=(0, 8))
+        self._place_near(dlg, getattr(self, "delfiles_btn", self.root))
+        dlg.deiconify()
         dlg.grab_set()
 
     def _select(self, idx):

@@ -137,10 +137,38 @@ check("words are interned (one object per word across entries)",
           for w in rag["entries"][0]["_words"] if w in rag["entries"][1]["_words"])
       or not (rag["entries"][0]["_words"] & rag["entries"][1]["_words"]))
 
+print("randomness")
+# one prompt used to fetch the same references every time -> the same
+# person in every picture; a seeded draw among the strongest matches
+# varies them, and a fixed seed reproduces them
+rag["_index"] = idx
+p = "hero rooftop night city cape"
+plain = ids(cac.ragmap_retrieve(rag, p))
+draws = [tuple(ids(cac.ragmap_retrieve(rag, p, rng=random.Random(s))))
+         for s in range(12)]
+check("without an rng retrieval is deterministic (unchanged behaviour)",
+      ids(cac.ragmap_retrieve(rag, p)) == plain)
+check("with an rng the references vary across seeds", len(set(draws)) >= 4,
+      len(set(draws)))
+check("a fixed seed reproduces the same references",
+      ids(cac.ragmap_retrieve(rag, p, rng=random.Random(7)))
+      == ids(cac.ragmap_retrieve(rag, p, rng=random.Random(7))))
+check("every draw still honours top_k and the reference filter",
+      all(len(d) == 4 and all(i % 2 == 0 for i in d) for d in draws))
+strong = set(ids(cac.ragmap_retrieve(rag, p, k=32)))
+check("draws stay among the strongest matches",
+      all(i in strong for d in draws for i in d))
+rag["_index"] = None
+walk_draw = ids(cac.ragmap_retrieve(rag, p, rng=random.Random(3)))
+rag["_index"] = idx
+check("the walk path draws the same way as the index for one seed",
+      walk_draw == ids(cac.ragmap_retrieve(rag, p, rng=random.Random(3))),
+      (walk_draw, ids(cac.ragmap_retrieve(rag, p, rng=random.Random(3)))))
+
 import shutil
 shutil.rmtree(td, ignore_errors=True)
 print()
-print("3 subjects enumerated, %d checks passed, %d failed" % (len(PASS), len(FAIL)))
+print("4 subjects enumerated, %d checks passed, %d failed" % (len(PASS), len(FAIL)))
 for f_ in FAIL:
     print("  FAILED: " + f_)
 sys.exit(1 if FAIL else 0)
