@@ -1003,6 +1003,29 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Variations→100, hi-res denoise fix, preview debounce (v2.9.0).**
+  VARIATIONS: `batch_sb` max 10→100 (stored as `self.batch_sb`); the batch loop
+  already generates in turn with Stop/keep-done. HI-RES FIX (user: "hi-res makes
+  pictures much worse, fix or remove"): the second-pass KSampler (node 61) ran
+  at denoise 0.45 — regenerates ~45% of the upscaled latent → changed faces /
+  extra limbs, worst when STACKED on the anatomy guard's own upscale+resample
+  (nodes 62/63) = a third sampling. Now `hires_den = p.get("hires_denoise") or
+  (0.30 if anatomy_guard else 0.35)`. VALIDATED LIVE A/B (dev 8189, Juggernaut,
+  same seed, scratchpad ab_hires.py): base 832×1216, hi-res 1248×1824; mean
+  deviation from base OLD 0.45=14.39 vs NEW 0.35=13.01 (new hallucinates less)
+  — both clean on a simple standing pose (the gross artifacts are pose/hands/
+  stacking-dependent, not every seed), so KEPT the feature with the gentler
+  value rather than removing it. PREVIEW DEBOUNCE: `_draw_frame` LANCZOS-resizes
+  the full-res preview on every canvas <Configure>; dragging the new paned
+  sashes fired a storm of them → lag. New `_on_canvas_configure` coalesces via
+  `after(60, _show_current)` (cancels the prior; `_show_current` clears
+  `_redraw_after`). MODEL RELOAD (user ask "don't force reload if same"):
+  confirmed the app forces an unload ONLY at the swap's `/free unload_models`
+  (kontext/qwen path, off by default now); ComfyUI's exec cache already reuses
+  the resident checkpoint when the graph's loader node is unchanged, so
+  normal/recipe-replay gen does NOT reload — the reloads the user saw were the
+  swap `/free` + the shared 5090 evicting the model. Did NOT add `--highvram`
+  (would fight the 24GB of other resident AI work). update_ui 229→234.
 - **Resizable panels + Cloning UI trim (v2.8.1).** RESIZABLE PANELS: the
   root layout was a fixed 2-column grid (col0 left_wrap minsize 450, col1
   right). Now `self.main_paned` = `ttk.PanedWindow(root, orient=horizontal)`

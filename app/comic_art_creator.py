@@ -102,7 +102,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.8.1"
+APP_VERSION = "2.9.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -1742,9 +1742,18 @@ def build_graph(p):
     # upscale the latent and run a short second sampling at low denoise, so
     # detail is added and anatomy firms up. Skipped for img2img and border
     # jobs, where a second pass would fight the reference/mask.
+    #
+    # DENOISE is the whole game here: 0.45 (the old value) re-generates ~45%
+    # of the picture on the upscaled latent, which changed faces and grew
+    # extra limbs — the "hi-res makes it worse" report. 0.35 adds texture and
+    # sharpness while keeping the composition; and when the anatomy guard has
+    # ALREADY upscaled+resampled the base (nodes 62/63), this would be a THIRD
+    # sampling, so go gentler still (0.30) to avoid compounding artifacts.
     if p.get("hires") and not p.get("border_assets") \
             and not p.get("ref_image_name"):
         scale = float(p.get("hires_scale") or 1.5)
+        hires_den = float(p.get("hires_denoise")
+                          or (0.30 if p.get("anatomy_guard") else 0.35))
         g["60"] = {"class_type": "LatentUpscaleBy",
                    "inputs": {"samples": sampler_out,
                               "upscale_method": "bislerp", "scale_by": scale}}
@@ -1755,7 +1764,7 @@ def build_graph(p):
                               "steps": max(10, int(steps * 0.6)), "cfg": cfg,
                               "sampler_name": d["sampler"],
                               "scheduler": d["scheduler"],
-                              "denoise": float(p.get("hires_denoise") or 0.45)}}
+                              "denoise": hires_den}}
         sampler_out = ["61", 0]
     g["7"] = {"class_type": "VAEDecode",
               "inputs": {"samples": sampler_out, "vae": ["1", 2]}}
@@ -3928,12 +3937,15 @@ class App:
         ttk.Label(grow, text="Variations", style="Dim.TLabel").grid(row=0,
                                                                     column=2)
         self.batch_var = IntVar(value=1)
-        batch_sb = ttk.Spinbox(grow, from_=1, to=10, textvariable=self.batch_var,
-                               exportselection=False, width=4)
-        batch_sb.grid(row=0, column=3, padx=(4, 12))
-        self._tip(batch_sb, "How many images to make from this one prompt "
-                            "(each with a different seed) so you can pick the "
-                            "best.")
+        self.batch_sb = ttk.Spinbox(grow, from_=1, to=100,
+                                    textvariable=self.batch_var,
+                                    exportselection=False, width=4)
+        self.batch_sb.grid(row=0, column=3, padx=(4, 12))
+        self._tip(self.batch_sb, "How many images to make from this one prompt "
+                            "(each with a different seed), 1–100, so you can "
+                            "pick the best. Large batches take a while — each "
+                            "image is generated in turn and you can Stop "
+                            "anytime; the ones already done are kept.")
         self.transparent_var = BooleanVar(value=False)
         trans_cb = ttk.Checkbutton(grow, text="Transparent BG",
                                    variable=self.transparent_var)
@@ -4739,7 +4751,7 @@ class App:
 
         self.canvas = Canvas(preview_wrap, bg=BG2, highlightthickness=0)
         self.canvas.grid(row=0, column=0, sticky=NSEW)
-        self.canvas.bind("<Configure>", lambda e: self._show_current())
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
         # covers the preview area when Incognito is on
         self._incog_cover = ttk.Label(
             preview_wrap, anchor="center", justify="center",
@@ -9304,7 +9316,19 @@ class App:
         except Exception:
             applog.exception("incognito toggle failed")
 
+    def _on_canvas_configure(self, _e=None):
+        """Coalesce rapid resize events — dragging the panel sash or the
+        window edge fires a stream of <Configure>, and each redraw LANCZOS-
+        resizes the (full-resolution) preview. Redraw once the size settles."""
+        try:
+            if getattr(self, "_redraw_after", None):
+                self.root.after_cancel(self._redraw_after)
+        except Exception:
+            pass
+        self._redraw_after = self.root.after(60, self._show_current)
+
     def _show_current(self):
+        self._redraw_after = None
         # Incognito: keep the preview blank while hidden
         if getattr(self, "incognito_var", None) is not None \
                 and self.incognito_var.get():

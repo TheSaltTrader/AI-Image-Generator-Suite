@@ -127,6 +127,38 @@ try:
 except Exception as _e:
     check("anatomy guard build_graph works", False, str(_e))
 
+# --- Variations count now goes up to 100; hi-res uses a gentle denoise ---
+check("the Variations count goes up to 100",
+      hasattr(ui, "batch_sb")
+      and str(ui.batch_sb.cget("to")) in ("100", "100.0"))
+try:
+    _ph = dict(model="Juggernaut-XL-v9.safetensors", prompt="a woman",
+               negative="", style="", loras=[], width=1024, height=1024,
+               seed=1, steps=30, cfg=6.0, hires=True, hires_scale=1.5, batch=1)
+    _gh = app.build_graph(_ph)
+    _den = _gh["61"]["inputs"]["denoise"]
+    check("hi-res second pass uses a gentle denoise (<=0.35, was 0.45)",
+          "61" in _gh and _den <= 0.35, _den)
+    _pha = dict(_ph); _pha["anatomy_guard"] = True
+    _gha = app.build_graph(_pha)
+    check("hi-res is gentler still when stacked on the anatomy guard (<=0.30)",
+          _gha["61"]["inputs"]["denoise"] <= 0.30, _gha["61"]["inputs"]["denoise"])
+except Exception as _e:
+    check("hi-res denoise build_graph works", False, str(_e))
+
+# --- preview redraw is debounced (smooth panel-sash dragging) ---
+check("preview resize is coalesced via a debounced handler",
+      callable(getattr(ui, "_on_canvas_configure", None)))
+try:
+    ui._redraw_after = None
+    ui._on_canvas_configure()
+    check("a resize schedules a single pending redraw",
+          getattr(ui, "_redraw_after", None) is not None)
+    ui.root.after_cancel(ui._redraw_after)
+    ui._redraw_after = None
+except Exception as _e:
+    check("debounced redraw schedules", False, str(_e))
+
 # --- anatomy negative embedding (one-time download, wired into the guard) ---
 check("anatomy embedding constant set",
       getattr(app, "ANATOMY_EMBED", None) == "negativeXL_D")

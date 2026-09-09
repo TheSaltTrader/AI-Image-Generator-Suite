@@ -1,5 +1,23 @@
 # Changelog — AI Image Generator Suite
 
+## v2.9.0 — 2026-09-09
+- **Variations up to 100.** The "Variations" count now goes from 1 to 100, so
+  you can make a big batch from one prompt and pick the best. Each image is
+  generated in turn; you can Stop anytime and the ones already done are kept.
+- **Hi-res fix reworked so it stops degrading pictures.** The second detail
+  pass ran at denoise 0.45, which re-generated ~45% of the image on the
+  upscaled canvas — that's what changed faces and added extra limbs. It now
+  runs at a gentle 0.35 (0.30 when the anatomy guard is also on), so it adds
+  texture and sharpness without re-drawing the picture. (A/B verified: the new
+  pass deviates less from the base while staying full-resolution.)
+- **Smoother resizing.** Dragging the panel dividers (or the window edge) no
+  longer re-scales the full-size preview on every pixel of movement — the
+  redraw waits for the drag to settle, so resizing is smooth.
+- **Model stays loaded between runs.** Confirmed the app doesn't force the
+  model to reload between generations — the engine keeps the last checkpoint in
+  memory and reuses it when nothing changed. (The only place that freed it was
+  the face-swap step, which is off by default now.)
+
 ## v2.8.1 — 2026-09-09
 - **Resizable panels.** You can now drag to resize the app's panels: a
   vertical divider between the controls panel and the preview/gallery, and a
