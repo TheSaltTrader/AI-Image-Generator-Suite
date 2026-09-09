@@ -1,5 +1,33 @@
 # Changelog — AI Image Generator Suite
 
+## v2.8.0 — 2026-09-09
+- **Cloning now replays the exact recipe by default** — the same settings the
+  AI used to create the person the first time (model, LoRA, prompt, size,
+  hi-res, seed strategy). Pick a saved clone, hit **Generate** (or **Create
+  more**) and you get more images of them at **full resolution**, with no extra
+  step and the model staying loaded between runs. This is how the original
+  batch of "her" was made, so it reproduces that look faithfully.
+- **New "Also lock the exact face" toggle** (off by default) in the Cloning
+  section — turn it on to *also* face-swap the saved face onto every image for
+  a hard identity lock, for the cases where the recipe alone doesn't nail the
+  face. (This needs an SDXL model; the app switches to one automatically.)
+- **Generate makes clones when "Use a saved clone" is checked** — same as Face
+  Swap, you just press Generate. Create more is still there for a quick batch
+  of the "Make" count.
+- **Fixed Face Swap recreating the portrait.** When you gave Face Swap a
+  face-only photo, it was steering the *base* generation with that headshot, so
+  the picture just came out as a copy of the headshot instead of drawing your
+  prompt's scene and then swapping the face onto it. Face Swap now draws the
+  base purely from your prompt and swaps the face on top — the way it should.
+  (The whole-image steering that made Cloning look good is kept, but only for
+  the Cloning face-lock, whose reference is a full scene, not a headshot.)
+- **Face swap now keeps full resolution.** The face swap used to shrink the
+  picture back to canvas size and drop the hi-res detail; it now runs at the
+  image's full resolution, so both **Face Swap** and the Cloning face-lock come
+  out sharper. (Validated end-to-end: a 1248×1824 base stays 1248×1824.)
+- **Save Clone now lets you type a name** (prefilled from the prompt) instead
+  of always auto-naming.
+
 ## v2.7.9 — 2026-09-09
 - **The selected clone's image now shows in the Cloning section itself.**
   Before, picking a saved clone dropped its picture into the **Face Swap**

@@ -525,18 +525,33 @@ try:
                         "config": json.dumps({}), "seed": "",
                         "created": "20260101000000"}
     ui.var_enable_var.set(True)
+    ui.clone_lock_face_var.set(False)          # default: pure recipe replay
     ui._apply_variation()
     root.update()
     check("the Cloning section has its own 'Using:' preview widget",
           hasattr(ui, "clone_preview_lab") and hasattr(ui, "clone_preview_name"))
+    check("the Cloning section has an 'Also lock the exact face' toggle, off",
+          hasattr(ui, "clone_lock_face_var") and not ui.clone_lock_face_var.get())
     check("selecting a clone does NOT put its face in the Face Swap section",
           ui.face_paths == [], ui.face_paths)
     check("the clone's face is held by the Cloning section, not Face Swap",
           ui._variation_face == str(_cface))
     check("the Cloning 'Using:' names the selected clone",
           "tester" in ui.clone_preview_name.get())
-    check("the swap draws its face from the clone while Cloning is on",
+    # default (face-lock off) = pure recipe replay: NO swap runs
+    check("recipe-replay clone runs no face swap by default",
+          not ui._swap_active() and ui._swap_face_source() == [])
+    check("recipe-replay clone does NOT steer the base (pure recipe)",
+          not ui._swap_guides_base())
+    # face-lock on = the swap draws its face from the clone AND guides the base
+    ui.clone_lock_face_var.set(True); ui._on_clone_lock_toggle()
+    check("face-lock on makes the swap active for the clone",
+          ui._swap_active())
+    check("the swap draws its face from the clone while face-lock is on",
           ui._swap_face_source() == [str(_cface)])
+    check("face-lock guides the base with the clone's whole saved image",
+          ui._swap_guides_base())
+    ui.clone_lock_face_var.set(False)
     check("Face Swap stays OFF when a clone is selected (mutually exclusive)",
           not ui.swap_rag_var.get())
     # the Face Swap 'Using:' strip must not show the clone image
@@ -554,7 +569,15 @@ except Exception as _e:
           False, repr(_e))
 finally:
     ui.swap_rag_var.set(False); ui.var_enable_var.set(False)
+    ui.clone_lock_face_var.set(False)
     ui.variation_sel = None; ui._variation_face = None; ui.face_paths = []
+
+# plain Face Swap must NOT feed the headshot into the base — the reported bug
+# was a face-only image recreating the portrait instead of drawing the prompt
+ui.swap_rag_var.set(True); ui.var_enable_var.set(False)
+check("plain Face Swap draws the base from the prompt, not the face photo",
+      not ui._swap_guides_base())
+ui.swap_rag_var.set(False)
 
 check("a Clone method dropdown exists with all three engines",
       hasattr(ui, "clone_method_dd")

@@ -1003,6 +1003,43 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Cloning = recipe-replay by default + optional face-lock; full-res swap
+  (v2.8.0).** USER INSIGHT: the original person was made by a plain batch (the
+  "Variations" count = `batch_var`, new seeds, one recipe) — NOT a face swap —
+  so replaying that exact recipe reproduces her at full quality with no extra
+  step. Cloning now does that by default. NEW `self.clone_lock_face_var`
+  (BooleanVar, default False) + `clone_lock_cb` checkbox in the Cloning body
+  (row 3): OFF = pure recipe replay (no swap); ON = ALSO run the insightface
+  swap for a hard face-lock. `_swap_active()` and the Cloning branch of
+  `_swap_face_source()` now require `clone_lock_face_var` on (so Cloning-off =
+  no swap = normal generation with the loaded recipe). `_apply_variation` no
+  longer force-switches to SDXL or injects `_variation_ref` as IP-Adapter for
+  replay — those happen only when the lock is on, via new `_ensure_clone_model()`
+  (SDXL switch gated on lock) and the `_variation_ref`→rag_refs block now gated
+  on lock. New `_on_clone_lock_toggle()` (switches SDXL model + status when the
+  toggle flips). `_create_more` gallery-transient branch sets `clone_lock_face_var
+  =True` (no saved recipe to replay for an ad-hoc image, so lock its face).
+  Generate already makes clones via `_swap_active`/loaded recipe. FULL-RES SWAP
+  FIX: `_generate`'s pending_swaps loop passed `out_size=(canvas)` to
+  `_swap_face_pass`, which resized the (possibly hi-res) base DOWN and set
+  `upscale=False` — the clone/swap lost the detail pass. Now `sw_out = None` for
+  the `faceswap` editor (local insightface only reworks the face region, keep
+  full res) and canvas size only for kontext/qwen (they redraw the whole image).
+  VALIDATED LIVE (dev engine 8189, Juggernaut-XL): real portrait → swap rc=0,
+  output stayed 1248×1824 (was downscaling to 832×1216); scratchpad
+  faceswap_validate.py. FACE-SWAP-BASE BUG (user report): a face-ONLY photo in
+  plain Face Swap made the render RECREATE the headshot instead of drawing the
+  prompt's scene, because `_generate` added `swap_face` to `rag_refs` (IP-Adapter
+  "PLUS high strength") to "draw the base with the person in mind" — fine for
+  Cloning (ref = whole saved scene) but wrong for a headshot (IP-Adapter
+  reproduces the headshot). FIX: new `_swap_guides_base()` (True only for a
+  Cloning face-lock: var_enable+variation_sel+clone_lock) now gates that
+  injection; plain Face Swap draws the base from the PROMPT ALONE, then swaps.
+  Cloning didn't have the bug because its ref is a full scene. `clone_lock_face` is NOT persisted in `_collect_ui_state`
+  (a live session toggle, not part of the saved recipe). SAVE-CLONE NAMING:
+  `_save_variation` now `simpledialog.askstring` (prefilled with the auto-name;
+  Cancel aborts) — reverses the earlier "no popup" since the user asked to name
+  clones. update_ui 216->219 (recipe-replay-no-swap + face-lock-on checks).
 - **Clone image decoupled into the Cloning section (v2.7.9).** USER BUG:
   "when selecting a clone, the image goes into Face Swap — it should go into
   its own Using section." Root cause: `_apply_variation` set `self.face_paths =

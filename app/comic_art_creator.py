@@ -102,7 +102,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.7.9"
+APP_VERSION = "2.8.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -2938,11 +2938,16 @@ class Generator:
                 if len(pending_swaps) > 1:
                     self.q.put(("status", "Cloning the face into picture "
                                           f"{k + 1}/{len(pending_swaps)}…"))
-                # clone at CANVAS size — the base may be 4x-upscaled
+                # The local insightface swap only reworks the face region, so
+                # run it at the base's FULL resolution (hi-res detail is kept).
+                # The Kontext/Qwen editors REDRAW the whole image, so they stay
+                # at canvas size to bound cost on a 4x-upscaled base.
+                sw_editor = params.get("swap_editor") or "faceswap"
+                sw_out = None if sw_editor == "faceswap" \
+                    else (p["width"], p["height"])
                 swapped = self._swap_face_pass(
                     ws, img, params["swap_face"], seed=p["seed"],
-                    out_size=(p["width"], p["height"]),
-                    editor=params.get("swap_editor") or "faceswap")
+                    out_size=sw_out, editor=sw_editor)
                 sp = dict(p)
                 sp.pop("swap_face", None)
                 if swapped is not None:
@@ -4194,6 +4199,23 @@ class App:
         ttk.Label(vurow, textvariable=self.clone_preview_name,
                   style="Dim.TLabel", wraplength=170).pack(side="left",
                                                            padx=(6, 0))
+        # By default Cloning REPLAYS the person's exact saved recipe (the
+        # settings that first made them) at full quality — no swap, no extra
+        # step, model stays loaded. This optional toggle adds a hard face-lock
+        # (the insightface face swap) on top, for when the recipe alone doesn't
+        # nail the exact face.
+        self.clone_lock_face_var = BooleanVar(value=False)
+        self.clone_lock_cb = ttk.Checkbutton(
+            vb, text="Also lock the exact face (extra step, slower)",
+            variable=self.clone_lock_face_var,
+            command=self._on_clone_lock_toggle)
+        self.clone_lock_cb.grid(row=3, sticky=W, pady=(2, 2))
+        self._tip(self.clone_lock_cb,
+                  "Off (default): regenerate with the person's exact saved "
+                  "recipe — full resolution, fastest, the same look the AI "
+                  "first made. On: also face-swap the saved face onto every "
+                  "image for a hard identity lock (adds a step; needs an SDXL "
+                  "model).")
         self._refresh_variation_dd()       # populate from the saved store
         self._apply_variation_enabled()    # greyed until the box is ticked
 
@@ -7755,12 +7777,34 @@ class App:
 
     def _swap_active(self):
         """A face swap will run next generation: the Face Swap section is on,
-        OR a Cloning clone is selected (Cloning drives the swap internally).
-        The two sections are mutually exclusive in the UI."""
+        OR a Cloning clone is selected AND its 'Also lock the exact face'
+        toggle is on. Cloning WITHOUT that toggle is pure recipe replay (no
+        swap). The two sections are mutually exclusive in the UI."""
         return bool(self.swap_rag_var.get()
                     or (getattr(self, "var_enable_var", None)
                         and self.var_enable_var.get()
-                        and self.variation_sel))
+                        and self.variation_sel
+                        and getattr(self, "clone_lock_face_var", None)
+                        and self.clone_lock_face_var.get()))
+
+    def _swap_guides_base(self):
+        """Whether the swap's reference image should ALSO steer the base
+        generation via IP-Adapter.
+
+        TRUE only for a Cloning face-lock, whose reference is the person's
+        whole saved image (a full scene) — steering the base there makes the
+        whole person match before the exact face is locked on.
+
+        FALSE for the plain Face Swap tool, whose reference is a tight
+        headshot: feeding that to the base makes IP-Adapter reproduce the
+        headshot instead of drawing the prompt's scene (you get a portrait
+        clone, not your picture with the face swapped in — the reported bug).
+        Face Swap therefore draws the base from the prompt alone, then swaps."""
+        return bool(getattr(self, "var_enable_var", None)
+                    and self.var_enable_var.get()
+                    and self.variation_sel
+                    and getattr(self, "clone_lock_face_var", None)
+                    and self.clone_lock_face_var.get())
 
     def _drop_variation_face(self):
         """Clear a face that a clone put in the Face Swap section (leave a
@@ -7843,32 +7887,39 @@ class App:
         return txt[:40].rstrip(" ,") or "Variation"
 
     def _save_variation(self):
-        """Save the selected gallery image as a Variation — recipe + face +
-        reference — with NO pop-up. Named automatically from the prompt; it
-        appears in the Variations dropdown under the Clone Tool."""
+        """Save the selected gallery image as a clone — recipe + face +
+        reference. Asks for a name (prefilled from the prompt); it appears in
+        the Cloning dropdown."""
         if self.varsdb is None:
             self.status_var.set("Variations store isn't available.")
             return
         if not self.session or self.current is None:
             self.status_var.set("Select an image in the gallery first, then "
-                                "💾 Save Variation.")
+                                "💾 Save Clone.")
             return
         _img, params, path = self.session[self.current]
         if not path or not Path(path).exists():
             self.status_var.set("That image has no saved file to save from.")
             return
+        auto = self._auto_variation_name(params)
+        name = simpledialog.askstring(
+            "Save clone", "Name this clone (used to find it in the dropdown):",
+            initialvalue=auto, parent=self.root)
+        if name is None:                       # Cancel — don't save
+            self.status_var.set("Save clone cancelled.")
+            return
+        name = " ".join(name.split()) or auto
         try:
-            name = self._auto_variation_name(params)
             vid = self.varsdb.add(name=name, description=name,
                                   face_src=path, ref_src=path,
                                   config=self._collect_ui_state(),
                                   seed=(params or {}).get("seed", ""))
             self._refresh_variation_dd(select_id=vid)
-            self.status_var.set(f"Saved variation '{name}'. Pick it under "
-                                "Clone Tool → Variations, or press Create more.")
+            self.status_var.set(f"Saved clone '{name}'. Pick it under "
+                                "Cloning, or press Create more.")
         except Exception as e:
             applog.exception("save variation failed")
-            self.status_var.set(f"Couldn't save variation: {e}")
+            self.status_var.set(f"Couldn't save clone: {e}")
 
     def _on_variation_pick(self, _e=None):
         """Dropdown selection (the section is already enabled): lock the chosen
@@ -7908,6 +7959,10 @@ class App:
                                   "face_path": path, "ref_path": path}
             self._variation_face = path
             self._variation_ref = path
+            # there is no saved recipe to replay for an ad-hoc gallery image,
+            # so lock the exact face from it (the swap path)
+            if hasattr(self, "clone_lock_face_var"):
+                self.clone_lock_face_var.set(True)
             self.swap_rag_var.set(False)
             self.face_paths = []
             self._face_from_variation = False
@@ -8103,16 +8158,11 @@ class App:
         self.clone_method_var.set(CLONE_METHODS[0][0])   # "Face swap …"
         self._variation_face = row["face_path"]
         self._variation_ref = row["ref_path"]
-        self.random_seed_var.set(True)
+        self.random_seed_var.set(True)   # new seed each run = a new pose of her
         self._update_clone_preview(row["ref_path"] or row["face_path"])
-        # a Flux/SD3 model can't face-swap the base — switch to an SDXL one
-        if model_family(self._model_raw() or "") in ("flux", "schnell", "sd3"):
-            best = self._best_sdxl_model()
-            if best:
-                for disp, name in getattr(self, "_model_display", {}).items():
-                    if name == best:
-                        self.model_var.set(disp)
-                        break
+        # recipe replay keeps the recipe's own model; only the face-lock swap
+        # needs to switch a Flux/SD3 recipe onto an SDXL model
+        self._ensure_clone_model()
         # the section is active now — turn it on and ungrey the picker so the
         # state is consistent (e.g. when applied from the gallery's Create more)
         if hasattr(self, "var_enable_var"):
@@ -8128,9 +8178,43 @@ class App:
         self._apply_clone_enabled()
         self._apply_variation_lock()
         self._refresh_editor_state()
+        lock = bool(getattr(self, "clone_lock_face_var", None)
+                    and self.clone_lock_face_var.get())
         self.status_var.set(
-            f"Locked '{row['description'] or row['name']}'. Change the prompt "
-            "for a new scene and Generate — same person, more images.")
+            f"Loaded '{row['description'] or row['name']}' recipe"
+            + (" + face-lock" if lock else "")
+            + ". Change the prompt for a new scene and Generate — same "
+            "person, more images.")
+
+    def _ensure_clone_model(self):
+        """The face-lock swap can only redraw an SDXL base, so if the toggle
+        is on and the recipe restored a Flux/SD3 model, switch to the best
+        available SDXL one. Pure recipe replay (toggle off) keeps whatever
+        model the recipe used — that is the point of replaying it exactly."""
+        if not (getattr(self, "clone_lock_face_var", None)
+                and self.clone_lock_face_var.get()):
+            return
+        if model_family(self._model_raw() or "") in ("flux", "schnell", "sd3"):
+            best = self._best_sdxl_model()
+            if best:
+                for disp, name in getattr(self, "_model_display", {}).items():
+                    if name == best:
+                        self.model_var.set(disp)
+                        break
+
+    def _on_clone_lock_toggle(self, *_a):
+        """The 'Also lock the exact face' toggle: on adds the face swap (and
+        needs an SDXL model); off returns to pure recipe replay."""
+        self._ensure_clone_model()
+        self._refresh_editor_state()
+        if self.variation_sel:
+            if self.clone_lock_face_var.get():
+                self.status_var.set("Face-lock on — every image is also "
+                                    "face-swapped onto the exact saved face.")
+            else:
+                self.status_var.set("Face-lock off — regenerating with the "
+                                    "exact saved recipe at full quality.")
+        self._schedule_persist()
 
     def _apply_variation_lock(self):
         """Cloning is its own section now and no longer greys/locks the Face
@@ -8282,11 +8366,14 @@ class App:
         Empty list if neither. A future multi-photo Actor DB only needs
         `_actor_ref_paths` to return more entries — everything downstream
         already takes the list."""
-        # a Cloning clone drives the swap with its own saved face — kept apart
-        # from the (mutually exclusive) Face Swap section's face_paths
+        # a Cloning clone with the face-lock toggle on drives the swap with its
+        # own saved face — kept apart from the (mutually exclusive) Face Swap
+        # section's face_paths
         if (getattr(self, "var_enable_var", None) and self.var_enable_var.get()
                 and self.variation_sel
-                and getattr(self, "_variation_face", None)):
+                and getattr(self, "_variation_face", None)
+                and getattr(self, "clone_lock_face_var", None)
+                and self.clone_lock_face_var.get()):
             return [self._variation_face]
         if self.face_source_var.get() == "file":
             return list(self.face_paths[:self.SWAP_MAX_FACES])
@@ -8666,11 +8753,15 @@ class App:
                             "Person photo + private RAG map are both "
                             "guiding this generation (chained IP-Adapter).")
 
-        # Clone with Face swap: also guide the BASE with the chosen face, so
-        # the scene is drawn with the person in mind; the face swap then locks
-        # the exact identity. SDXL + IP-Adapter only, and skipped silently
-        # otherwise (the swap alone still lands the face).
+        # Cloning face-lock ONLY: guide the BASE with the person's whole saved
+        # image (a full scene) so the base already resembles them, then the
+        # swap locks the exact face. Plain Face Swap must NOT do this — its
+        # reference is a headshot, and feeding it to the base makes IP-Adapter
+        # reproduce the headshot instead of drawing the prompt's scene. SDXL +
+        # IP-Adapter only; skipped silently otherwise (the swap still lands the
+        # face). See _swap_guides_base().
         if swap_face and swap_editor == "faceswap" and not editing \
+                and self._swap_guides_base() \
                 and model_family(model) not in ("flux", "schnell") \
                 and self._style_support_ok():
             added = False
@@ -8726,6 +8817,8 @@ class App:
         # reference (the face swap then locks the exact face on top). SDXL only.
         if (self._variation_ref and getattr(self, "var_enable_var", None)
                 and self.var_enable_var.get() and not editing
+                and getattr(self, "clone_lock_face_var", None)
+                and self.clone_lock_face_var.get()
                 and model_family(model) not in ("flux", "schnell", "sd3")
                 and Path(self._variation_ref).exists()
                 and self._style_support_ok()
