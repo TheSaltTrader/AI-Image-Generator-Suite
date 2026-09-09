@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "2.6.0"
+APP_VERSION = "2.6.1"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -163,6 +163,14 @@ UPSCALE_MODEL = "RealESRGAN_x4plus.pth"   # optional 4x hi-res pass
 # and its SigLIP vision encoder.
 REDUX_FILE = "flux1-redux-dev.safetensors"
 REDUX_SIGLIP = "sigclip_vision_patch14_384.safetensors"
+
+# How far into denoising the SDXL IP-Adapter (RAG image guidance) stays active.
+# 0.6 = the reference shapes style/composition for the first 60% of steps, then
+# the model finishes on its own. Full-length (1.0) baked the source photos'
+# lens-flares and watermarks into the picture — glaringly so after the hi-res
+# pass sharpened them. Validated on real embeds: flare/watermark gone, the RAG
+# look kept.
+IPA_END_AT = 0.6
 
 
 def redux_ready():
@@ -1560,7 +1568,12 @@ def build_graph(p):
                                   "pos_embed": ["58", 0],
                                   "weight": p.get("style_weight", 0.8),
                                   "weight_type": "linear",
-                                  "start_at": 0.0, "end_at": 1.0,
+                                  # stop the reference at 60% of denoising: it
+                                  # sets style/composition, then the model
+                                  # finishes clean. end_at 1.0 dragged the
+                                  # source photos' lens-flares and watermarks
+                                  # into the final image (worst after hi-res).
+                                  "start_at": 0.0, "end_at": p.get("ipa_end", IPA_END_AT),
                                   "embeds_scaling": "V only"}}
             model_ref = ["59", 0]
 
@@ -1584,7 +1597,10 @@ def build_graph(p):
                        "inputs": {"model": model_ref, "ipadapter": adapter_ref,
                                   "image": img_ref,
                                   "weight": p.get("style_weight", 0.8),
-                                  "start_at": 0.0, "end_at": 1.0,
+                                  # see IPA_END_AT note above — keeps the
+                                  # reference from baking flares/watermarks
+                                  # into the final, hi-res-sharpened image
+                                  "start_at": 0.0, "end_at": p.get("ipa_end", IPA_END_AT),
                                   "weight_type": p.get("ref_weight_type",
                                                        "standard")}}
             model_ref = ["51", 0]
@@ -4116,8 +4132,8 @@ class App:
         left = self._page_gen      # restore for anything after this block
         r = self._gen_row          # (set below just before this block)
 
-        # generate
-        gorow = ttk.Frame(left)        # generate
+        # generate — a blue rule sets the action apart from the fields above
+        r = self._rule(left, r)
         gorow = ttk.Frame(left); gorow.grid(row=r, sticky=NSEW,
                                             pady=(12, 4)); r += 1
         gorow.columnconfigure(0, weight=1)
@@ -4412,6 +4428,7 @@ class App:
         # ---------- batch queue (under the tabs, always visible) ----------
         left = self._page_bottom
         r = 0
+        r = self._rule(left, r)   # blue rule separates the queue from the tabs
         self.queue_count_var = StringVar(value="Batch queue (0)")
         ttk.Label(left, textvariable=self.queue_count_var,
                   style="Head.TLabel").grid(row=r, sticky=W,
@@ -6724,6 +6741,16 @@ class App:
             note += ", engine updated" if eng_ok else ", engine NOT updated"
         self.ui_queue.put(("status", note))
         self.ui_queue.put(("models_changed", None))
+        # A just-downloaded SD3.5 checkpoint needs its InstantX node + adapter
+        # placed into the engine. Boot-time autoheal already ran (and saw no
+        # checkpoint yet), so finish it here and restart so SD3.5 RAG actually
+        # works instead of silently falling back to captions.
+        if self._ensure_sd3_support():
+            self.ui_queue.put(("status", "Finishing SD3.5 image-guidance "
+                                         "setup — restarting the engine…"))
+            kill_engine()
+            time.sleep(2)
+            threading.Thread(target=self._boot_engine, daemon=True).start()
 
     # -------------------------------------------------- engine boot
     def _restart_engine(self):
@@ -6787,6 +6814,47 @@ class App:
             return True
         return False
 
+    def _ensure_sd3_support(self):
+        """Make SD3.5 image guidance runnable when an SD3.5 checkpoint is
+        present: install the unofficial InstantX node and copy its adapter
+        into the engine's OWN models/ipadapter (that node hardcodes its
+        lookup there, ignoring the app's model paths). Returns True if the
+        engine must restart to pick up a freshly installed node or adapter.
+
+        Called at boot (autoheal) AND after a model download — the SD3.5
+        checkpoint often finishes downloading *after* boot-time autoheal has
+        run, which used to leave the adapter uncopied and SD3.5 RAG silently
+        off until some later restart. Each step is skipped once satisfied."""
+        try:
+            if not any("sd3" in c.lower()
+                       for c in scan_models("checkpoints")):
+                return False
+            restart = False
+            node_dir = ENGINE_DIR / "custom_nodes" / SD3_NODE_DIR
+            if not node_dir.exists():
+                self.ui_queue.put((
+                    "status", "Setting up the SD3.5 image-guidance add-on…"))
+                try:
+                    if engine_files.install_node_zip(
+                            SD3_NODE_ZIP, node_dir,
+                            lambda s: self.ui_queue.put(("status", s))):
+                        restart = True
+                except Exception:
+                    applog.exception("SD3.5 node install failed")
+            src = MODELS / "ipadapter" / SD3_IPA
+            dst = ENGINE_DIR / "models" / "ipadapter" / SD3_IPA
+            if src.exists() and not dst.exists():
+                try:
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(src, dst)
+                    restart = True   # the running engine hasn't got this yet
+                except Exception:
+                    applog.exception("SD3.5 adapter copy failed")
+            return restart
+        except Exception:
+            applog.exception("ensure SD3 support failed")
+            return False
+
     def _autoheal_addons(self):
         """After the engine is up: install the add-ons the app needs but
         the model manifest cannot deliver — the IP-Adapter custom node
@@ -6815,37 +6883,15 @@ class App:
                     "status", "Setting up the face-swap engine for the Clone "
                               "Tool (one-time ~550 MB) — you can keep working."))
                 self._install_face_swap()
-            # 3) SD3.5 image guidance — only for users who have an SD3.5 model.
-            # Needs the unofficial InstantX node AND its adapter placed in the
-            # engine's OWN models/ipadapter (that node hardcodes its lookup
-            # there, ignoring the app's model path).
-            node_dir = ENGINE_DIR / "custom_nodes" / SD3_NODE_DIR
-            has_sd3 = any("sd3" in c.lower()
-                          for c in scan_models("checkpoints"))
-            if has_sd3:
-                restart = False
-                if not node_dir.exists():
-                    self.ui_queue.put((
-                        "status", "Setting up the SD3.5 image-guidance add-on…"))
-                    try:
-                        restart = engine_files.install_node_zip(
-                            SD3_NODE_ZIP, node_dir,
-                            lambda s: self.ui_queue.put(("status", s)))
-                    except Exception:
-                        applog.exception("SD3.5 node install failed")
-                src = MODELS / "ipadapter" / SD3_IPA
-                dst = ENGINE_DIR / "models" / "ipadapter" / SD3_IPA
-                if src.exists() and not dst.exists():
-                    try:
-                        dst.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(src, dst)
-                    except Exception:
-                        applog.exception("SD3.5 adapter copy failed")
-                if restart:
-                    kill_engine()
-                    time.sleep(2)
-                    threading.Thread(target=self._boot_engine,
-                                     daemon=True).start()
+            # 3) SD3.5 image guidance — install the node + copy its adapter
+            # into the engine's own models/ipadapter. Factored into
+            # _ensure_sd3_support so the update flow finishes it too when an
+            # SD3.5 checkpoint arrives after boot.
+            if self._ensure_sd3_support():
+                kill_engine()
+                time.sleep(2)
+                threading.Thread(target=self._boot_engine,
+                                 daemon=True).start()
         except Exception:
             applog.exception("autoheal addons failed")
 
@@ -7661,7 +7707,13 @@ class App:
         sdxl = bool(fam) and fam not in ("flux", "schnell")
         lora_on = (not editing) and bool(self._selected_loras()) \
             and (not swap_mode or self.swap_use_lora_var.get())
+        # an embeds-only map carries SDXL-format embeds; SD3.5's IP-Adapter
+        # needs a real image, so it CANNOT steer on such a map (it would fall
+        # back to captions). Don't show a green "RAG on" that lies.
+        embeds_only = bool(self.ragmap and self.ragmap.get("_embeds_only"))
+        rag_dead = (fam == "sd3" and embeds_only)
         rag_on = (not editing) and (self.ragmap is not None) and sdxl \
+            and not rag_dead \
             and (not swap_mode or self.swap_use_rag_var.get())
         self.lora_badge.configure(
             style="BadgeOn.TLabel" if lora_on else "BadgeOff.TLabel")
@@ -7681,6 +7733,8 @@ class App:
                        else "no RAG map loaded (or still loading)"
                        if self.ragmap is None
                        else f"model {fam or '?'} is not SDXL" if not sdxl
+                       else "SD3.5 can't use an embeds-only map (needs images)"
+                       if rag_dead
                        else "swap set to skip RAG" if swap_mode
                        and not self.swap_use_rag_var.get() else "?"))
         try:
@@ -8029,6 +8083,23 @@ class App:
             self.seed_var.set(str(seed))
         steps = None if self.steps_var.get() == "auto" else int(self.steps_var.get())
 
+        # Style-preset ↔ RAG auto-balance: when an art-style preset is picked
+        # AND a RAG reference is steering the image, ease the reference down
+        # and cut its reach short so the chosen style (e.g. Noir's black &
+        # white) can actually come through instead of the colour-photo
+        # reference overriding it — while still keeping some reference pull.
+        ipa_end = IPA_END_AT
+        style_lead = (bool(style)
+                      and self.preset_var.get() != NONE_PRESET
+                      and bool(rag_refs or rag_embed_paths))
+        if style_lead:
+            rag_weight = round(float(rag_weight) * 0.5, 2)
+            ipa_end = 0.35
+            self.status_var.set(
+                "Style preset active — eased the RAG reference so the style "
+                "shows through (turn RAG weight up in the map for more "
+                "reference, down for more style).")
+
         params = dict(prompt=full_prompt, user_prompt=prompt, style=style,
                       negative=self._get(self.negative_box),
                       model=model, loras=loras, width=w, height=h, seed=seed,
@@ -8043,7 +8114,7 @@ class App:
                       preset=self.preset_var.get(),
                       ref_images=edit_refs,
                       rag_ref_paths=rag_refs, rag_embed_paths=rag_embed_paths,
-                      style_weight=rag_weight,
+                      style_weight=rag_weight, ipa_end=ipa_end,
                       editor=editor, swap_face=swap_face,
                       swap_editor=swap_editor,
                       out_size=(w, h) if editing

@@ -1003,6 +1003,36 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **RAG artifact fix + preset auto-balance + SD3.5 self-heal (v2.6.1).**
+  (1) IP-Adapter `end_at` was 1.0, so an embeds map's source photos dragged
+  their baked-in lens-flares/watermarks into the final image (glaring after the
+  hi-res pass sharpened them). Capped at a module const `IPA_END_AT = 0.6`
+  (both the IPAdapterEmbeds and IPAdapter image nodes) — VALIDATED on the user's
+  real embeds: flare/watermark gone, RAG steer kept (diff still ~70). Confirmed
+  it's a RAG artifact not hi-res: plain(no-embeds)+hires was CLEAN.
+  (2) Style-preset↔RAG auto-balance: in `_generate`, `style_lead = preset
+  active AND (rag_refs or rag_embed_paths)`; when set, `rag_weight *= 0.5` and
+  `ipa_end = 0.35` (passed as `p["ipa_end"]`, build_graph uses
+  `p.get("ipa_end", IPA_END_AT)`). VALIDATED: Noir+LoRA+RAG at 0.4/0.35 renders
+  genuine B&W noir while keeping the reference's composition (at 0.8/1.0 it was
+  full-colour, preset ignored). The preset itself was never broken — image RAG
+  (colour photos) + photoreal LoRA simply overrode the B&W *text*; alone the
+  Noir preset renders perfect B&W.
+  (3) SD3.5 self-heal: the InstantX adapter copy to ENGINE_DIR/models/ipadapter
+  (the node hardcodes that path) + node install were only done in boot-time
+  autoheal (once per session, gated on a sd3 checkpoint being present). The
+  ~15GB SD3.5 checkpoint finishes downloading AFTER boot, so autoheal saw no
+  checkpoint and skipped it -> `sd3_ipa_ready()` stayed False -> SD3.5 RAG
+  silently off. Factored into `_ensure_sd3_support()` (returns needs-restart),
+  called from autoheal AND the post-download update block. NB SD3.5 CANNOT use
+  embeds-only maps (its adapter needs a SigLIP image, not SDXL CLIP-H embeds);
+  `_refresh_mode_badges` now reds the RAG badge for fam=="sd3" + `_embeds_only`
+  (`rag_dead`) instead of a false green.
+  (4) Two blue `_rule()` dividers added above the Generate button and above the
+  Batch queue. Tests: update_ui 168.
+  NB dev==H: engine is byte-identical (ComfyUI 0.34.0, torch 2.11, IPAdapter
+  node) so build_graph output reproduces faithfully on dev 8189 — the whole
+  RAG investigation ran there with the user's Juggernaut+LoRA+embeds copied over.
 - **SD3.5 Large image-guided RAG via InstantX IP-Adapter (v2.6.0).** The third
   family that can now steer on a RAG map's IMAGES (SDXL=IP-Adapter,
   Flux=Redux, SD3.5=InstantX). `model_family()` returns `"sd3"` for any name

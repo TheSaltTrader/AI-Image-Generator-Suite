@@ -1,5 +1,27 @@
 # Changelog — AI Image Generator Suite
 
+## v2.6.1 — 2026-09-09
+- **Fixed hi-res "add details" adding lens-flares, glare and watermark ghosts.**
+  When a RAG map steered a generation, the reference photos' own baked-in
+  light-flares and watermarks were being dragged into the final image — and the
+  hi-res pass then sharpened them into obvious junk. The reference now stops
+  guiding at 60% of the run (it still sets the look, then the model finishes
+  clean). Your RAG results keep their quality and lose the artifacts.
+- **Art-style presets now show through even with RAG on (auto-balance).** Pick a
+  style like *Noir / Sin City* while a RAG map is active and the app now eases
+  the reference down so the style actually lands (e.g. real black-and-white
+  noir) instead of the colour-photo reference overriding it. Turn the RAG map's
+  weight up for more reference, down for more style.
+- **SD3.5 image guidance now finishes setting itself up after the model
+  downloads.** If the SD3.5 checkpoint downloaded *after* startup (or an update
+  was interrupted), SD3.5's guidance add-on could stay half-installed and
+  silently fall back to text. It now completes the setup and restarts the engine
+  on its own. (Note: SD3.5 needs *image-based* RAG maps — it can't read the
+  SDXL "embeds-only" maps; the RAG badge now shows this honestly instead of a
+  misleading green.)
+- **Two blue section dividers** added above **Generate** and above **Batch
+  queue**, so those sections are easier to pick out.
+
 ## v2.6.0 — 2026-09-08
 - **SD3.5 Large can now be guided by your reference images (RAG).** Stable
   Diffusion 3.5 is the most capable base model the app supports, and it now
