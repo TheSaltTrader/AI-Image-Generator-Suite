@@ -102,7 +102,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.7.6"
+APP_VERSION = "2.7.7"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -3998,7 +3998,7 @@ class App:
         # image editor — Gemini-style instruction editing
         r = self._rule(left, r)
         # ---------- CLONE A FACE onto the generated image ----------
-        fc_head = ttk.Label(left, text="CLONE TOOL & VARIATIONS",
+        fc_head = ttk.Label(left, text="CLONE TOOL (optional)",
                             style="Head.TLabel")
         fc_head.grid(row=r, sticky=W, pady=(10, 0)); r += 1
         self._tip(fc_head,
@@ -4018,52 +4018,6 @@ class App:
                   "On: after the prompt draws the scene, the chosen face is "
                   "placed on the person in it. Off: the whole section below "
                   "is disabled and only the prompt is used.")
-
-        # ---- Variations: recall a person saved with "🧬 More of this person"
-        # under the gallery. On, it restores that image's settings and locks
-        # the face + reference so each Generate makes MORE of the same person
-        # (change the prompt for new scenes; the person stays). Its own on/off,
-        # page-level so it isn't greyed with the clone body.
-        self.var_enable_var = BooleanVar(value=False)
-        self.var_cb = ttk.Checkbutton(
-            left, text="🧬 Variations — make more of one saved person",
-            variable=self.var_enable_var, command=self._on_variation_toggle)
-        self.var_cb.grid(row=r, sticky=W, pady=(0, 2)); r += 1
-        self._tip(self.var_cb,
-                  "On: pick a saved person below and lock them — the app "
-                  "restores that generation's settings + face + reference, so "
-                  "each Generate makes MORE of the same person (change the "
-                  "prompt for new scenes). Save a person with 💾 Save Variation "
-                  "under the gallery. Off: normal generation.")
-        # inline row: [ dropdown of saved people ]  Make [n]  🧬 Create more
-        self.var_row = ttk.Frame(left)
-        self.var_row.grid(row=r, sticky=NSEW, pady=(0, 2)); r += 1
-        self.var_row.columnconfigure(0, weight=1)
-        self.variation_var = StringVar(value=VAR_NONE)
-        self.variation_dd = ttk.Combobox(
-            self.var_row, textvariable=self.variation_var, state="readonly",
-            exportselection=False, values=[VAR_NONE])
-        self.variation_dd.grid(row=0, column=0, sticky="ew")
-        self.variation_dd.bind("<<ComboboxSelected>>", self._on_variation_pick)
-        self._tip(self.variation_dd, "Your saved people. Pick one to lock it, "
-                                     "then Generate (or Create more) for more "
-                                     "images of that person.")
-        ttk.Label(self.var_row, text="Make", style="Dim.TLabel").grid(
-            row=0, column=1, padx=(8, 2))
-        self.var_count_var = IntVar(value=4)
-        ttk.Spinbox(self.var_row, from_=1, to=20, width=4,
-                    textvariable=self.var_count_var).grid(row=0, column=2)
-        ttk.Button(self.var_row, text="🧬 Create more",
-                   command=self._create_more).grid(row=0, column=3, padx=(6, 0))
-        # manage row: delete / export / import — all inline, no pop-ups
-        vmrow = ttk.Frame(left); vmrow.grid(row=r, sticky=W, pady=(0, 2)); r += 1
-        ttk.Button(vmrow, text="🗑 Delete", width=9,
-                   command=self._delete_variation).pack(side="left")
-        ttk.Button(vmrow, text="⬆ Export", width=9,
-                   command=self._export_variations).pack(side="left", padx=(6, 0))
-        ttk.Button(vmrow, text="⬇ Import", width=9,
-                   command=self._import_variations).pack(side="left", padx=(6, 0))
-        self._refresh_variation_dd()   # populate from the saved store
 
         self.clone_body = ttk.Frame(left)
         self.clone_body.grid(row=r, sticky=NSEW); r += 1
@@ -4177,6 +4131,58 @@ class App:
         gr.pack(side="left", padx=(8, 0))
         self._tip(gl, "Apply your ticked LoRAs to the picture the swap draws.")
         self._tip(gr, "Let your loaded RAG map guide the picture the swap draws.")
+
+        # ---------- VARIATIONS: recall a saved person and make more ----------
+        r = self._rule(left, r)
+        var_head = ttk.Label(left, text="VARIATIONS (optional)",
+                             style="Head.TLabel")
+        var_head.grid(row=r, sticky=W, pady=(6, 0)); r += 1
+        self._tip(var_head,
+                  "Reuse a person you saved with 💾 Save Variation (under the "
+                  "gallery). Picking one reloads that image's recipe and locks "
+                  "the face, so every Generate makes MORE of the same person — "
+                  "change the prompt for new scenes.")
+        # on/off checkbox at the top; off greys the section (like Clone)
+        self.var_enable_var = BooleanVar(value=False)
+        self.var_cb = ttk.Checkbutton(
+            left, text="Use a saved Variation",
+            variable=self.var_enable_var, command=self._on_variation_toggle)
+        self.var_cb.grid(row=r, sticky=W, pady=(2, 2)); r += 1
+        self._tip(self.var_cb,
+                  "Off (default): normal generation. On: the picker below turns "
+                  "on — choose a saved person and the app reloads their recipe "
+                  "and locks the face, so Generate / Create more makes more of "
+                  "that person.")
+        self.variation_body = ttk.Frame(left)
+        self.variation_body.grid(row=r, sticky=NSEW); r += 1
+        self.variation_body.columnconfigure(0, weight=1)
+        vb = self.variation_body
+        vrow = ttk.Frame(vb); vrow.grid(row=0, sticky=NSEW, pady=(2, 2))
+        vrow.columnconfigure(0, weight=1)
+        self.variation_var = StringVar(value=VAR_NONE)
+        self.variation_dd = ttk.Combobox(
+            vrow, textvariable=self.variation_var, state="readonly",
+            exportselection=False, values=[VAR_NONE])
+        self.variation_dd.grid(row=0, column=0, sticky="ew")
+        self.variation_dd.bind("<<ComboboxSelected>>", self._on_variation_pick)
+        self._tip(self.variation_dd, "Your saved people. Pick one to load its "
+                                     "recipe and lock the person.")
+        ttk.Label(vrow, text="Make", style="Dim.TLabel").grid(
+            row=0, column=1, padx=(8, 2))
+        self.var_count_var = IntVar(value=4)
+        ttk.Spinbox(vrow, from_=1, to=20, width=4,
+                    textvariable=self.var_count_var).grid(row=0, column=2)
+        ttk.Button(vrow, text="🧬 Create more",
+                   command=self._create_more).grid(row=0, column=3, padx=(6, 0))
+        vmrow = ttk.Frame(vb); vmrow.grid(row=1, sticky=W, pady=(0, 2))
+        ttk.Button(vmrow, text="🗑 Delete", width=9,
+                   command=self._delete_variation).pack(side="left")
+        ttk.Button(vmrow, text="⬆ Export", width=9,
+                   command=self._export_variations).pack(side="left", padx=(6, 0))
+        ttk.Button(vmrow, text="⬇ Import", width=9,
+                   command=self._import_variations).pack(side="left", padx=(6, 0))
+        self._refresh_variation_dd()       # populate from the saved store
+        self._apply_variation_enabled()    # greyed until the box is ticked
 
         self._gen_row = r      # the generation page continues here, after clone
         # ---------- EDIT A LOADED IMAGE: its own tab ----------
@@ -7817,17 +7823,16 @@ class App:
             self.status_var.set(f"Couldn't save variation: {e}")
 
     def _on_variation_pick(self, _e=None):
-        """Dropdown selection: lock the chosen person, or clear on '— none —'."""
+        """Dropdown selection (the section is already enabled): lock the chosen
+        person, or clear the lock on '— none —' while keeping the section on."""
         row = self._selected_variation()
         if row is None:
             self.variation_sel = None
             self._variation_ref = None
-            self.var_enable_var.set(False)
             self._apply_variation_lock()
-            self.status_var.set("Variation off — normal generation.")
+            self.status_var.set("No variation selected.")
         else:
             self.variation_sel = row
-            self.var_enable_var.set(True)
             self._apply_variation()
         self._schedule_persist()
 
@@ -7939,14 +7944,34 @@ class App:
         self._apply_variation_lock()
         self._schedule_persist()
 
+    def _apply_variation_enabled(self):
+        """Grey the Variations body until the section's checkbox is ticked —
+        matching how the Clone section's checkbox greys its body."""
+        if not hasattr(self, "variation_body"):
+            return
+        on = self.var_enable_var.get()
+
+        def setstate(w):
+            try:
+                if isinstance(w, (ttk.Button, ttk.Checkbutton, ttk.Radiobutton,
+                                  ttk.Combobox, ttk.Menubutton, ttk.Scale,
+                                  ttk.Spinbox)):
+                    w.state(["!disabled"] if on else ["disabled"])
+            except Exception:
+                pass
+            for c in w.winfo_children():
+                setstate(c)
+        setstate(self.variation_body)
+
     def _on_variation_toggle(self):
-        """The Variations checkbox: on + a person picked in the dropdown ->
-        lock them; on + none picked -> ask the user to pick; off -> unlock."""
+        """The Variations checkbox: on ungreys the picker (and locks the
+        picked person, if any); off greys it and returns to normal generation."""
+        self._apply_variation_enabled()
         if self.var_enable_var.get():
             row = self._selected_variation()
             if row is None:
-                self.status_var.set("Pick a saved person in the Variations "
-                                    "dropdown (or 💾 Save Variation first).")
+                self.status_var.set("Variations on — pick a saved person "
+                                    "below (or 💾 Save Variation first).")
                 self._apply_variation_lock()
             else:
                 self.variation_sel = row
@@ -7954,8 +7979,8 @@ class App:
         else:
             self.variation_sel = None
             self._variation_ref = None
-            self._apply_variation_lock()        # off -> ungrey
-            self.status_var.set("Variation off — normal generation.")
+            self._apply_variation_lock()        # off -> ungrey clone controls
+            self.status_var.set("Variations off — normal generation.")
         self._schedule_persist()
 
     def _apply_variation(self):
@@ -7986,6 +8011,11 @@ class App:
                     if name == best:
                         self.model_var.set(disp)
                         break
+        # the section is active now — turn it on and ungrey the picker so the
+        # state is consistent (e.g. when applied from the gallery's Create more)
+        if hasattr(self, "var_enable_var"):
+            self.var_enable_var.set(True)
+            self._apply_variation_enabled()
         # reflect the selection in the dropdown (without re-triggering apply)
         if hasattr(self, "variation_var"):
             lbl = self._variation_label(row)

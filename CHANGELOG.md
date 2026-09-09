@@ -1,5 +1,14 @@
 # Changelog — AI Image Generator Suite
 
+## v2.7.7 — 2026-09-09
+- **Variations is now its own section**, separate from the Clone Tool — it was
+  too cluttered sharing one. It has its own **on/off checkbox (off by
+  default)**, exactly like the Clone section: while it's off the picker is
+  greyed out; tick it and the controls light up. The section holds only what
+  Variations needs — pick a saved person, set how many to **Make**, **Create
+  more**, and Delete / Export / Import. Picking a person reloads their recipe
+  and locks the face so you get more images of the same person.
+
 ## v2.7.6 — 2026-09-09
 - **Fixed the "engine stopped while starting" error you kept seeing.** Your
   engine was actually starting fine — it just takes a while to boot and would

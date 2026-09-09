@@ -1003,6 +1003,17 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Variations promoted to its own section (v2.7.7).** Split out of the Clone
+  Tool into a standalone "VARIATIONS (optional)" section with its own
+  `var_enable_var` checkbox (OFF by default) + a `variation_body` frame greyed
+  by `_apply_variation_enabled` (mirrors `_apply_clone_enabled`) until ticked.
+  Body holds only variation controls: the `variation_dd` dropdown, Make count +
+  Create more, Delete/Export/Import. `_on_variation_toggle` calls
+  `_apply_variation_enabled` first; `_on_variation_pick` no longer toggles the
+  enable (the checkbox owns enable/grey, the dropdown just selects — none clears
+  the lock but keeps the section on); `_apply_variation` sets var_enable on +
+  ungreys so a gallery Create-more keeps the section consistent. Clone header
+  reverted to "CLONE TOOL (optional)". update_ui 205.
 - **Engine-boot false alarm + SD3.5 diffusers dep + Create-more visibility
   (v2.7.6).** From a user error-log: engine.log showed the SD3 InstantX node
   failing with `ModuleNotFoundError: No module named 'diffusers'` — the embedded

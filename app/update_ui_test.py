@@ -80,9 +80,22 @@ check("'Make N' count for Create more exists", hasattr(ui, "var_count_var"))
 for _m in ("_save_variation", "_create_more", "_on_variation_pick",
            "_delete_variation", "_refresh_variation_dd", "_apply_variation",
            "_apply_variation_lock", "_clear_variation", "_on_variation_toggle",
-           "_export_variations", "_import_variations"):
+           "_apply_variation_enabled", "_export_variations",
+           "_import_variations"):
     check("variations method %s wired" % _m,
           callable(getattr(ui, _m, None)))
+# Variations is its own section with a greyable body, off by default
+check("Variations has its own greyable body", hasattr(ui, "variation_body"))
+try:
+    ui.var_enable_var.set(False); ui._apply_variation_enabled()
+    _dd_off = "disabled" in (ui.variation_dd.state() or ())
+    ui.var_enable_var.set(True); ui._apply_variation_enabled()
+    _dd_on = "disabled" not in (ui.variation_dd.state() or ())
+    ui.var_enable_var.set(False); ui._apply_variation_enabled()
+    check("Variations picker greyed when off, selectable when on",
+          _dd_off and _dd_on)
+except Exception as _e:
+    check("Variations enable toggles the body", False, str(_e))
 # a locked variation must force face-swap on and grey the model/method
 try:
     ui.var_enable_var.set(False)
