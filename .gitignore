@@ -17,6 +17,7 @@ ComfyUI_failed_*/
 
 # --- user data & generated art ---
 output/
+variations/
 training/
 border/
 app/settings.json
