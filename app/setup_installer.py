@@ -35,6 +35,16 @@ else:
 
 MANIFEST = PROJECT / "app" / "models_manifest.json"
 TMP_DIR = PROJECT / "_setup_tmp"   # keep even transient files in-folder
+
+
+def _safe_extractall(zf, dest):
+    """Extract a zip, refusing any member that would land outside dest — the
+    zip-slip guard the runtime extractors already have, here too."""
+    dest = Path(dest).resolve()
+    for m in zf.namelist():
+        if not str((dest / m).resolve()).startswith(str(dest)):
+            raise RuntimeError("unsafe path in archive: " + m)
+    zf.extractall(dest)
 PIP_ENV = dict(os.environ, PIP_NO_CACHE_DIR="1")  # no %LOCALAPPDATA% cache
 COMFY_ZIP = ("https://github.com/comfyanonymous/ComfyUI/"
              "archive/refs/heads/master.zip")
@@ -137,7 +147,7 @@ def _run_install(skip_models, log, status, progress):
             _download(PY_EMBED_URL, z, "python runtime", status, adv)
             pydir.mkdir(parents=True, exist_ok=True)
             with zipfile.ZipFile(z) as zf:
-                zf.extractall(pydir)
+                _safe_extractall(zf, pydir)
         log("Python runtime installed (self-contained, nothing touched "
             "outside this folder).")
 
@@ -173,7 +183,7 @@ def _run_install(skip_models, log, status, progress):
             _download(COMFY_ZIP, zpath, "engine", status, adv)
             log("Extracting engine...")
             with zipfile.ZipFile(zpath) as z:
-                z.extractall(td)
+                _safe_extractall(z, td)
             inner = next(Path(td).glob("ComfyUI-*"))
             shutil.move(str(inner), str(engine))
         log("Engine installed.")
@@ -222,7 +232,7 @@ def _run_install(skip_models, log, status, progress):
                       "archive/refs/heads/main.zip", z, "IP-Adapter node",
                       status, progress)
             with zipfile.ZipFile(z) as zf:
-                zf.extractall(td)
+                _safe_extractall(zf, td)
             inner = next(Path(td).glob("ComfyUI_IPAdapter_plus-*"))
             shutil.move(str(inner), str(node_dir))
         log("IP-Adapter node installed.")

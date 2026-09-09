@@ -1,0 +1,127 @@
+# The Lodestone Assessment, declared for AI Image Generator Suite.
+#
+# lodestone.py, README.md and templates/ are the portable kit (copied from
+# the CDG Spec Forge kit, which took it from Community Uploader) and are left
+# alone so a newer kit drops straight over the top. This file is the only one
+# that belongs to this project.
+#
+#   python kit/lodestone.py --list     what is declared
+#   python kit/lodestone.py --quick    skip the slow ones
+#   python kit/lodestone.py            every sweep
+#
+# Four verdicts, never averaged: PASS / FAIL / NOT RUN / NOT BUILT. The last
+# two are debt and are named every run — what is untested is written down, not
+# rounded into a score.
+
+[project]
+name = ""
+root = ".."
+version_file = "VERSION.txt"
+
+
+# --- built sweeps: automated suites that run without a live engine ---------
+
+[sweeps.ui-regression]
+title = "UI regression"
+purpose = "every left-panel control, tab, badge, setting and the Clone Tool behave"
+command = ['venv\Scripts\python.exe', "app/update_ui_test.py"]
+detail_pattern = "(\\d+) passed, (\\d+) failed"
+detail = "{0} UI checks passed, {1} failed"
+on_failure = "a UI control or behaviour regressed"
+
+[sweeps.clone]
+title = "Clone Tool (face swap)"
+purpose = "gen-then-clone emits ONE finished image; ordering and cancel keep every base"
+command = ['venv\Scripts\python.exe', "app/swap_test.py"]
+detail_pattern = "(\\d+) checks passed, (\\d+) failed"
+detail = "{0} clone-pipeline checks passed, {1} failed"
+on_failure = "the clone pipeline lost an image or mis-ordered a swap"
+
+[sweeps.rag-maps]
+title = "RAG maps"
+purpose = "map parsing, the inverted-index retrieval and the async loader"
+command = ['venv\Scripts\python.exe', "app/ragmap_test.py"]
+detail_pattern = "(\\d+) checks passed, (\\d+) failed"
+detail = "{0} RAG checks passed, {1} failed"
+on_failure = "RAG retrieval or loading regressed"
+
+[sweeps.self-update]
+title = "Self-update"
+purpose = "download, verify, swap and roll back; ask before download and before restart"
+command = ['venv\Scripts\python.exe', "app/self_update_test.py"]
+detail_pattern = "(\\d+) passed, (\\d+) failed"
+detail = "{0} self-update checks passed, {1} failed"
+on_failure = "the updater could brick or mis-gate an install"
+
+[sweeps.engine-files]
+title = "Engine files (rename-not-delete)"
+purpose = "engine updates rename aside, verify, roll back; nothing is deleted in place"
+command = ['venv\Scripts\python.exe', "app/engine_files_test.py"]
+detail_pattern = "(\\d+) checks passed, (\\d+) failed"
+detail = "{0} engine-file checks passed, {1} failed"
+on_failure = "an engine update could delete a live tree"
+
+[sweeps.startup]
+title = "Startup & single-instance"
+purpose = "the mutex, the wait-for-previous-copy window and a clean relaunch"
+command = ['venv\Scripts\python.exe', "app/startup_test.py"]
+detail_pattern = "(\\d+) checks passed, (\\d+) failed"
+detail = "{0} startup checks passed, {1} failed"
+on_failure = "a second copy or a relaunch could misbehave"
+
+[sweeps.logging]
+title = "Logging"
+purpose = "app.log captures status, errors and caught exceptions; no secrets logged"
+command = ['venv\Scripts\python.exe', "app/applog_test.py"]
+detail_pattern = "(\\d+) checks passed, (\\d+) failed"
+detail = "{0} logging checks passed, {1} failed"
+on_failure = "a failure could go unrecorded"
+
+
+# --- debt: sweeps that exist or are needed but were NOT RUN / NOT BUILT -----
+
+[sweeps.security-owasp]
+title = "Security (OWASP Top 10)"
+purpose = "the download/install and injection surface reviewed against OWASP"
+why = """reviewed by hand each release, not by an automated suite. v2.2.0 pass: \
+5 findings, the actionable 4 fixed this release — inswapper_128.onnx pinned to a \
+SHA-256 and verified before use, insightface pinned to ==2.0, the setup extractor \
+given the same zip-slip guard the runtime extractors have, and non-HTTPS model URLs \
+refused. Residual (documented): unsigned exe (SmartScreen), unauthenticated loopback \
+engine (inherent to ComfyUI), insightface's buffalo_l detector auto-download. Build \
+an automated security check to turn this from NOT BUILT into PASS."""
+
+[sweeps.clone-fidelity]
+title = "Clone likeness (live)"
+purpose = "the swapped face actually resembles the chosen person"
+why = """validated by hand on the dev engine every time (insightface swap: cosine \
+similarity to the SOURCE face 0.88-0.91, same-person range, vs ~0.05 to the original), \
+but no automated fidelity assertion is wired into the suite. NOT BUILT: add a check \
+that swaps a known pair and asserts the similarity threshold."""
+
+[sweeps.end-to-end-engine]
+title = "End-to-end on a live engine"
+purpose = "RAG + LoRA base then clone, generated through a real ComfyUI engine"
+why = """the suite EXISTS (app/rag_lora_e2e_test.py, runs on port 8189 with its own \
+engine) but was NOT RUN this pass: it spawns a second ComfyUI engine and the user's \
+app is open and using the GPU. Run it when their app is closed."""
+
+[sweeps.models-audit]
+title = "Model manifest audit"
+purpose = "every manifest entry resolves and the engine can see it"
+why = """the suite EXISTS (app/models_audit_test.py) but was NOT RUN this pass — it \
+queries a live engine, and running it would touch the user's engine on 8188. Run it \
+when their app is closed."""
+
+[sweeps.vram]
+title = "VRAM / GPU meter"
+purpose = "the GPU meter and per-model VRAM tiering read correctly"
+why = """the suite EXISTS (app/vram_test.py) but was NOT RUN this pass — it needs the \
+GPU/engine the user's running app is using. Run it when their app is closed."""
+
+[sweeps.journeys]
+title = "Journeys (driving the live window)"
+purpose = "a real user journey clicked through the actual window, screen by screen"
+why = """nothing drives the real Tkinter window through a full journey. The single- \
+instance mutex is global, so a driven copy cannot run while the user's app is open, \
+and no Tkinter journey driver has been built. NOT BUILT."""

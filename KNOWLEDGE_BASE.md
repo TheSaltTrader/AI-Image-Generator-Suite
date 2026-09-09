@@ -969,6 +969,27 @@ the run.
   `actor_excluded` (sets -> sorted lists), restored BEFORE `_set_actor`
   so the view reflects it. `_refresh_actor_view` shows "photo i/N
   (dropped) · K sent"; the Using list lists the kept photos.
+- **Validation + hardening + new icon (v2.2.0).** LODESTONE: the portable kit
+  (`kit/lodestone.py` + `templates/`, copied from the CDG Spec Forge kit — the
+  LATEST kit is under CDG, not Community Uploader) with a project `kit/
+  lodestone.toml` declaring the app's sweeps. Run: `venv/Scripts/python.exe
+  kit/lodestone.py`. GOTCHA: the runner does `subprocess.run(cmd, cwd=root)`;
+  a FORWARD-SLASH relative exe path (`venv/Scripts/python.exe`) fails
+  `WinError 2` on Windows even with cwd set — use a BACKSLASH literal
+  (`'venv\Scripts\python.exe'`, TOML single-quoted) or an absolute path.
+  Result: 7 PASS (414 checks), the live-engine/GPU/journey/security/fidelity
+  sweeps NAMED as debt (never averaged). OWASP re-review (the v1.0.0
+  SECURITY.md was stale — self-update/downloads/installs now exist): only A08
+  regressed; fixed — `INSWAPPER_SHA256` pin verified before use, `insightface
+  ==2.0` pinned, `_safe_extractall` zip-slip guard added to setup_installer's
+  3 extract sites (the runtime extractors already had it), and
+  `download_model_update` refuses non-HTTPS URLs. ICON: `app/icon.ico`
+  regenerated (PIL, 7 sizes 16-256; `save(..., format='ICO', sizes=[...])` on
+  a 256 base — `append_images` is IGNORED for ICO, that's why only 16px
+  embedded the first time). All three Windows icon mechanisms wired
+  (`windows-app-icons` memory): exe icon via the spec, `icon.ico` added to
+  spec `datas` + `root.iconbitmap(default=...)` for the window/taskbar, and
+  `SetCurrentProcessExplicitAppUserModelID` for grouping/pinning.
 - **Clone Tool: a REAL face swap, not an editor re-render (v2.1.0).** THE
   fix for "the clone doesn't resemble the person at all." app.log proved the
   cause: every Qwen/Kontext swap ended `Cancelled — 1 of 4 swapped` within

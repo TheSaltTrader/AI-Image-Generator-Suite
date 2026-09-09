@@ -1,0 +1,472 @@
+#!/usr/bin/env python3
+"""The Understanding sweep: can somebody who has never seen this use it, and know what will go wrong?
+
+WHY THIS EXISTS
+---------------
+Every other sweep answers "is this broken". None of them answers the question somebody
+actually has in front of a strange application: what is this for, what do I press, what
+happens next, and what is about to go wrong.
+
+That question is asked most often by an AI. An agent handed this repository has to work
+out the route through the wizard, what each control does, which sentences are errors and
+what to do about each one -- and it works it out by reading source files, which is slow,
+lossy, and out of date the moment a screen changes. A person joining the project has the
+same problem with better instincts.
+
+So this sweep BUILDS THE ANSWER FROM THE ARTEFACT, the same way every other census here
+takes its subjects from the thing itself:
+
+    docs/FIELD-GUIDE.md        for a person: the route, the screens, what goes wrong
+    build/understanding.json   for an agent: the same thing, machine-readable
+
+and then it CHECKS THAT ANSWER IS COMPLETE. A screen with no purpose, a control with no
+words, an error with no instruction, a step with no way in -- each one is a thing the
+application does that nobody can be taught, and each is named rather than averaged away.
+
+WHAT IT IS NOT
+--------------
+It is not documentation somebody writes. Nothing here is typed by hand: the route comes
+from the wizard's own step order, the screens and controls from the markup, the errors
+and their instructions from the resource file the screens render from, the hazards from
+the mutation guards -- which are a catalogue of failures this project has actually had,
+each one seen to fail before it was fixed -- and the traps from the clicking ledger.
+
+Rewrite a screen and the guide changes with it. That is the whole point: a guide that has
+to be maintained is a guide that is wrong.
+
+    python tools/understanding.py            write the guide and report
+    python tools/understanding.py --check    report only, write nothing
+"""
+
+import json
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+PAGES = ROOT / "src" / "CommunityUploader.Web" / "Pages"
+RESX = ROOT / "src" / "CommunityUploader.Web" / "Resources" / "SharedResource.resx"
+STEPS = ROOT / "src" / "CommunityUploader.Core" / "Wizard" / "WizardStep.cs"
+ROUTES = ROOT / "src" / "CommunityUploader.Web" / "Services" / "WizardPages.cs"
+MUTATIONS = ROOT / "tools" / "mutations.json"
+LEDGER = ROOT / "tools" / "clicking-ledger.json"
+GUIDE = ROOT / "docs" / "FIELD-GUIDE.md"
+MACHINE = ROOT / "build" / "understanding.json"
+
+sys.path.insert(0, str(ROOT / "tools"))
+
+import screen_controls  # noqa: E402
+
+
+def strings():
+    """Every sentence the application can show, by its key."""
+    text = RESX.read_text(encoding="utf-8-sig")
+    found = {}
+
+    for key, value in re.findall(
+            r'<data name="([^"]+)"[^>]*>\s*<value>(.*?)</value>', text, re.S):
+        found[key] = re.sub(r"\s+", " ", value).strip()
+
+    return found
+
+
+def route():
+    """The order of the wizard's steps, and which screen each one is.
+
+    From the enum and the map that turns a step into a page, because those two are what
+    the application itself uses to decide where Next goes. A route typed here would be a
+    route that stops being true the first time a step is added.
+    """
+    order = []
+    body = STEPS.read_text(encoding="utf-8-sig")
+    inside = body[body.index("public enum WizardStep"):]
+
+    for line in inside.splitlines():
+        name = re.match(r"\s*([A-Z][A-Za-z]*),", line)
+
+        if name:
+            order.append(name.group(1))
+
+    pages = dict(re.findall(r'WizardStep\.([A-Za-z]+) => "([^"]+)"',
+                            ROUTES.read_text(encoding="utf-8-sig")))
+
+    return [{"step": step, "screen": pages.get(step, "").lstrip("/") or "Index",
+             "path": pages.get(step, "")} for step in order]
+
+
+def purpose_of(screen, said):
+    """What a screen is for, in its own words.
+
+    The heading and the sentence under it are what the screen tells somebody arriving on
+    it. If those two do not say what it is for, nothing else here will either -- which is
+    a finding about the screen, not about this tool.
+    """
+    path = PAGES / f"{screen}.cshtml"
+
+    if not path.exists():
+        return None, None
+
+    markup = path.read_text(encoding="utf-8-sig")
+
+    heading = re.search(r"<h1[^>]*>(.*?)</h1>", markup, re.S)
+
+    # WHATEVER IS DIRECTLY UNDER THE HEADING, and only that.
+    #
+    # "lede", the newspaper spelling, is what this application uses; the error screen
+    # explains itself in the message band instead, which is right for a screen whose
+    # whole job is to carry a message. Both count.
+    #
+    # BOUNDED TO WHAT FOLLOWS THE HEADING, and that bound is the whole check. Searching
+    # the whole file found SOME note on every screen -- so deleting a screen's own
+    # explanation changed nothing and the sweep reported every screen as explained.
+    # Measured, by deleting one on purpose: it passed. A check that cannot fail is not
+    # a check.
+    after_heading = markup[heading.end():heading.end() + 400] if heading else ""
+
+    # The note fallback is the ALERT only -- role="alert", the band a screen puts its
+    # own message in. A conditional warning that happens to sit near the top of another
+    # screen is not that screen explaining itself, and counting it meant deleting a
+    # screen's own sentence changed nothing. Measured, twice.
+    lead = re.search(r'<p class="led[ea]"[^>]*>(.*?)</p>', after_heading, re.S)         or re.search(r'<div class="note[^"]*"[^>]*role="alert"[^>]*>(.*?)</div>',
+                     after_heading, re.S)
+
+    return words(heading.group(1) if heading else None, said), \
+        words(lead.group(1) if lead else None, said)
+
+
+def words(fragment, said):
+    """The sentence a Razor fragment renders, as far as it can be known without running it."""
+    if not fragment:
+        return None
+
+    keys = [k for k in re.findall(r'"([A-Za-z][A-Za-z0-9_]*)"', fragment) if k in said]
+
+    if keys:
+        return said[keys[0]]
+
+    plain = re.sub(r"<[^>]+>", " ", fragment)
+    plain = re.sub(r"@[A-Za-z0-9_.\[\]\"() ?:]+", " ", plain)
+    plain = re.sub(r"\s+", " ", plain).strip()
+
+    return plain or None
+
+
+def things_that_go_wrong(said):
+    """Every sentence that is an instruction for something going wrong, with its key.
+
+    Taken from the resource file rather than from a list: a key whose sentence tells
+    somebody what to do about a problem is one of these, and the application cannot show
+    a problem it has no sentence for.
+    """
+    #: The families of key this application uses for a refusal or a diagnosis. Read from
+    #: the code that names them, so a family added later is picked up.
+    families = set()
+
+    for source in (ROOT / "src").rglob("*.cs"):
+        if "obj" in source.parts or "bin" in source.parts:
+            continue
+
+        text = source.read_text(encoding="utf-8-sig", errors="ignore")
+
+        for key in re.findall(r'"((?:Account|Schedule|Sched|Odbc|File|Login|Agency|Classify)_[A-Za-z0-9_]+)"',
+                              text):
+            if key in said:
+                families.add(key)
+
+    return {key: said[key] for key in sorted(families)}
+
+
+def switches():
+    """Every switch the executable answers to, and what it makes it do.
+
+    An agent that has to RUN this application needs these before anything else, and each
+    is declared as a constant beside the plan that uses it -- so they are read from there
+    rather than from the comment at the top of the entry point, which is prose and drifts.
+
+    THE SUMMARY IS TAKEN FROM DIRECTLY ABOVE THE CONSTANT, by walking backwards from it.
+    The first version searched forwards with one regex and matched across whole files, so
+    every switch came out described by several hundred lines of somebody else's comments.
+    """
+    found = {}
+
+    for source in (ROOT / "src").rglob("*.cs"):
+        if "obj" in source.parts or "bin" in source.parts:
+            continue
+
+        text = source.read_text(encoding="utf-8-sig", errors="ignore")
+        lines = text.splitlines()
+
+        for i, line in enumerate(lines):
+            declared = re.search(r'public const string (\w*Switch) = "(--[a-z-]+)"', line)
+
+            if not declared:
+                continue
+
+            # BACKWARDS from the constant, over its own doc comment only. The first
+            # <summary> line found going up is the one that belongs to it.
+            says = None
+
+            # As far up as the comment goes and no further -- the loop stops at the
+            # first line that is not part of it, so the window only has to be bigger
+            # than the longest doc comment rather than exactly right.
+            for back in range(i - 1, max(i - 80, -1), -1):
+                above = lines[back].strip()
+
+                if not above.startswith("///"):
+                    break
+
+                inside = re.search(r"<summary>(.*?)</summary>", above)
+
+                if inside:
+                    says = inside.group(1).strip()
+                    break
+
+            found[declared.group(2)] = {
+                "switch": declared.group(2),
+                "named": declared.group(1),
+                "does": says,
+                "declared_in": str(source.relative_to(ROOT)).replace("\\", "/"),
+            }
+
+    return [found[key] for key in sorted(found)]
+
+
+def hazards():
+    """What has gone wrong here before, from the guards that hold each fix down.
+
+    A mutation guard names a real defect: the line, the test that catches it, and -- in
+    its own words -- what breaks without it. That is a catalogue of this application's
+    failure modes written by the failures themselves, which is the most honest answer
+    there is to "what should I anticipate".
+    """
+    guards = json.loads(MUTATIONS.read_text(encoding="utf-8"))
+
+    return [{"id": g["id"], "breaks": g["breaks"], "held_by": g["test"], "in": g["file"]}
+            for g in guards]
+
+
+def never_press():
+    """Controls nobody should press, and why, from the clicking ledger."""
+    return {k: v for k, v in json.loads(LEDGER.read_text(encoding="utf-8")).items()
+            if not k.startswith("_")}
+
+
+def build():
+    """Everything known about how to use this application, from the application."""
+    said = strings()
+    steps = route()
+    controls = screen_controls.every_control()
+    excused = never_press()
+
+    by_screen = {}
+
+    for control in controls:
+        by_screen.setdefault(control.screen, []).append(control)
+
+    screens = []
+
+    for screen in sorted(by_screen):
+        heading, lead = purpose_of(screen, said)
+        step = next((s for s in steps if s["screen"] == screen), None)
+
+        screens.append({
+            "screen": screen,
+            "path": step["path"] if step else f"/{screen}",
+            "step": step["step"] if step else None,
+            "heading": heading,
+            "purpose": lead,
+            "controls": [{
+                "id": control.id,
+                "kind": control.kind,
+                "name": control.name,
+                "says": next((said[k] for k in control.labels if k in said), None),
+
+                # WORDS THAT ARE ONLY KNOWN WHEN IT IS ON THE SCREEN. A button labelled
+                # with the name of the file it opens, or the table it picks, says
+                # something perfectly clear to the person looking at it -- it just
+                # cannot be read out of the markup. What the markup DOES say is where
+                # the words come from, and that is worth teaching.
+                "says_at_runtime": runtime_words(control),
+                "never_press": excused.get(control.id),
+            } for control in sorted(by_screen[screen], key=lambda c: c.id)],
+        })
+
+    return {
+        "application": "Community Uploader",
+        "version": (ROOT / "VERSION").read_text(encoding="utf-8").strip(),
+        "route": steps,
+        "screens": screens,
+        "switches": switches(),
+        "things_that_go_wrong": things_that_go_wrong(said),
+        "hazards": hazards(),
+    }
+
+
+def runtime_words(control):
+    """Where a control's words come from, when they are not a fixed sentence."""
+    if control.kind not in ("button", "link") or not control.text:
+        return None
+
+    razor = re.search(r"@([A-Za-z_][A-Za-z0-9_.]*)", control.text)
+
+    return f"the value of {razor.group(1)}" if razor else None
+
+
+def gaps(known):
+    """What this application does that nobody can be taught, named one at a time."""
+    missing = []
+
+    for screen in known["screens"]:
+        if not screen["heading"]:
+            missing.append(f"{screen['screen']}: the screen has no heading, so nothing says what it is")
+
+        if not screen["purpose"]:
+            missing.append(f"{screen['screen']}: no sentence under the heading says what it is for")
+
+        for control in screen["controls"]:
+            if control["kind"] in ("button", "link") and not control["says"] \
+                    and not control["says_at_runtime"] and not control["never_press"]:
+                missing.append(f"{control['id']}: nothing says what this does")
+
+    for step in known["route"]:
+        if not step["path"]:
+            missing.append(f"{step['step']}: a step in the route with no screen to open")
+
+    for one in known["switches"]:
+        if not one["does"]:
+            missing.append(f"{one['switch']}: a switch the executable accepts that nothing describes")
+
+    return missing
+
+
+def write(known):
+    """The guide a person reads, from the same facts the machine one carries."""
+    out = [
+        f"# Community Uploader {known['version']} — field guide",
+        "",
+        "**Generated by `tools/understanding.py`. Do not edit it.** Every line comes from",
+        "the application: the route from the wizard's own step order, the screens and",
+        "controls from the markup, the sentences from the resource file the screens render",
+        "from, and the hazards from the guards that hold each past fix down.",
+        "",
+        "It exists so that somebody — a person or an agent — who has never seen this",
+        "application can use it, know what it is meant to do, and know what tends to go",
+        "wrong, without reading the source. `build/understanding.json` carries the same",
+        "facts for a program to read.",
+        "",
+        "## The route",
+        "",
+        "The wizard's steps, in the order it walks them. Steps off the straight line join",
+        "the route only when they are in use.",
+        "",
+        "| # | Step | Screen |",
+        "|---|---|---|",
+    ]
+
+    for i, step in enumerate(known["route"], 1):
+        out.append(f"| {i} | {step['step']} | `{step['path'] or '—'}` |")
+
+    out += [
+        "",
+        "## How it is run",
+        "",
+        "One executable, and the switch it is given decides what it becomes. With no",
+        "switch it opens the wizard, which is what a double-click does.",
+        "",
+        "| Switch | What it makes it do |",
+        "|---|---|",
+    ]
+
+    for one in known["switches"]:
+        out.append(f"| `{one['switch']}` | {one['does'] or '—'} |")
+
+    out += ["", "## The screens", ""]
+
+    for screen in known["screens"]:
+        out.append(f"### {screen['heading'] or screen['screen']}  `{screen['path']}`")
+        out.append("")
+
+        if screen["purpose"]:
+            out.append(screen["purpose"])
+            out.append("")
+
+        out.append("| Control | Kind | What it says |")
+        out.append("|---|---|---|")
+
+        for control in screen["controls"]:
+            says = control["says"] or control["says_at_runtime"] or "—"
+
+            if control["never_press"]:
+                says += "  **(never pressed by the sweep: " + control["never_press"][:120] + ")**"
+
+            out.append(f"| `{control['name']}` | {control['kind']} | {says} |")
+
+        out.append("")
+
+    out += [
+        "## What can go wrong, and what to do about it",
+        "",
+        "Every sentence this application can show when something is refused, with the key",
+        "the code uses for it. An agent driving this application can match what is on the",
+        "screen to one of these and know what the application is asking for.",
+        "",
+    ]
+
+    for key, sentence in known["things_that_go_wrong"].items():
+        out.append(f"- **`{key}`** — {sentence}")
+
+    out += [
+        "",
+        "## What has gone wrong here before",
+        "",
+        "Each of these is a real defect this application has had. The guard named beside it",
+        "breaks the fix on purpose and requires the test to notice — so this list is not",
+        "somebody's memory, it is a set of failures that are still being checked for.",
+        "",
+    ]
+
+    for hazard in known["hazards"]:
+        out.append(f"- **{hazard['id']}** — without it, {hazard['breaks']}  "
+                   f"(held by `{hazard['held_by']}`)")
+
+    out.append("")
+
+    GUIDE.parent.mkdir(parents=True, exist_ok=True)
+    GUIDE.write_text("\n".join(out), encoding="utf-8")
+
+    MACHINE.parent.mkdir(parents=True, exist_ok=True)
+    MACHINE.write_text(json.dumps(known, indent=2), encoding="utf-8")
+
+
+def main():
+    known = build()
+    missing = gaps(known)
+
+    if "--check" not in sys.argv:
+        write(known)
+        print(f"wrote {GUIDE.relative_to(ROOT)} and {MACHINE.relative_to(ROOT)}")
+
+    screens = len(known["screens"])
+    controls = sum(len(s["controls"]) for s in known["screens"])
+
+    print(f"{screens} screens, {controls} controls, "
+          f"{len(known['things_that_go_wrong'])} sentences for things going wrong, "
+          f"{len(known['hazards'])} known hazards")
+
+    if missing:
+        print()
+        print(f"NOTHING TEACHES THESE ({len(missing)}):")
+
+        for one in missing:
+            print(f"  {one}")
+
+        print()
+        print("  Give it words on the screen, or a reason in tools/clicking-ledger.json.")
+        return 1
+
+    print("everything this application offers can be explained from the application itself")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

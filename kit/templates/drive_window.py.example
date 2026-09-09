@@ -1,0 +1,1619 @@
+#!/usr/bin/env python3
+"""Uses the application the way a person does: a real window, and real clicks in it.
+
+WHY THIS EXISTS, BESIDE THE OTHER DRIVER
+----------------------------------------
+`drive_app.py` posts forms over HTTP and photographs the answers. That found a great
+deal, and it cannot find any of this, because it never opens a window:
+
+  * a button that is greyed, or is not, decides what a POST can even do -- and a driver
+    that posts directly does not care what the screen would have allowed;
+  * every script on the page is inert, so the tick that wakes a button, the back button
+    that follows the page, and the place-keeping after a press are all unexercised;
+  * a control drawn on top of another is a picture nobody clicked.
+
+Three defects reached a release in a row that only a person clicking found: a link that
+was live when it should have been dead, a back button that landed on an error page, and
+a window that flashed and never came back.
+
+So this one opens a window. Edge in app mode -- the same chromeless window the
+application itself falls back to when its own cannot be used -- and everything it does is
+a real click on a real page.
+
+WHAT IT WALKS
+-------------
+  every screen, every button   pressing each one and reading what happened
+  the task and the service     Install, the account box, Check this account, Remove
+  a bad day                    blank boxes, wrong passwords, Next early, Back at the
+                               wrong moment -- failure modes rather than the happy path
+  the tray and the window      Close to the taskbar, and whether it really comes back
+
+WHAT IT NEEDS
+-------------
+  * A PUBLISHED folder, and your own copy closed. Same as the other driver.
+  * playwright, and its browser:  pip install playwright && python -m playwright install
+    A TEST-ONLY dependency. Nothing in the product knows it exists.
+  * Administrator, for the Windows service journey. Without it that journey answers
+    NOT RUN with the reason rather than passing.
+
+    python tools/drive_window.py <published folder> [--dsn Crime] [--headless]
+
+Headed by default, because the point is that a window opens and you can watch it. Pass
+--headless to run it unattended, which is how the sweep runs it.
+"""
+
+import html
+import os
+import re
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import drive_app  # noqa: E402  -- the app, the settings, and the page readers
+import screen_controls  # noqa: E402  -- every control the screens offer
+
+#: Every control touched by any journey, as Screen.kind:name. Shared across journeys
+#: because the census is about the APPLICATION, not about one walk of it.
+TOUCHED = set()
+
+ROOT = Path(__file__).resolve().parent.parent
+SHOTS = ROOT / "build" / "journeys" / "hands"
+
+#: The words on the buttons, read from the resources. Built in main.
+SAYS = None
+
+#: The data source every journey connects through, set once when the walk starts. A
+#: module-level name because putting a screen back on its feet -- which is how the walk
+#: recovers from a step it broke itself -- happens deep inside the census loop, and
+#: threading one string through five signatures to get it there would be worse.
+DSN = "Crime"
+
+#: Says which control is being acted on as it happens. Off unless --trace, because a
+#: walk that prints eighty lines a screen buries the four that matter -- and on, it is
+#: the only way to find WHICH press killed an application three screens later.
+TRACE = False
+
+
+class Labels:
+    """What the buttons say, read out of the resources the screens render from.
+
+    THE SAME RULE AS EVERYTHING ELSE HERE: enumerate from the artefact, never type the
+    list. This driver was written pressing "Test the connection", and the button says
+    "Test connection and sign in" -- so it pressed nothing, four journeys stopped, and
+    the walk reported a screen that was working perfectly as unreachable.
+
+    A hand-typed label is a hand-typed list with one entry. Read this way, renaming a
+    button either keeps working or fails LOUDLY by name, which is the whole point.
+    """
+
+    FILE = "src/CommunityUploader.Web/Resources/SharedResource.resx"
+
+    def __init__(self):
+        text = (ROOT / self.FILE).read_text(encoding="utf-8-sig")
+
+        self.words = {
+            found.group(1): html.unescape(found.group(2)).strip()
+            for found in re.finditer(
+                r'<data name="([^"]+)"[^>]*>\s*<value>(.*?)</value>', text, re.S)
+        }
+
+    def key_for(self, said):
+        """The resource key a piece of text came from, for the census to count by.
+
+        A walk presses what a button SAYS; the census names it by the key that text came
+        from. Without this the two never meet and every button reads as never clicked.
+        """
+        if not hasattr(self, "_back"):
+            self._back = {v: k for k, v in self.words.items()}
+
+        return self._back.get(said)
+
+    def __call__(self, key):
+        """The words on a control, or a loud failure naming the key that is gone."""
+        if key not in self.words:
+            raise KeyError(
+                f"{key} is not in {self.FILE}. A button was renamed or removed and this "
+                "walk is pressing something that no longer exists.")
+
+        return self.words[key]
+
+
+def playwright_or_reason():
+    """The library, or why this cannot run."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return None, ("playwright is not installed, so no window could be driven. "
+                      "pip install playwright && python -m playwright install chromium")
+
+    return sync_playwright, None
+
+
+class Hands:
+    """One window, and the things a person does in it."""
+
+    #: How long a click is given to produce the next screen.
+    PATIENCE = 15_000
+
+    def __init__(self, page, name, base):
+        self.page = page
+        self.name = name
+        self.base = base.rstrip("/")
+        self.said = {}          # what a label says -> the resource key it came from
+        self.checks = []
+        self.failures = []
+        self.notes = []
+        self.errors_seen = []
+        self.shots = 0
+
+    # ------------------------------------------------------------------ saying so
+    def check(self, what, held, detail=""):
+        self.checks.append(what)
+
+        if not held:
+            self.failures.append(f"{what}: {detail}" if detail else what)
+
+        return held
+
+    def note(self, said):
+        self.notes.append(said)
+
+    # ------------------------------------------------------------------ looking
+    # ------------------------------------------------------------------ keeping score
+    def screen(self):
+        """Which screen is on show, by the name the census uses.
+
+        Taken relative to the application's own address. Splitting the whole URL on "/"
+        gives "127.0.0.1:64071" for the first screen -- which matches no screen the
+        census knows, so everything done on the sign-in screen was counted as done
+        somewhere that does not exist, and the census reported the first screen as never
+        touched while the walk was signing in through it.
+        """
+        url = self.page.url.split("?")[0].split("#")[0]
+        path = url[len(self.base):] if url.startswith(self.base) else url
+
+        return path.strip("/") or "Index"
+
+    @staticmethod
+    def by_name(name, tag=""):
+        """A selector for the control the census calls this.
+
+        A GRID IS WRITTEN ONCE AND RENDERED MANY TIMES. The screen declares Values[@i]
+        and the browser receives Values[0], Values[1], Values[2] -- so a selector built
+        from the template matched nothing, and every box, tick and list inside every
+        grid was reported as a control nobody has ever clicked. Three of them were.
+        """
+        if "[@" in name:
+            return f"{tag}[name^='{name[:name.index('[@')]}[']"
+
+        return f"{tag}[name='{name}']"
+
+    def touched(self, kind, name, where=None):
+        """Records that a control was really acted on, for the census to count."""
+        if not name:
+            return
+
+        # WHERE IT WAS PRESSED, not where the press landed. A button that navigates
+        # changes the answer to screen() before this runs, so the control was being
+        # credited to the screen it went TO -- which is a screen that does not have it.
+        TOUCHED.add(f"{where or self.screen()}.{kind}:{name}")
+
+        # And the same control without its row number, which is how the census knows it:
+        # the screen writes Values[@i] once and renders Values[0], Values[1] per row.
+        if "[" in name and name.endswith("]"):
+            TOUCHED.add(f"{where or self.screen()}.{kind}:{name[:name.index('[')]}[]")
+
+    def heading(self):
+        return self.page.inner_text("h1").strip() if self.page.locator("h1").count() else "(none)"
+
+    def errors(self):
+        """Every error message the screen is showing, as a person would read them."""
+        found = self.page.locator(".note-error")
+        return [found.nth(i).inner_text().strip() for i in range(found.count())]
+
+    def no_errors(self, where):
+        """Checks the screen shows no error, and keeps any it does for the report."""
+        showing = self.errors()
+
+        for said in showing:
+            self.errors_seen.append(f"{where}: {said}")
+
+        return self.check(f"{where}: no error on screen", not showing, "; ".join(showing))
+
+    def shot(self, name):
+        SHOTS.mkdir(parents=True, exist_ok=True)
+        self.shots += 1
+        self.page.screenshot(path=str(SHOTS / f"{self.shots:02d}-{name}.png"), full_page=True)
+
+    # ------------------------------------------------------------------ doing
+    def press(self, label, expect=None):
+        """Clicks a button by the words on it, the way somebody reads a screen.
+
+        Returns False when the control is not there or is dead, which is a fact worth
+        having rather than an exception -- half of what this walk is for is finding out
+        which buttons are dead when.
+        """
+        button = self.page.get_by_role("button", name=label, exact=False).first
+
+        if button.count() == 0:
+            link = self.page.get_by_role("link", name=label, exact=False).first
+
+            if link.count() == 0:
+                return False
+
+            button = link
+
+        if not button.is_enabled():
+            return False
+
+        # Recorded BEFORE the click, because the click changes the screen and the
+        # census asks which screen the control was on.
+        self.touched("button", SAYS.key_for(label) or label)
+        self.touched("link", SAYS.key_for(label) or label)
+
+        button.click(timeout=self.PATIENCE)
+        self.settle()
+
+        if expect is not None:
+            self.check(f"{label} leads to {expect}", expect.lower() in self.heading().lower(),
+                       f"landed on {self.heading()}")
+
+        return True
+
+    def dead(self, label):
+        """Whether a control with these words is on screen and cannot be pressed."""
+        for role in ("button", "link"):
+            found = self.page.get_by_role(role, name=label, exact=False).first
+
+            if found.count() > 0:
+                return not found.is_enabled()
+
+        return None
+
+    def fill(self, field, value):
+        """Puts a value into a field, whatever kind of control the screen used for it.
+
+        A person does not know or care whether the data source is a box they type into or
+        a list they pick from -- they put the value in. Half these fields changed kind at
+        some point (the data source became a list of the drivers actually installed), and
+        a helper that only types would fail on the screen rather than on the defect.
+        """
+        # THE ONE SOMEBODY CAN SEE. Several screens carry a hidden field beside the
+        # visible control with the same name -- the query screen has a hidden Sql beside
+        # the textarea, so that a form which does not own the box still posts its value.
+        # Taking the first match typed into the hidden one and hung.
+        #
+        # A person types in the box in front of them. So: the first match that can
+        # actually be typed into, and no match at all is an answer rather than a crash.
+        found = self.page.locator(self.by_name(field))
+        box = None
+
+        for i in range(found.count()):
+            one = found.nth(i)
+
+            # VISIBLE as well as editable. is_editable() asks whether a control is
+            # enabled and not read-only; it says nothing about whether anybody can see
+            # it, so a hidden input passes it and then hangs the fill that follows.
+            if one.is_visible() and one.is_editable():
+                box = one
+                break
+
+        if box is None:
+            return False
+
+        if (box.evaluate("e => e.tagName") or "").upper() == "SELECT":
+            try:
+                box.select_option(value, timeout=self.PATIENCE)
+            except Exception:
+                # Not one of the options. Say so by answering no, which is a fact a
+                # check can report rather than an exception that stops the walk.
+                return False
+
+            self.touched("list", field)
+            return True
+
+        box.fill(value, timeout=self.PATIENCE)
+        self.touched("box", field)
+        return True
+
+    def follow(self, where):
+        """Clicks a link by where it goes, which is how the census names one.
+
+        Links were not acted on at all: touch() knew about buttons, boxes, lists and
+        ticks, and a link dressed as a button fell straight through it. Four of them,
+        on four screens, every one reported as never clicked because nothing tried.
+        """
+        # THE FRONT PAGE IS "/" ON THE WIRE. A link written asp-page="/Index" renders as
+        # href="/", so matching the page name found nothing and the way back from the
+        # error screen and the closed screen read as links nobody had ever followed.
+        wheres = [where, "/"] if where in ("/Index", "/index") else [where]
+
+        selector = ", ".join(f"a[href='{one}'], a[href^='{one}?'], a[href^='{one}/']"
+                             for one in wheres)
+
+        link = self.page.locator(selector).first
+
+        if link.count() == 0 or not link.is_visible():
+            return False
+
+        was = self.screen()
+        link.click(timeout=self.PATIENCE)
+        self.settle()
+        self.touched("link", where, where=was)
+        return True
+
+    def choose(self, field, value):
+        box = self.page.locator(self.by_name(field, "select")).first
+
+        if box.count() == 0:
+            return False
+
+        box.select_option(value, timeout=self.PATIENCE)
+        self.touched("list", field)
+        return True
+
+    def tick(self, field, on=True):
+        box = self.page.locator("input[type='checkbox']" + self.by_name(field)).first
+
+        if box.count() == 0:
+            return False
+
+        box.set_checked(on, timeout=self.PATIENCE)
+        self.touched("tick", field)
+        return True
+
+    def go(self, path):
+        self.page.goto(self.base + path, wait_until="domcontentloaded", timeout=self.PATIENCE)
+        self.settle()
+
+    def settle(self):
+        """Waits for the screen, never for the network.
+
+        NEVER networkidle. This application holds a presence connection open for as long
+        as a page is up -- it is how a process knows its window is still there -- so the
+        network is never idle and every wait on it times out after thirty seconds. The
+        same trap the screenshots hit: wait for the thing you actually want, which here
+        is a heading on a rendered page.
+        """
+        try:
+            self.page.wait_for_load_state("domcontentloaded", timeout=self.PATIENCE)
+            self.page.wait_for_selector("h1", timeout=self.PATIENCE, state="attached")
+        except Exception:
+            # A screen with no heading is a fact for a check to report, not a reason to
+            # stop the walk.
+            pass
+
+
+# --------------------------------------------------------------------------- the journeys
+def sign_in(hands):
+    """The first screen, filled in and submitted the way somebody does it."""
+    hands.go("/")
+    hands.fill("Ori", drive_app.ORI)
+    hands.fill("EndpointUrl", drive_app.ENDPOINT)
+    hands.press(SAYS("Login_Submit"))
+
+    return hands.check("signed in", "source" in hands.heading().lower()
+                       or hands.dead("Next") is False,
+                       f"still on {hands.heading()}")
+
+
+def reach_the_schedule(hands, dsn):
+    """Through the database route to the schedule screen, clicking all the way."""
+    hands.go("/Source")
+    hands.press(SAYS("Source_Odbc"))
+
+    hands.go("/OdbcConnect")
+    # The data source, chosen the way the screen offers it. The connection string is
+    # built from it and shown read-only, so a person picks and presses.
+    hands.check(f"the data source {dsn} is one the screen offers",
+                hands.fill("DataSourceName", dsn),
+                "it was not in the list of installed drivers")
+
+    hands.press(SAYS("Odbc_Test"))
+    hands.press(SAYS("Common_Next"))
+
+    hands.go("/OdbcQuery")
+    # THE AGENCY COLUMN IS IN THE QUERY. Without it nothing proposes an agency column,
+    # the whole split block never renders, and a walk that then tries to tick it reports
+    # a dead button on a screen that is behaving correctly.
+    hands.fill("Sql", "SELECT [LWMAIN].[CASE_NBR], [LWMAIN].[OCC_DTTM], [LWMAIN].[ADDR_FULL], "
+                      "[LWMAIN].[OFFENSE_DESC], [LWMAIN].[ORI] FROM [LWMAIN]")
+    hands.press(SAYS("Odbc_Run"))
+    hands.press(SAYS("Common_Next"))
+
+    hands.go("/Classify")
+    hands.press(SAYS("Classify_Detect"))
+    hands.press(SAYS("Common_Save"))
+    hands.press(SAYS("Common_Next"))
+
+    hands.go("/Preview")
+    hands.press(SAYS("Common_Next"))
+
+    return "schedule" in hands.heading().lower()
+
+
+def every_screen_every_button(page, base, dsn, elevated, app):
+    """Every screen reached by clicking, and every button on it pressed."""
+    hands = Hands(page, "every screen, every button", base)
+
+    if not sign_in(hands):
+        return hands
+
+    hands.shot("signed-in")
+
+    # THE SCREENS AS A PERSON REACHES THEM, not as a URL. A screen that can only be
+    # arrived at by typing an address is a screen nobody arrives at.
+    reached = reach_the_schedule(hands, dsn)
+    hands.check("the schedule screen is reached by clicking Next all the way", reached,
+                f"stopped on {hands.heading()}")
+
+    hands.shot("schedule")
+    hands.no_errors("the schedule screen")
+
+    # Every button the screen offers, pressed. The ones that are dead are recorded as
+    # dead rather than skipped -- which is dead when is half of what this walk knows.
+    buttons = page.get_by_role("button")
+
+    for i in range(buttons.count()):
+        one = buttons.nth(i)
+        words = (one.inner_text() or "").strip().splitlines()[0] if one.count() else ""
+
+        if not words:
+            continue
+
+        hands.note(f"schedule offers: {words}{'' if one.is_enabled() else '  (dead)'}")
+
+    return hands
+
+
+def a_bad_day(page, base, dsn, elevated, app):
+    """Somebody having a bad day: blanks, wrong values, and pressing things early."""
+    hands = Hands(page, "a bad day", base)
+
+    # SIGNING IN WITH NOTHING. The first thing anybody does by accident.
+    hands.go("/")
+    hands.fill("Ori", "")
+    hands.press(SAYS("Login_Submit"))
+
+    hands.check("signing in with no ORI is refused in words",
+                bool(hands.errors()) or hands.dead(SAYS("Common_Next")) is True,
+                "the screen said nothing and offered Next")
+
+    hands.shot("no-ori")
+
+    # A WRONG ORI. Refused by the importer, not by us -- and the screen has to say so
+    # rather than carry on.
+    hands.fill("Ori", "ZZ99999")
+    hands.fill("EndpointUrl", drive_app.ENDPOINT)
+    hands.press(SAYS("Login_Submit"))
+
+    hands.check("an ORI the importer refuses does not open Next",
+                hands.dead(SAYS("Common_Next")) is not False,
+                "Next was live after a refused sign-in")
+
+    hands.shot("wrong-ori")
+
+    if not sign_in(hands):
+        return hands
+
+    # A QUERY THAT IS NOT A QUERY.
+    hands.go("/Source")
+    hands.press("A database, over ODBC")
+    # NOTHING CHOSEN, AND TEST PRESSED. The data source is a list of the drivers really
+    # installed, so "a name that does not exist" cannot be typed -- what a person does by
+    # accident here is press the button before choosing anything.
+    hands.go("/OdbcConnect")
+    hands.press(SAYS("Odbc_Test"))
+
+    hands.check("testing with no data source chosen is refused in a sentence",
+                bool(hands.errors()) or "connect" in hands.heading().lower(),
+                "the screen neither refused it nor stayed put")
+
+    hands.shot("nothing-chosen")
+
+    # PRESSING NEXT EARLY, on a screen that has not been finished.
+    hands.go("/Classify")
+    early = hands.dead(SAYS("Common_Next"))
+    hands.check("Next on the mapping screen is dead before anything is assigned",
+                early is not False, "Next was live on an empty mapping")
+
+    return hands
+
+
+def the_backends(page, base, dsn, elevated, app):
+    """Install, check the account, and remove -- for the task and for the service."""
+    hands = Hands(page, "the task and the service", base)
+
+    if not sign_in(hands) or not reach_the_schedule(hands, dsn):
+        hands.check("the schedule screen was reached", False, "could not get there")
+        return hands
+
+    for backend, needs_admin in (("TaskScheduler", False), ("WindowsService", True)):
+        hands.go("/Schedule")
+
+        chosen = page.locator(f"input[type='radio'][name='Backend'][value='{backend}']").first
+
+        if chosen.count() == 0:
+            hands.note(f"{backend} is not offered on the schedule screen")
+            continue
+
+        chosen.check(timeout=Hands.PATIENCE)
+        hands.choose("Action", "add")
+        hands.press(SAYS("Common_Save"))
+        hands.press(SAYS("Common_Next"))
+
+        hands.shot(f"finish-{backend.lower()}")
+        hands.no_errors(f"the last screen for {backend}")
+
+        # WHERE NEXT ACTUALLY LANDED. This journey used to press Next and then check the
+        # screen for errors without ever asking WHICH screen it was on -- so a backend
+        # that walked off to the wrong last screen passed in silence. Reported: choosing
+        # a Windows service and still arriving at the batch-file screen.
+        landed = hands.screen()
+
+        hands.check(f"{backend}: Next goes to the screen that installs it",
+                    landed == "Finish", f"it went to {landed}")
+
+        # AND WITHOUT PRESSING SAVE FIRST, which is how it was reported. Next used to be
+        # a link, and a link's destination is drawn from the SAVED setup -- so choosing a
+        # service and pressing Next followed wherever the previous choice pointed. The
+        # walk always saved first, so it never met it.
+        hands.go("/Schedule")
+        page.locator(f"input[type='radio'][name='Backend'][value='{backend}']").first.check(
+            timeout=Hands.PATIENCE)
+        hands.press(SAYS("Common_Next"))
+
+        unsaved = hands.screen()
+
+        hands.check(f"{backend}: Next goes there even without pressing Save first",
+                    unsaved == "Finish", f"it went to {unsaved}")
+
+        if needs_admin and not elevated:
+            hands.note(f"{backend}: NOT RUN -- installing a Windows service needs "
+                       "administrator rights, and this run has none")
+            continue
+
+        # THE ACCOUNT BOX, which is the part nobody has clicked.
+        wants_account = hands.fill("ServiceAccount", os.environ.get("USERNAME", ""))
+
+        if wants_account:
+            hands.press(SAYS("Account_Check"))
+            hands.shot(f"account-checked-{backend.lower()}")
+
+            hands.check(f"{backend}: checking the account answers in words",
+                        bool(hands.page.locator(".note").count()),
+                        "the screen said nothing at all")
+
+        installed = hands.press(SAYS("Finish_Install"))
+
+        hands.check(f"{backend}: there is an Install to press", installed,
+                    "no Install button was live on the last screen")
+
+        if not installed:
+            continue
+
+        hands.shot(f"installed-{backend.lower()}")
+
+        # A REFUSAL THAT IS RIGHT IS NOT A FAILURE. The account box was filled in and
+        # the password box was left empty on purpose -- that is a person having a bad
+        # day, and Windows refusing to log the service on is the correct answer. What
+        # this walk cares about is that the screen SAYS SO, in words, rather than
+        # reporting an installed feed that will never run.
+        showing = hands.errors()
+
+        if wants_account and showing:
+            said = " ".join(showing).lower()
+
+            hands.check(
+                f"{backend}: a service with no password is refused in words a person can act on",
+                "logon" in said or "password" in said or "account" in said,
+                f"it was refused, and the reason given was: {' '.join(showing)[:120]}")
+
+            hands.note(f"{backend}: installed with no password and was refused, as it should be")
+
+            # AND NOTHING LEFT BEHIND. Photographed by this sweep and fixed because of
+            # the picture: the screen showed the refusal AND, above it, "a scheduled
+            # upload is installed on this machine" -- because the service really was
+            # registered, set to start automatically, and unable to start. A machine
+            # that fails at every boot into a log nobody opens is worse than one where
+            # the install plainly did not work.
+            # READ FROM THE RESOURCE FILE, not typed here -- and it had to be, because
+            # the first version of this check looked for "installed on this machine",
+            # which is in BOTH sentences: "A scheduled upload is installed on this
+            # machine" and "No scheduled upload is installed on this machine". It
+            # reported a failure on a screen that was right. The half that differs is
+            # the half before the placeholder.
+            # THE SENTENCE WITH THIS BACKEND'S NAME IN IT. Checking for the sentence
+            # without the name failed on a screen that was right: batch files written
+            # by an earlier part of this same walk are genuinely installed, and the
+            # screen was saying so.
+            claims_installed = SAYS("Finish_AlreadyInstalled").replace("{0}", backend)
+
+            hands.check(
+                f"{backend}: a refused install leaves nothing installed",
+                claims_installed.lower() not in page.content().lower(),
+                "the screen says a schedule is installed over the top of the refusal")
+
+            # AND THE REFUSAL HAS TO BE OURS, not sc.exe's.
+            #
+            # Reported from a real machine: "The service was created but Windows would
+            # not start it. [SC] StartService FAILED 1069: The service did not start due
+            # to a logon failure" -- on a screen that had just said the account and
+            # password were accepted. That is a dead end: the one thing it appears to
+            # name is the one thing that was not wrong.
+            #
+            # An empty password reaches the same 1069 by a different road, which is what
+            # makes it walkable at all. What is checked is the SENTENCE: a start refused
+            # for a logon has to arrive with the words that say what to do about it.
+            if backend == "WindowsService" and ("1069" in said or "logon failure" in said):
+                hands.check(
+                    "WindowsService: a refused start is named, not left as sc.exe's dead end",
+                    "log on as a service" in said,
+                    f"the screen showed: {' '.join(showing)[:160]}")
+
+            # WHAT THIS WALK CANNOT REACH, said rather than left to be assumed. That a
+            # SERVICE account is checked with a service logon and a task account with a
+            # batch logon needs a password that works, and this walk has none to type.
+            # The rule is held by A_service_is_checked_as_a_service_and_a_task_as_a_batch_job
+            # and An_account_for_a_service_is_checked_as_a_service, and the grant it
+            # depends on is handed to the real local security policy by
+            # The_account_is_granted_the_right_to_log_on_as_a_service.
+            hands.note(f"{backend}: NOT RUN -- which logon type the check uses needs a "
+                       "working password; guarded by test and by the Handover sweep")
+        else:
+            hands.no_errors(f"{backend} after installing")
+
+            hands.check(f"{backend}: the screen says what is installed",
+                        "installed" in page.content().lower(),
+                        "nothing on the screen mentions an installed schedule")
+
+        # And taken away again either way, because a walk that installs and leaves it
+        # behind is a walk that changed the machine it was measuring.
+        hands.press(SAYS("Finish_Uninstall"))
+        hands.shot(f"removed-{backend.lower()}")
+
+    return hands
+
+
+def the_tray_and_the_window(page, base, dsn, elevated, app):
+    """Close to the taskbar, and whether the application really comes back.
+
+    WHAT THIS CAN AND CANNOT REACH, said plainly rather than left to be assumed.
+
+    Closing to the taskbar is a real click here, and what it leaves behind is real: a
+    process still alive with no window. That much is checked.
+
+    CLICKING THE ICON IS NOT. A notification-area icon is a Win32 shell object, not
+    anything on a page, and reaching it needs a desktop-automation library this project
+    has not been asked for. So the click itself answers NOT RUN with the reason, and what
+    is checked instead is the rule the flash came from -- that the process survives, and
+    that asking for another window is answered rather than ignored.
+    """
+    hands = Hands(page, "the tray and the window", base)
+
+    if not sign_in(hands) or not reach_the_schedule(hands, dsn):
+        hands.check("the schedule screen was reached", False, "could not get there")
+        return hands
+
+    # A NAME OF ITS OWN EACH RUN. The application refuses to replace a batch file
+    # without being asked twice -- something may be running it -- so a walk that used
+    # one name would refuse itself on its second run and report the refusal as a defect.
+    # That the refusal happens is worth checking, and it is checked in "a bad day".
+    hands.go("/Automation")
+    name = f"A walked file {int(time.time())}"
+    hands.fill("Name", name)
+    hands.press(SAYS("Automation_Write"))
+    hands.shot("batch-written")
+    hands.no_errors("the batch-file screen after writing")
+
+    # A TICK MUST SURVIVE SAVE, clicked rather than posted.
+    #
+    # The one an HTTP driver could not have found honestly: the tick was lost by MODEL
+    # BINDING, because a ticked box posts two values and the hidden false was written
+    # first. A driver that posts fields chooses what to send and never meets that. A real
+    # browser sends what the markup says.
+    # Set the split up the way a person does: tick the box on the mapping screen, pick
+    # the column, and press the button that goes to the agencies screen.
+    hands.go("/Classify")
+
+    # Clicked by its id, the way the screen's own script listens for it. set_checked on a
+    # box that is already in the wanted state fires nothing, and the button is woken by
+    # the change event -- so the helper that "just sets it" can leave the screen looking
+    # untouched.
+    hands.page.locator("#several-agencies").first.check(timeout=Hands.PATIENCE)
+    hands.fill("AgencyColumn", "ORI")
+    opened = hands.press(SAYS("Classify_AgencySetUp"))
+
+    hands.check("the set-up-agencies button is live once the box is ticked", opened,
+                "the button stayed dead after ticking the box")
+
+    # And on the screen itself, however it was reached.
+    hands.go("/Agencies")
+    hands.shot("agencies-opened")
+
+    ticks = page.locator("input[type='checkbox'][name^='Include']")
+
+    hands.check("the agencies screen offers a tick per agency", ticks.count() >= 2,
+                f"{ticks.count()} ticks on the screen")
+
+    if ticks.count() >= 2:
+        for i in range(2):
+            ticks.nth(i).check(timeout=Hands.PATIENCE)
+            hands.fill(f"Oris[{i}]", drive_app.ORI)
+
+        # THE BUTTON THIS SCREEN ACTUALLY HAS. It is called "Pull the agencies from the
+        # database", not Save -- and pressing a button that is not there returns False
+        # quietly, so the check that followed was reading ticks nothing had saved. A walk
+        # that presses nothing and then measures the screen measures its own clicks.
+        saved = hands.press(SAYS("Agency_Pull"))
+
+        hands.check("the agencies screen has a button that saves what was typed", saved,
+                    "no save button was found on the agencies screen")
+
+        hands.shot("agencies-ticked")
+
+        still = page.locator("input[type='checkbox'][name^='Include']")
+
+        hands.check("a ticked agency is still ticked after Save",
+                    still.count() >= 2 and still.nth(0).is_checked() and still.nth(1).is_checked(),
+                    "a box that was ticked came back unticked")
+
+        hands.check("and the screen does not claim nothing is ticked",
+                    "no agency is ticked" not in page.content().lower(),
+                    "the screen said nothing was ticked about boxes that are")
+
+    # AND THE SAME NAME AGAIN. A file an agency's own scheduler may be calling must not
+    # be replaced because somebody typed the same name twice -- it takes a second,
+    # deliberate act. This is the bad day that belongs on this screen, and it needs the
+    # finished setup this journey has.
+    hands.go("/Automation")
+    hands.fill("Name", name)
+    hands.press(SAYS("Automation_Write"))
+
+    said = " ".join(hands.errors()).lower()
+
+    hands.check("writing a batch file over one that exists is refused until asked twice",
+                "already" in said or "replac" in said,
+                f"it said: {' '.join(hands.errors())[:120] or 'nothing'}")
+
+    hands.shot("written-twice")
+
+    # Back to a clean screen for the rest of the walk.
+    hands.go("/Automation")
+
+    hands.check("closing to the taskbar wakes up once a file is written",
+                hands.dead(SAYS("Automation_CloseToTray")) is False,
+                "the close button was still dead after a file was written")
+
+    hands.press(SAYS("Automation_CloseToTray"))
+    hands.shot("closed-to-the-taskbar")
+
+    # The process is what matters: closing to the taskbar must PARK the application,
+    # never end it. An icon over a dead process is the failure this guards.
+    time.sleep(2)
+
+    hands.check("the application is still running after closing to the taskbar",
+                app.proc.poll() is None,
+                "the process ended -- closing to the taskbar closed the application")
+
+    # And it still answers, which is what the icon's Settings item relies on.
+    try:
+        app.get("/")
+        answers = True
+    except Exception:
+        answers = False
+
+    hands.check("it still answers after closing to the taskbar", answers,
+                "the host stopped serving, so the icon would have nothing to open")
+
+    # AND THE ICON ITSELF, clicked for real.
+    clicked, why = click_the_icon(app)
+
+    if clicked is None:
+        hands.note(f"NOT RUN: clicking the notification-area icon. {why}")
+        return hands
+
+    hands.check("the window is minimised when it is closed to the taskbar",
+                clicked["parked"] is True,
+                "the window was not minimised, so there was nothing to bring back")
+
+    hands.check("the icon is in the notification area to be clicked",
+                clicked["icon"], "no icon called Community Uploader was there")
+
+    # THE WHOLE POINT. One click, and the application comes back.
+    hands.check("ONE click on the icon brings the window back",
+                clicked["restored"] is False,
+                "the window was still minimised after clicking the icon")
+
+    return hands
+
+
+def click_the_icon(app=None):
+    """Clicks the real notification-area icon, and says what the window did.
+
+    Returns (None, why) when this machine cannot do it -- no pywinauto, no notification
+    area, no icon -- because that is a capability the machine lacks rather than a fault
+    in the product, and saying which is the difference between NOT RUN and FAIL.
+    """
+    try:
+        import pywinauto  # noqa: F401
+    except ImportError:
+        return None, ("pywinauto is not installed, so the icon could not be clicked. "
+                      "pip install pywinauto")
+
+    if app is None:
+        return None, "no application was handed to the icon check"
+
+    parked = any(minimised for _, minimised in window_state(app.proc.pid))
+
+    icon = the_icon()
+
+    if icon is None:
+        return None, ("no icon called Community Uploader is in the notification area. "
+                      "It may be behind the 'show hidden icons' arrow.")
+
+    icon.click_input()
+    time.sleep(6)
+
+    restored = any(minimised for _, minimised in window_state(app.proc.pid))
+
+    return {"parked": parked, "icon": True, "restored": restored}, ""
+
+
+def window_state(pid):
+    """This process's visible windows, and whether each is minimised."""
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    found = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    def each(hwnd, _):
+        owner = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+
+        if owner.value == pid and user32.IsWindowVisible(hwnd):
+            length = user32.GetWindowTextLengthW(hwnd)
+
+            if length:
+                buf = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buf, length + 1)
+                found.append((buf.value, bool(user32.IsIconic(hwnd))))
+
+        return True
+
+    user32.EnumWindows(each, None)
+    return found
+
+
+def the_icon(name="Community Uploader"):
+    """The notification-area icon, by its exact name.
+
+    EXACT, and it matters: matching loosely on "community" also finds "PyCharm Community
+    Edition" on the taskbar beside it, and the walk clicked that instead.
+    """
+    from pywinauto import Desktop
+
+    tray = Desktop(backend="uia").window(class_name="Shell_TrayWnd")
+
+    for button in tray.descendants(control_type="Button"):
+        try:
+            if (button.window_text() or "").strip() == name:
+                return button
+        except Exception:
+            continue
+
+    return None
+
+
+
+def path_of(screen):
+    """Where a screen lives, by the name the census gives it."""
+    return "/" + ("" if screen == "Index" else screen)
+
+
+def open_every_details(page):
+    """Opens every folded section, because a folded control is one nobody can click.
+
+    The connection string lives inside a <details> that is closed unless one is already
+    saved, so it was invisible, and a walk that types into what it cannot see is a walk
+    that hangs. Opened generically rather than by naming that one: any section folded
+    away tomorrow is opened by the same line.
+    """
+    try:
+        page.eval_on_selector_all("details", "els => els.forEach(e => { e.open = true; })")
+    except Exception:
+        # A screen with no folded section. Nothing to open and nothing to report.
+        pass
+
+
+def rounds_for(page, lists):
+    """How many times to go round a screen, from the lists it has on it.
+
+    HALF THESE CONTROLS ONLY EXIST FOR ONE CHOICE. The hour gap and its window belong
+    to "every few hours", the days to "weekly", the day of the month to "monthly" -- one
+    pass sees whichever the screen opened on and reports the other two as controls
+    nobody has ever clicked. So the screen is walked once per option, and the options
+    are COUNTED FROM THE SCREEN rather than from a number typed here.
+    """
+    most = 2
+
+    for control in lists:
+        found = page.locator(Hands.by_name(control.name, "select")).first
+
+        if found.count():
+            most = max(most, found.locator("option").count())
+
+    # Bounded, because a list of every quarter hour would otherwise walk the screen a
+    # hundred times. Six covers every branching list this application has.
+    return min(most, 6)
+
+
+def put_lists_on(hands, lists, turn):
+    """Points every list on the screen at one of its options, to reveal what it hides.
+
+    TWICE ROUND, because the lists reveal each other. The hour gap is inside the section
+    that only exists while the pattern says "every few hours", so setting the pattern and
+    the gap in one pass only works if the pattern happens to come first in the census.
+    The second pass acts on what the first one brought onto the screen.
+
+    Acting here is also what COUNTS as touching a list, rather than a separate pass
+    afterwards. A separate pass put every list on its last option -- which folded away
+    the section the round had just opened, before the controls inside it had been
+    reached. Measured: three controls on the schedule screen that nothing had ever
+    clicked, because the list above them was being changed first.
+    """
+    for _ in range(2):
+        _point_lists(hands, lists, turn)
+
+
+def _point_lists(hands, lists, turn):
+    """One pass over the lists on a screen."""
+    for control in lists:
+        found = hands.page.locator(Hands.by_name(control.name, "select")).first
+
+        if found.count() == 0 or not found.is_visible() or not found.is_enabled():
+            continue
+
+        options = found.locator("option")
+
+        if options.count() == 0:
+            continue
+
+        try:
+            found.select_option(index=turn % options.count(), timeout=Hands.PATIENCE)
+            hands.touched("list", control.name)
+        except Exception:
+            # A list that will not take that option is a fact, not a stop.
+            pass
+
+
+def reveal(hands, screen):
+    """Puts a screen into the state where the rest of its controls exist at all.
+
+    NAMED AND FEW. Everything else here enumerates its subjects; this cannot, because
+    "what makes the join grid appear" is a fact about the application and not a fact
+    about the markup. What it must not become is a list of things to click -- each entry
+    is the STATE a screen needs, and the controls are still taken from the census.
+    """
+    if screen == "OdbcConnect":
+        # The database credentials, which are hidden while Windows authentication is on.
+        hands.tick("AuthMode", False)
+
+    elif screen == "OdbcQuery":
+        # The whole right-hand half of this screen -- the column ticks, the join grid and
+        # everything in it -- exists only once the schema has been read and a table
+        # chosen. Nothing had ever clicked Analyse, so nine controls behind it read as
+        # controls nobody had thought about.
+        if hands.press(SAYS("Odbc_Analyse")):
+            try:
+                hands.page.wait_for_selector("input[name='SelectedColumns']",
+                                             timeout=90000, state="attached")
+            except Exception:
+                hands.note("OdbcQuery: the schema did not come back, so the joins stayed hidden")
+
+        table = hands.page.locator("button[name='SelectedTable']").first
+
+        if table.count() and table.is_visible():
+            table.click(timeout=Hands.PATIENCE)
+            hands.touched("button", "SelectedTable", where="OdbcQuery")
+
+        # One join row, so the row's own controls -- its kind, its table, its condition
+        # and the button that takes it away again -- are on the screen to be acted on.
+        hands.press(SAYS("Odbc_AddJoin"))
+
+        # And the note that offers the way back from a hand-written statement, which the
+        # designer shows only once somebody has actually edited the box.
+        hands.fill("Sql", "SELECT [LWMAIN].[CASE_NBR] FROM [LWMAIN]")
+
+
+def walk_one_screen(hands, screen, on_it, excused, already_here=False):
+    """Every control the census puts on one screen, acted on the way a person would.
+
+    `already_here` is for a screen that had to be put into a state to be worth walking --
+    the file screen with a file open on it. Navigating to it afresh would undo the very
+    thing that made its other controls exist.
+    """
+    if not already_here:
+        hands.go(path_of(screen))
+
+    # A screen the setup has not reached sends the walk back to where it is. Acting on
+    # the screen it landed on instead would credit the wrong screen's controls.
+    if hands.screen() != screen:
+        # ONE MORE TRY, WITH THE ROUTE PUT BACK. A screen can be unreachable because it
+        # is not on this route at all -- the file screens, when the walk set up a
+        # database -- or because the walk has just broken the step before it. Measured:
+        # typing rubbish into the connection screen locked the query screen, and ten
+        # controls behind it read as facets nobody had thought about when they were
+        # simply behind a door the walk had shut on itself.
+        if reach_the_schedule(hands, DSN) or True:
+            hands.go(path_of(screen))
+
+    if hands.screen() != screen:
+        hands.note(f"{screen}: not reachable from here, so its controls were not touched")
+        return
+
+    # Except the one whose job is to show an error. Asserting that the error screen
+    # shows no error is asserting that it does not work.
+    if screen not in ("Error",):
+        hands.no_errors(f"{screen} on arrival")
+
+    reveal(hands, screen)
+
+    wanted = [control for control in on_it if control.id not in excused]
+    lists = [control for control in wanted if control.kind == "list"]
+    links = [control for control in wanted if control.kind == "link"]
+    rest = [control for control in wanted if control.kind not in ("list", "link")]
+
+    for turn in range(rounds_for(hands.page, lists)):
+        # A button may have posted its way somewhere else. Come back rather than credit
+        # this screen's controls to whatever screen the walk is standing on now.
+        if hands.screen() != screen:
+            hands.go(path_of(screen))
+
+        # EVERY ROUND, not only after wandering off. Acting on this screen's own controls
+        # can take its panels away -- typing into the query box and pressing Run empties
+        # the column picker that the next round wants to tick -- so the state each screen
+        # needs is rebuilt before each pass rather than once at the start. For every
+        # screen but the query screen this costs nothing, because there is nothing to do.
+        reveal(hands, screen)
+
+        open_every_details(hands.page)
+        put_lists_on(hands, lists, turn)
+
+        # BOXES AND TICKS BEFORE BUTTONS, which is the order a person uses and, it
+        # turns out, the only order that reaches half of these controls. In census order
+        # the buttons came first, each one posted the form, and the screen came back
+        # without the panel the ticks were in -- so "tick at least one field" was
+        # refused eleven times running on a screen whose ticks nothing had ever clicked.
+        # BOXES, THEN TICKS, THEN BUTTONS -- the order somebody fills a form in, and the
+        # only one that reaches a field a tick hides. The database user name and password
+        # live in a block the "use Windows authentication" tick folds away, so ticking it
+        # before filling them meant nothing had ever typed in either.
+        order = {"box": 0, "tick": 1}
+
+        for control in sorted(rest, key=lambda c: order.get(c.kind, 2)):
+            if TRACE:
+                print(f"  touch {control.id}", flush=True)
+
+            try:
+                touch(hands, control)
+            except Exception as ex:
+                # A control that cannot be acted on is a finding, not a reason to stop.
+                hands.note(f"{control.id}: {type(ex).__name__}")
+
+        # LISTS AFTER THE REST. Acting on a list puts it on its last option, which folds
+        # away whatever the round had just revealed -- so everything that needed the
+        # round's option has already been touched by the time this runs.
+        for control in lists:
+            try:
+                touch(hands, control)
+            except Exception as ex:
+                hands.note(f"{control.id}: {type(ex).__name__}")
+
+    # AND LINKS LAST OF ALL, because following one leaves the screen.
+    for control in links:
+        if hands.screen() != screen:
+            hands.go(path_of(screen))
+
+        try:
+            touch(hands, control)
+        except Exception as ex:
+            hands.note(f"{control.id}: {type(ex).__name__}")
+
+
+def a_split_setup(hands):
+    """Turns the multi-agency split on, so the grid and the per-agency ticks exist.
+
+    The agency grid renders one row per agency found in the data, and the batch screen
+    only offers "every agency" and "just these" when there is more than one. With the
+    tick off there is one agency, no grid, no ticks -- and five controls that read as
+    facets nobody has thought about while they were simply not on the screen.
+    """
+    hands.go("/Classify")
+
+    if not hands.tick("SeveralAgencies", True):
+        return False
+
+    column = hands.page.locator("select[name='AgencyColumn']").first
+
+    if column.count() and column.locator("option").count() > 1:
+        column.select_option(index=column.locator("option").count() - 1,
+                             timeout=Hands.PATIENCE)
+
+    hands.press(SAYS("Common_Save"))
+    hands.go("/Agencies")
+
+    # AND THE COLUMN AGAIN, ON THIS SCREEN. The agencies screen has its own column
+    # picker, and pulling the agencies out of the data needs it chosen -- "choose the
+    # column that says which agency a row belongs to" was refused on every run, so the
+    # grid never appeared and five controls behind it read as never clicked.
+    column = hands.page.locator("select[name='Column']").first
+
+    if column.count() and column.locator("option").count() > 1:
+        try:
+            column.select_option(index=column.locator("option").count() - 1,
+                                 timeout=Hands.PATIENCE)
+        except Exception:
+            hands.note("the agencies screen would not take a column")
+
+    hands.press(SAYS("Agency_Pull"))
+
+    # PULLED IS NOT SAVED, and the batch screen reads what was saved. Every agency the
+    # pull found is given the ORI this walk signs in with and ticked to be sent, then
+    # the screen is saved -- which is what makes "every agency" and "just these" exist
+    # on the batch screen at all.
+    oris = hands.page.locator("input[name^='Oris[']")
+
+    for i in range(oris.count()):
+        try:
+            oris.nth(i).fill(drive_app.ORI, timeout=Hands.PATIENCE)
+        except Exception:
+            break
+
+    ticks = hands.page.locator("input[type='checkbox'][name^='Include[']")
+
+    for i in range(ticks.count()):
+        try:
+            ticks.nth(i).check(timeout=Hands.PATIENCE)
+        except Exception:
+            break
+
+    hands.press(SAYS("Common_Save"))
+
+    return hands.screen() == "Agencies"
+
+
+def one_agency_again(hands):
+    """Puts the setup back to one agency, so the screens after it are valid again.
+
+    A split with nothing ticked uploads nothing, and every screen after it says so --
+    correctly. Walking on through that would report the application complaining about a
+    setup this walk made, which is noise on top of the screens it wants to look at.
+    """
+    hands.go("/Agencies")
+    hands.press(SAYS("Agency_OneAgency"))
+
+
+def every_control_on_every_screen(page, base, dsn, elevated, app):
+    """Touches every control the screens declare, one screen at a time.
+
+    THE JOURNEY THAT IS NOT A HAND-WRITTEN LIST. The others walk the paths somebody
+    thought of, which is worth a great deal and is not an answer to "is every facet
+    tested" -- because the list of paths is itself hand-written.
+
+    This one takes its subjects from the screens: for each screen, every button, box,
+    list, tick and link the census found on it, acted on the way a person would. A
+    control that must not be pressed is DECLARED with a reason in
+    tools/clicking-ledger.json; anything in neither state is reported at the end as a
+    facet nobody has thought about.
+    """
+    hands = Hands(page, "every control on every screen", base)
+
+    if not sign_in(hands):
+        return hands
+
+    # A finished setup, so screens past the mapping are reachable at all.
+    reach_the_schedule(hands, dsn)
+
+    excused = screen_controls.declared()
+    controls = screen_controls.every_control()
+
+    by_screen = {}
+
+    for control in controls:
+        by_screen.setdefault(control.screen, []).append(control)
+
+    # THE SPLIT FIRST, and put back afterwards. These two screens have controls that only
+    # exist when a source holds more than one agency, and the rest of the wizard is
+    # correctly unhappy about a split with nothing ticked -- so the state is set up, the
+    # screens that need it are walked, and then it is turned off again.
+    # AUTOMATION FIRST, AND THAT ORDER IS LOAD-BEARING. The agencies screen carries the
+    # button that turns the split off -- pressing it is the whole point of that button --
+    # so walking it first left one agency, and the batch screen's "every agency" and
+    # "just these" ticks did not exist by the time the walk arrived.
+    needs_a_split = ("Automation", "Agencies")
+
+    if a_split_setup(hands):
+        for screen in needs_a_split:
+            if screen in by_screen:
+                walk_one_screen(hands, screen, by_screen[screen], excused)
+    else:
+        hands.note("the multi-agency split could not be set up, so its controls "
+                   "were not touched")
+
+    one_agency_again(hands)
+
+    for screen, on_it in sorted(by_screen.items()):
+        if screen not in needs_a_split:
+            walk_one_screen(hands, screen, on_it, excused)
+
+    # AND THE OTHER ROUTE. Everything above is the database route, because that is what
+    # this walk set up -- so the file screens were never reachable and reported as such.
+    # Choosing a file is the one press that opens them.
+    hands.go("/Source")
+
+    if hands.press(SAYS("Source_File")):
+        the_file_route(hands, by_screen.get("FileSource", []), excused)
+
+    return hands
+
+
+def the_file_route(hands, on_it, excused):
+    """The file screen, with a real file open on it.
+
+    Half of this screen is about a file somebody has chosen: the table picker for an
+    Access database holding several, the button that reads one, the list of files in a
+    folder. None of that is on the screen until a folder has been browsed and a file
+    picked -- and Browse itself opens a dialog no walk can close, so the folder is
+    reached the way the screen's own links reach it, by address.
+    """
+    fixtures = ROOT / "tests" / "fixtures"
+
+    hands.go(f"/FileSource?folder={fixtures}")
+
+    if hands.screen() != "FileSource":
+        hands.note("the file screen was not reachable, so its controls were not touched")
+        return
+
+    # WHILE THE FOLDER IS STILL LISTED. Choosing a file replaces the listing, so the
+    # links that walk into a folder have to be followed before anything is chosen --
+    # afterwards there is nothing there to follow. Followed here rather than left to the
+    # walk below, because the walk presses buttons before it follows links and one of
+    # those buttons is the one that chooses a file.
+    hands.follow("/FileSource")
+    hands.go(f"/FileSource?folder={fixtures}")
+
+    walk_one_screen(hands, "FileSource", on_it, excused, already_here=True)
+
+    # AND THE OTHER WAY OF OPENING A FILE: typing the path in. There is no button for it
+    # -- the screen reads a path the moment it is finished with, and the only submit is
+    # one hidden on purpose so Enter works -- so this types it and lets the screen do
+    # what it does.
+    hands.go("/FileSource")
+    hands.fill("Path", str(fixtures / "LWMAIN.csv"))
+
+    hands.go(f"/FileSource?folder={fixtures}")
+
+    # A REAL FILE, and the one that asks a question: an Access database holding several
+    # tables is the only shape that puts the table picker and its button on the screen.
+    chosen = hands.page.locator("button[name='Chosen'][value*='LWMAIN_MULTI']").first
+
+    if chosen.count() == 0:
+        chosen = hands.page.locator("button[name='Chosen']").first
+
+    if chosen.count() and chosen.is_visible():
+        chosen.click(timeout=Hands.PATIENCE)
+        hands.settle()
+        hands.touched("button", "Chosen", where="FileSource")
+
+    # WITHOUT GOING BACK TO IT. The file is open because this journey opened it, and
+    # arriving at the screen again would close it -- which is why the button that reads
+    # a table and the picker that chooses one had never been touched.
+    walk_one_screen(hands, "FileSource", on_it, excused, already_here=True)
+
+
+def touch(hands, control):
+    """Acts on one control the way a person would, by what kind of thing it is."""
+    page = hands.page
+    here = hands.screen()
+
+    # BEFORE EVERY CONTROL, not once per round. Pressing a button posts the form and
+    # the screen comes back with its folded sections folded again -- so the connection
+    # string, which lives inside one, was invisible from the first button press onward
+    # and read as a control nobody had ever typed into.
+    open_every_details(page)
+
+    if control.kind == "box":
+        # Something plausible rather than something clever. What is being checked is that
+        # the box takes it, not that the value is meaningful.
+        hands.fill(control.name, "1")
+
+    elif control.kind == "list":
+        chooser = page.locator(Hands.by_name(control.name, "select")).first
+
+        if chooser.count() and chooser.is_visible() and chooser.is_enabled():
+            options = chooser.locator("option")
+
+            # The LAST option, because the first is usually the one already showing --
+            # choosing it again changes nothing and proves nothing.
+            if options.count() > 1:
+                chooser.select_option(index=options.count() - 1, timeout=Hands.PATIENCE)
+                hands.touched("list", control.name, where=here)
+
+    elif control.kind == "tick":
+        box = page.locator(Hands.by_name(control.name)).first
+
+        if box.count() and box.is_visible() and box.is_enabled():
+            box.click(timeout=Hands.PATIENCE)
+            hands.touched("tick", control.name, where=here)
+
+    elif control.kind == "link":
+        hands.follow(control.name)
+
+    elif control.kind == "button":
+        for key in control.labels:
+            words = SAYS.words.get(key)
+
+            if words and hands.press(words):
+                # NOTED, NOT FAILED. This journey presses buttons in whatever order the
+                # census names them, with nothing filled in -- so "give the batch file a
+                # name" is the application working exactly as it should. Calling that a
+                # failure would teach everybody to ignore this sweep.
+                #
+                # The deliberate journeys still require no errors on the paths they walk,
+                # which is where an unexpected one actually means something.
+                for said in hands.errors():
+                    hands.note(f"{control.id} refused it: {said[:80]}")
+
+                return
+
+        # NAMED SOME OTHER WAY. A button with no handler and no words of its own is still
+        # a button somebody presses: it posts under a field name, or it carries a class
+        # that says which one it is. Four buttons were addressable by neither, so nothing
+        # had ever pressed them.
+        for selector in (f"button[formaction*='{control.name}']",
+                         f"button[name='{control.name}']",
+                         f"button.{control.name}"):
+            try:
+                pressed = page.locator(selector).first
+
+                if pressed.count() and pressed.is_visible() and pressed.is_enabled():
+                    pressed.click(timeout=Hands.PATIENCE)
+                    hands.settle()
+                    hands.touched("button", control.name, where=here)
+                    return
+            except Exception:
+                # Not a selector this name can make. Try the next way of naming it.
+                continue
+
+
+#: This one needs the application's own window, because it clicks the icon that
+#: restores it. The others are driven in a window Playwright opens.
+the_tray_and_the_window.needs_window = True
+
+#: The journeys, in the order they are walked. Each gets an application of its own.
+JOURNEYS = [every_screen_every_button, every_control_on_every_screen, a_bad_day,
+            the_backends, the_tray_and_the_window]
+
+
+# ------------------------------------------------------------------------------- report
+def main():
+    folder = None
+    dsn = "Crime"
+    headless = False
+    args = sys.argv[1:]
+
+    global TRACE, DSN
+    wanted = None
+
+    for i, arg in enumerate(args):
+        if arg == "--dsn" and i + 1 < len(args):
+            dsn = args[i + 1]
+        elif arg == "--journey" and i + 1 < len(args):
+            wanted = args[i + 1]
+        elif arg == "--trace":
+            TRACE = True
+        elif arg == "--headless":
+            headless = True
+        elif not arg.startswith("--") and (i == 0 or args[i - 1] not in ("--dsn", "--journey")):
+            folder = arg
+
+    if folder is None:
+        raise SystemExit(__doc__)
+
+    global SAYS
+    SAYS = Labels()
+    DSN = dsn
+
+    driver, why_not = playwright_or_reason()
+
+    if driver is None:
+        print(f"NOT RUN: {why_not}")
+        return 2
+
+    elevated = False
+
+    try:
+        import ctypes
+        elevated = bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        elevated = False
+
+    print(f"administrator: {'yes' if elevated else 'no'}")
+
+    walks = []
+
+    # ONE APPLICATION PER JOURNEY, and it is not tidiness.
+    #
+    # The wizard's state belongs to the PROCESS, not to a browser session -- that is what
+    # makes driving it over HTTP possible at all. So a journey that walks the whole setup
+    # leaves the next one standing in a finished wizard: "a bad day" pressed Next on the
+    # mapping screen expecting it dead, and found it live because the journey before had
+    # filled the mapping in. The walk was reporting the previous journey's success as
+    # this one's defect.
+    # ONE JOURNEY, when something has to be looked at on its own. The default is all of
+    # them, because a walk that only runs what somebody remembered is the hand-written
+    # list this whole assessment refuses.
+    chosen = [b for b in JOURNEYS if wanted is None or wanted in b.__name__]
+
+    if not chosen:
+        raise SystemExit(f"no journey called {wanted}. "
+                         + ", ".join(b.__name__ for b in JOURNEYS))
+
+    for build in chosen:
+        walks.append(run_one(build, folder, driver, dsn, headless, elevated))
+
+    return report(walks)
+
+
+def run_one(build, folder, driver, dsn, headless, elevated):
+    """One journey, in an application of its own."""
+    app = drive_app.App(folder)
+
+    # THE APPLICATION'S OWN WINDOW, for the journey that needs one. Everywhere else the
+    # window is switched off and Playwright supplies it, which is faster and identical to
+    # what a person sees -- but a notification-area icon that brings "the window" back has
+    # to have a window of the application's own to bring.
+    app.show = getattr(build, "needs_window", False)
+
+    try:
+        app.start()
+
+        with driver() as play:
+            # THE BROWSER THE APPLICATION ITSELF FALLS BACK TO, in the same app mode, so
+            # what is driven is the window a person would really be given. Chromium is
+            # the fallback when Edge is not installed.
+            try:
+                browser = play.chromium.launch(channel="msedge", headless=headless,
+                                               args=[f"--app={app.url}"])
+                which = "Edge"
+            except Exception:
+                browser = play.chromium.launch(headless=headless)
+                which = "Chromium"
+
+            print(f"window: {which}, {'headless' if headless else 'on screen'}\n")
+
+            # The token, once, exactly as the application hands it to its own window.
+            context = browser.new_context(viewport={"width": 1400, "height": 1000})
+            page = context.new_page()
+            page.goto(f"{app.url}/?t={app.token}", wait_until="domcontentloaded")
+
+            try:
+                walked = build(page, app.url, dsn, elevated, app)
+            except Exception as ex:
+                walked = Hands(page, f"{build.__name__} stopped", app.url)
+                walked.check(type(ex).__name__, False, str(ex)[:200])
+
+            browser.close()
+    finally:
+        app.stop()
+
+    mark = "ok  " if not walked.failures else "FAIL"
+    print(f"{mark} {walked.name}: {len(walked.checks)} checks, {len(walked.failures)} failed")
+
+    for failure in walked.failures:
+        print(f"       {failure}")
+
+    for said in walked.notes:
+        print(f"       note: {said}")
+
+    return walked
+
+
+def report(walks):
+    """What the whole walk found, in one place."""
+    print()
+    checked = failed = 0
+
+    for walk in walks:
+        checked += len(walk.checks)
+        failed += len(walk.failures)
+
+    print("=" * 78)
+    print(f"{checked - failed} of {checked} checks passed across {len(walks)} journeys, "
+          f"clicked in a real window")
+
+    # ---------------------------------------------------------------- the control census
+    #
+    # EVERY FACET, COUNTED. The journeys above are a hand-written list, and a hand-written
+    # list is the one thing this assessment refuses everywhere else. So the subjects come
+    # from the screens: every button, link, box, list and tick the application renders.
+    #
+    # What the walk did not touch is NAMED, never averaged away. A control that is
+    # deliberately never clicked is declared in tools/clicking-ledger.json with a reason,
+    # in the open, where somebody can disagree with it -- and anything in neither state is
+    # a facet nobody has thought about, which is exactly what this exists to find.
+    controls = screen_controls.every_control()
+    excused = screen_controls.declared()
+
+    def was_touched(control):
+        return any(f"{control.screen}.{control.kind}:{alias}" in TOUCHED
+                   for alias in control.aliases)
+
+    clicked = [c for c in controls if was_touched(c)]
+    declared_only = [c for c in controls if not was_touched(c) and c.id in excused]
+    untouched = [c for c in controls if not was_touched(c) and c.id not in excused]
+
+    print()
+    print(f"{len(clicked)} of {len(controls)} controls were really acted on; "
+          f"{len(declared_only)} declared as never clicked")
+
+    floor = ROOT / "tools" / "clicking-floor.txt"
+    was = int(floor.read_text(encoding="utf-8").strip()) if floor.exists() else 0
+    slipped = len(clicked) < was
+
+    if untouched:
+        print()
+        print(f"NOT TOUCHED, AND NOT DECLARED ({len(untouched)}):")
+
+        for control in sorted(untouched, key=lambda c: c.id):
+            print(f"  {control.id}")
+
+        print()
+        print("  Click it in a journey, or declare it in tools/clicking-ledger.json")
+        print("  with the reason nobody should. Neither is not an answer.")
+
+    # THE RATCHET, and it is why this is not a percentage nobody acts on.
+    #
+    # Forty-four of eighty-three is the honest number today, and it is debt rather than a
+    # failure -- the same distinction the ledger sweep draws between "assessed" and "not
+    # yet". What is NOT allowed is for it to go backwards: a control that was being
+    # clicked and now is not is coverage somebody removed, and that fails.
+    #
+    # A new control lands in the named list above on the run after it is written, which
+    # is the whole point of taking the subjects from the screens.
+    print()
+    print(f"coverage floor: {was}. This run: {len(clicked)}."
+          + ("  SLIPPED." if slipped else "  Held." if len(clicked) == was else "  Raised."))
+
+    if slipped:
+        print(f"  {was - len(clicked)} control(s) that were being clicked no longer are.")
+    elif len(clicked) > was:
+        floor.write_text(f"{len(clicked)}\n", encoding="utf-8")
+        print(f"  floor raised to {len(clicked)}")
+
+    everywhere = [seen for walk in walks for seen in walk.errors_seen]
+
+    if everywhere:
+        print(f"\n{len(everywhere)} error message(s) appeared while clicking:")
+
+        for seen in everywhere:
+            print(f"  {seen}")
+    else:
+        print("No screen showed an error anywhere in the walk.")
+
+    taken = sum(walk.shots for walk in walks)
+
+    if taken:
+        print(f"{taken} screens photographed into {SHOTS}")
+
+    # Untouched controls are DEBT, named every run, and do not fail it. Coverage going
+    # BACKWARDS does, because that is somebody taking a check away.
+    return 1 if failed or slipped else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

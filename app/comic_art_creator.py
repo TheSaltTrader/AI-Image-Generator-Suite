@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "2.1.0"
+APP_VERSION = "2.2.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -645,6 +645,8 @@ def download_model_update(entry, status_cb, prog_cb=None):
     url = entry.get("url") or (
         f"https://huggingface.co/{entry['repo']}/resolve/main/"
         f"{entry['remote_file']}")
+    if not str(url).lower().startswith("https://"):
+        raise RuntimeError("refusing a non-HTTPS model URL: " + str(url))
     dest = MODELS / entry["dir"] / entry["local"]
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(".tmp")
@@ -1631,6 +1633,20 @@ INSIGHTFACE_DIR = MODELS / "insightface"
 INSWAPPER_FILE = "inswapper_128.onnx"
 INSWAPPER_URL = ("https://huggingface.co/ezioruan/inswapper_128.onnx/"
                  "resolve/main/inswapper_128.onnx")
+# SHA-256 of the canonical inswapper_128.onnx — the download is verified
+# against this before it is kept, so a retargeted/tampered host cannot slip
+# a different file onto the machine.
+INSWAPPER_SHA256 = ("e4a3f08c753cb72d04e10aa0f7dbe3deebbf39567d4ead6"
+                    "dce08e98aa49e16af")
+
+
+def _sha256(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
 
 
 def faceswap_ready():
@@ -8677,17 +8693,25 @@ class App:
             self.ui_queue.put(("status", "Installing the face-swap engine…"))
             r = subprocess.run(
                 [str(engine_python()), "-m", "pip", "install",
-                 "insightface", "onnx"],
+                 "insightface==2.0", "onnx"],
                 capture_output=True, text=True, creationflags=NO_WINDOW,
                 env=_contained_env(), timeout=1800)
             if r.returncode != 0:
                 raise RuntimeError("could not install insightface: "
                                    + (r.stderr or r.stdout or "")[-300:])
             dest = INSIGHTFACE_DIR / INSWAPPER_FILE
-            if not dest.exists():
+            if not (dest.exists() and _sha256(dest) == INSWAPPER_SHA256):
                 self.ui_queue.put(("status", "Downloading the face-swap model "
                                              "(~550 MB, one time)…"))
                 self._download_to(INSWAPPER_URL, dest, "faceswap")
+                if _sha256(dest) != INSWAPPER_SHA256:
+                    try:
+                        dest.unlink()
+                    except OSError:
+                        pass
+                    raise RuntimeError(
+                        "the downloaded face-swap model failed its integrity "
+                        "check (SHA-256 mismatch) — not installed.")
             self.ui_queue.put(("status", "Downloading the face detector…"))
             d = subprocess.run(
                 [str(engine_python()), "-c", _FACESWAP_INIT_CODE,
@@ -9099,8 +9123,30 @@ class App:
                                  encoding="utf-8")
 
 
+def _app_icon_path():
+    """The app icon on disk: the bundled copy when frozen, else the source
+    one. Used for the window/taskbar icon (the exe's own icon is set at
+    build time from the same file)."""
+    base = Path(getattr(sys, "_MEIPASS", str(APP_DIR)))
+    p = base / "icon.ico"
+    return p if p.exists() else APP_DIR / "icon.ico"
+
+
 def main():
+    # a stable AppUserModelID so Windows groups and pins the app under its
+    # own icon (separate from the exe icon and the window icon — all three
+    # must be set for the icon to be consistent everywhere)
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "TheSaltTrader.AIImageGeneratorSuite")
+    except Exception:
+        pass
     root = Tk()
+    try:
+        root.iconbitmap(default=str(_app_icon_path()))
+    except Exception:
+        pass
     _mutex_handle, already = single_instance_handle()
     if already:
         # a copy that is closing hides its window at once and frees the

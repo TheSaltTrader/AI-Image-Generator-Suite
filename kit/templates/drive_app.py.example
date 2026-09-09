@@ -1,0 +1,1050 @@
+#!/usr/bin/env python3
+"""Drives the real application through every route and every setting it offers.
+
+WHY THIS EXISTS
+---------------
+Handler tests pass while a screen is dead. It has happened twice in this project, and
+then four times running on the agencies screen: every defect was real, none was caught by
+thirteen hundred tests, and every one was found by a person opening the application and
+looking. They were all about a SEQUENCE through screens -- a value set on one and never
+read by the next -- and a test that builds one page model at a time cannot see a sequence.
+
+So this stands the packaged application up, signs in, and walks it: every source route,
+every schedule backend, every data range, every recurrence pattern, reading the values
+back out of the HTML a browser would have been sent.
+
+THE RULE IT FOLLOWS
+-------------------
+The settings are ENUMERATED FROM THE SOURCE, never from a list typed in here. A range, a
+backend or a pattern added to the application is walked on the next run without anybody
+remembering to come back -- and one that cannot be walked is reported, not skipped. That
+is the same rule the rest of the assessment follows: a check must enumerate its own
+subjects from the artefact.
+
+WHAT IT NEEDS
+-------------
+  * A PUBLISHED folder. A `dotnet build` output has no wwwroot, so every button looks
+    dead and every journey fails for the wrong reason.
+        dotnet publish src/CommunityUploader.Web -f net9.0-windows -c Release -o <folder>
+  * Your own copy CLOSED. The application is one per machine; an open copy bounces this
+    off the single-instance mutex and it does nothing at all. That is detected and said.
+  * The network and the saved upload key. Sign-in is real -- it uploads nothing, because
+    validating sends a batch with no incidents in it -- and there is no way to fake it,
+    because the sign-in screen refuses anything but https.
+
+    python tools/drive_app.py <published folder> [--dsn Crime] [--show]
+
+  --show opens the application's own window while the walk drives it, for when you want
+  to watch it happen. Without it nothing appears on screen and the pictures are the
+  record.
+"""
+
+import html
+import re
+import subprocess
+import sys
+import time
+import urllib.parse
+import urllib.request
+from http.cookiejar import CookieJar
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+ORI = "BS12345"
+ENDPOINT = "https://psimporter.lexisnexisrisk.com/import"
+
+
+# --------------------------------------------------------------- the settings that exist
+def enum_members(relative, name):
+    """The members of one C# enum, read out of the source that declares it.
+
+    Parsed rather than hard-coded so the space this walks is the space the application
+    actually offers. A comment or a trailing value assignment is stripped; anything that
+    is not a plain member is left out rather than guessed at.
+    """
+    text = (ROOT / relative).read_text(encoding="utf-8-sig")
+    found = re.search(r"\benum\s+" + re.escape(name) + r"\b[^{]*\{(.*?)\n\}", text, re.S)
+
+    if not found:
+        return []
+
+    members = []
+
+    for line in found.group(1).split("\n"):
+        line = re.sub(r"//.*", "", line).strip()
+
+        if not line or line.startswith(("/", "*", "[")):
+            continue
+
+        member = line.split("=")[0].split(",")[0].strip()
+
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", member):
+            members.append(member)
+
+    return members
+
+
+def const_strings(relative, name):
+    """The string constants one C# static class declares, in the order it declares them.
+
+    Not every choice a screen offers is an enum. The batch action is two string constants
+    in a static class, and reading only enums meant the driver did not know the setting
+    existed -- so it never sent one, the screen refused every post as incomplete, and the
+    checks still passed because a refused screen echoes back what you posted.
+
+    Seven identical pictures and a folder full of confidence. Read what the application
+    declares, in every form it declares it.
+    """
+    text = (ROOT / relative).read_text(encoding="utf-8-sig")
+    found = re.search(r"\bstatic\s+class\s+" + re.escape(name) + r"\b[^{]*\{(.*?)\n\}",
+                      text, re.S)
+
+    if not found:
+        return []
+
+    return re.findall(r'\bconst\s+string\s+\w+\s*=\s*"([^"]*)"', found.group(1))
+
+
+def settings():
+    """Everything the application offers, by name, from the source that declares it."""
+    return {
+        "SourceKind": [k for k in enum_members(
+            "src/CommunityUploader.Core/Schema/SourceKind.cs", "SourceKind") if k != "None"],
+        "ScheduleBackend": enum_members(
+            "src/CommunityUploader.Core/Scheduling/ScheduleSettings.cs", "ScheduleBackend"),
+        "DataRange": enum_members(
+            "src/CommunityUploader.Core/Scheduling/ScheduleSettings.cs", "DataRange"),
+        "RecurrencePattern": enum_members(
+            "src/CommunityUploader.Core/Scheduling/Recurrence.cs", "RecurrencePattern"),
+        "WindowKey": enum_members(
+            "src/CommunityUploader.Core/Scheduling/ScheduleSettings.cs", "WindowKey"),
+        # Not an enum, and that is exactly why it was missed. See const_strings.
+        "BatchAction": const_strings(
+            "src/CommunityUploader.Core/Scheduling/ScheduleSettings.cs", "BatchActions"),
+    }
+
+
+# ------------------------------------------------------------------------ the application
+class App:
+    """The packaged application, running, with the screens reachable."""
+
+    def __init__(self, folder, show=False):
+        self.folder = Path(folder)
+        self.show = show
+        self.exe = self.folder / "CommunityUploader.exe"
+        self.proc = None
+        self.url = None
+        self.token = None
+        self.opener = urllib.request.build_opener(
+            urllib.request.HTTPCookieProcessor(CookieJar()))
+
+    def start(self):
+        if not self.exe.exists():
+            raise SystemExit(f"no application at {self.exe}. Publish one first.")
+
+        for stale in ("session.url", "session.token"):
+            (self.folder / stale).unlink(missing_ok=True)
+
+        # Headless by default and that is deliberate: the walk is driven over HTTP, so
+        # the desktop window is not needed to reach a single screen, and twenty-six
+        # screenshots are a better record of what was seen than a window nobody watched.
+        #
+        # --show opens the real window anyway, for when the point IS to watch it: the
+        # application on screen, being driven, exactly as it ships.
+        self.proc = subprocess.Popen(
+            [str(self.exe), f"--Ui:OpenBrowser={'true' if self.show else 'false'}"],
+            cwd=str(self.folder), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        for _ in range(120):
+            url = self.folder / "session.url"
+            token = self.folder / "session.token"
+
+            if url.exists() and token.exists():
+                self.url = url.read_text(encoding="utf-8").strip()
+                tok = token.read_text(encoding="utf-8").strip()
+
+                if self.url and tok:
+                    self.token = tok
+                    self.get(f"/?t={tok}")
+                    return
+
+            if self.proc.poll() is not None:
+                raise SystemExit(
+                    "the application exited immediately. Almost always the single-instance "
+                    "mutex: close your own copy and run this again.")
+
+            time.sleep(0.5)
+
+        raise SystemExit(
+            "the application never wrote session.url. If your own copy is open, close it: "
+            "one copy per machine, and the second one quietly points at the first.")
+
+    def stop(self):
+        if self.proc is None:
+            return
+
+        self.proc.terminate()
+
+        try:
+            self.proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+
+    def get(self, path):
+        with self.opener.open(self.url.rstrip("/") + path, timeout=120) as r:
+            return r.read().decode("utf-8", "replace")
+
+    def post(self, path, fields):
+        body = "&".join(
+            f"{urllib.parse.quote(str(k))}={urllib.parse.quote(str(v))}" for k, v in fields)
+
+        request = urllib.request.Request(
+            self.url.rstrip("/") + path, data=body.encode("utf-8"),
+            headers={"Content-Type": "application/x-www-form-urlencoded"})
+
+        with self.opener.open(request, timeout=300) as r:
+            return r.read().decode("utf-8", "replace")
+
+
+# ------------------------------------------------------------------- reading a rendered page
+def token_of(page):
+    """The anti-forgery token a form on this page carries."""
+    found = re.search(r'name="__RequestVerificationToken"[^>]*value="([^"]+)"', page)
+    return found.group(1) if found else ""
+
+
+def heading(page):
+    found = re.search(r"<h1[^>]*>(.*?)</h1>", page, re.S)
+    return strip(found.group(1)) if found else "(no heading)"
+
+
+def notes(page, kind=None):
+    """Every message on the page, optionally of one kind."""
+    pattern = r'class="note note-(\w+)"[^>]*>(.*?)</div>'
+    return [(k, strip(body)) for k, body in re.findall(pattern, page, re.S)
+            if kind is None or k == kind]
+
+
+def slug(text):
+    """A heading, in a form a file name can carry."""
+    return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", text.lower())).strip("-")[:60]
+
+
+def strip(fragment):
+    return " ".join(html.unescape(re.sub(r"<[^>]+>", " ", fragment)).split())
+
+
+def selected(page, field):
+    """What a select is currently showing."""
+    block = re.search(
+        r'<select[^>]*name="' + re.escape(field) + r'"[^>]*>(.*?)</select>', page, re.S)
+
+    if not block:
+        return None
+
+    chosen = re.search(r'<option[^>]*selected[^>]*value="([^"]*)"', block.group(1)) \
+        or re.search(r'value="([^"]*)"[^>]*selected', block.group(1))
+
+    return chosen.group(1) if chosen else None
+
+
+def radio_values(page, field):
+    """Every value a radio group actually offers, read off the rendered page."""
+    values = []
+
+    for tag in re.findall(r"<input[^>]*>", page):
+        if f'name="{field}"' in tag and 'type="radio"' in tag:
+            value = re.search(r'value="([^"]*)"', tag)
+
+            if value:
+                values.append(value.group(1))
+
+    return values
+
+
+def radio_chosen(page, field):
+    """Which radio in a group is selected.
+
+    A separate reader because a radio group is not a select, and asking a select-reader
+    about one gets None -- which reads as "the screen lost the setting" when the setting
+    is right there. Nine journeys reported that before this existed.
+    """
+    for tag in re.findall(r"<input[^>]*>", page):
+        if f'name="{field}"' in tag and 'type="radio"' in tag and "checked" in tag:
+            value = re.search(r'value="([^"]*)"', tag)
+            return value.group(1) if value else None
+
+    return None
+
+
+def is_disabled(page, element_id):
+    """Whether the element with this id is rendered dead, or None when it is not there.
+
+    Read off the markup rather than inferred, because "greyed out" is a promise the
+    screen makes to a person. The disabled attribute both stops the press and draws it
+    grey -- the stylesheet dims button:disabled -- so one attribute carries both halves.
+    """
+    for tag in re.findall(r"<(?:button|a|input)[^>]*>", page):
+        if f'id="{element_id}"' in tag:
+            return "disabled" in tag
+
+    return None
+
+
+def hidden_value(page, field):
+    """The value of a hidden input, for a setting the screen does not offer a choice of."""
+    for tag in re.findall(r"<input[^>]*>", page):
+        if f'name="{field}"' in tag and 'type="hidden"' in tag:
+            value = re.search(r'value="([^"]*)"', tag)
+            return value.group(1) if value else None
+
+    return None
+
+
+def checked(page, field):
+    """Whether a checkbox is ticked."""
+    box = re.search(
+        r'<input[^>]*name="' + re.escape(field) + r'"[^>]*type="checkbox"[^>]*>', page) \
+        or re.search(
+        r'<input[^>]*type="checkbox"[^>]*name="' + re.escape(field) + r'"[^>]*>', page)
+
+    return bool(box) and "checked" in box.group(0)
+
+
+def grid(page):
+    """The first table on the page, as headers and rows of text."""
+    table = re.search(r"<thead>(.*?)</thead>.*?<tbody>(.*?)</tbody>", page, re.S)
+
+    if not table:
+        return [], []
+
+    headers = [strip(h) for h in re.findall(r"<th[^>]*>(.*?)</th>", table.group(1), re.S)]
+
+    rows = []
+    for tr in re.findall(r"<tr>(.*?)</tr>", table.group(2), re.S):
+        rows.append([strip(c) for c in re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S)])
+
+    return headers, rows
+
+
+# --------------------------------------------------------------------------------- camera
+class Camera:
+    """Photographs a screen as it really renders, in a headless browser.
+
+    WHY A PICTURE AND NOT ONLY AN ASSERTION. Reading the HTML proves a value reached the
+    page. It does not prove the page can be USED: a note that pushes a button out from
+    under the pointer, a grid that runs off the edge, a control that renders on top of
+    another. Those are the defects that get reported by a person and by nothing else, and
+    a folder of pictures is the cheapest way for a person to check twenty screens without
+    walking twenty screens.
+
+    The session token is reusable and the wizard's state belongs to the PROCESS, not to a
+    browser session -- so a browser handed the token sees exactly what the driver has just
+    set up. That is what makes this possible at all.
+    """
+
+    BROWSERS = [
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    ]
+
+    #: How long one picture is given to appear before it is called missing.
+    PATIENCE = 30
+
+    def __init__(self, into):
+        self.into = Path(into)
+        self.profile = self.into.parent / "browser-profile"
+        self.taken = []
+        self.failed = []
+        self.browser = next((b for b in self.BROWSERS if Path(b).exists()), None)
+        self.why_not = None if self.browser else "no headless browser was found on this machine"
+
+        if self.browser:
+            self.into.mkdir(parents=True, exist_ok=True)
+
+    def take(self, url, token, path, name):
+        """One screen, fetched fresh and drawn."""
+        if not self.browser:
+            return None
+
+        separator = "&" if "?" in path else "?"
+        return self.draw(f"{url.rstrip('/')}{path}{separator}t={token}", name)
+
+    def render(self, page, url, name):
+        """One ANSWER, drawn exactly as it came back.
+
+        WHY THIS EXISTS, and it is the whole reason the choice pictures are worth having.
+
+        Most of this screen's choices are a PREVIEW: the form is posted, the screen comes
+        back showing what that choice would mean, and nothing is saved until Save is
+        pressed. Photographing by fetching the page again therefore photographs the SAVED
+        screen -- so every backend, and every recurrence pattern, produced the identical
+        picture of an unchanged screen.
+
+        Seven byte-identical files, all named after different choices, and every
+        assertion passing: the assertions read the posted ANSWER, and the camera went and
+        looked somewhere else. A picture of the wrong page is worse than no picture,
+        because the folder still says the choice was photographed.
+
+        So the answer is written to a file and drawn from there, with a <base> pointing
+        back at the application so the stylesheet and the scripts still load. What is in
+        the picture is then the same bytes the checks were made against.
+        """
+        if not self.browser:
+            return None
+
+        page = self.rebase(page, url)
+        held = self.into / f"{name}.html"
+        held.write_text(page, encoding="utf-8")
+
+        try:
+            return self.draw(held.resolve().as_uri(), name)
+        finally:
+            held.unlink(missing_ok=True)
+
+    @staticmethod
+    def rebase(page, url):
+        """Points a saved page's relative links back at the running application."""
+        base = f'<base href="{url.rstrip("/")}/">'
+
+        # After <head>, so it applies to everything the page then asks for. A page with
+        # no head is written whole rather than dropped -- an odd page is still evidence.
+        found = re.search(r"<head[^>]*>", page, re.I)
+        return page[: found.end()] + base + page[found.end():] if found else base + page
+
+    def draw(self, address, name, again=False):
+        """One address, drawn into the next numbered file."""
+        into = self.into / f"{len(self.taken) + 1:02d}-{name}.png"
+        into.unlink(missing_ok=True)
+
+        proc = subprocess.Popen(
+            [self.browser, "--headless=new", "--disable-gpu", "--no-sandbox",
+             # TALL ON PURPOSE. Headless Chrome photographs the VIEWPORT, and there is
+             # no full-page flag -- so the window height is the only thing deciding how
+             # much of a long screen is in the picture. At 1400 the classification screen
+             # was cut off two thirds of the way down, which hid the agency block
+             # entirely: the picture looked complete and was missing the part somebody
+             # had just changed. A short screen costs some white space; a long one cut
+             # off costs the evidence.
+             "--hide-scrollbars", "--window-size=1400,2800",
+
+             # A profile of its own. Successive headless launches sharing the default
+             # one contend for its lock, and a browser that cannot open its profile
+             # draws nothing and says nothing about why.
+             f"--user-data-dir={self.profile}",
+             f"--screenshot={into}", address],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # WAIT FOR THE FILE, not for the process.
+        #
+        # Measured, after twenty-six pictures came back empty with no error anywhere:
+        # the browser DETACHES on Windows. The thing Popen is holding exits almost at
+        # once, long before a screenshot is written, so waiting on it proves nothing and
+        # reports success on a picture that does not exist yet.
+        #
+        # The file appearing is the only honest signal that the picture was taken.
+        for _ in range(int(self.PATIENCE * 10)):
+            if into.exists() and into.stat().st_size > 0:
+                break
+
+            time.sleep(0.1)
+
+        # And then the browser goes, whether or not it decided to leave. This
+        # application holds a presence connection open for as long as a page is up, so a
+        # headless browser on it may never conclude the page has finished loading.
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+        if into.exists() and into.stat().st_size > 0:
+            self.taken.append(into)
+            return into
+
+        # ONE MORE TRY before calling it missed. Measured: a cold profile on a machine
+        # that has just spent four minutes running the mutation sweep can take longer to
+        # draw the first picture than the whole patience allows, and a first picture is
+        # exactly what this is. A second attempt costs a few seconds and is the
+        # difference between a report that is true and one that is true most of the time.
+        if not again:
+            return self.draw(address, name, again=True)
+
+        self.failed.append(name)
+        return None
+
+    def twins(self):
+        """Groups of pictures that came out byte-for-byte identical.
+
+        A picture is supposed to be of the thing it is named after. When two of them
+        match exactly, one of two things is true and both are worth knowing: either the
+        screen genuinely does not change for that choice, or -- far more likely -- the
+        camera was pointed somewhere the choice had not reached.
+
+        That is not a guess. Seven pictures came out identical here, named for three
+        backends and four recurrence patterns, while every assertion passed: the checks
+        read the posted answer and the camera fetched the screen again. Nothing else in
+        the run could have said so.
+
+        Reported, never failed on. Two screens that really are identical are a fact about
+        the application, not a defect in it.
+        """
+        import hashlib
+
+        seen = {}
+
+        for picture in self.taken:
+            fingerprint = hashlib.sha256(picture.read_bytes()).hexdigest()
+            seen.setdefault(fingerprint, []).append(picture.name)
+
+        return [names for names in seen.values() if len(names) > 1]
+
+
+# ------------------------------------------------------------------------------ journeys
+class Walk:
+    """One journey through the application, with what it checked recorded as it goes."""
+
+    def __init__(self, app, name, camera=None):
+        self.app = app
+        self.name = name
+        self.camera = camera
+        self.errors_seen = []
+        self.checks = []
+        self.failures = []
+
+        # Things worth saying that are not failures: a setting the code models and no
+        # screen exposes is a decision to look at, not a defect to fail on.
+        self.notes_only = []
+
+    def check(self, claim, ok, detail=""):
+        self.checks.append(claim)
+
+        if not ok:
+            self.failures.append(f"{claim}{(' -- ' + detail) if detail else ''}")
+
+        return ok
+
+    def no_errors(self, page, where):
+        bad = notes(page, "error")
+
+        # Kept as well as checked, so the run can say what went wrong ACROSS the whole
+        # application rather than only which journey stopped.
+        for _, body in bad:
+            self.errors_seen.append(f"{where}: {body}")
+
+        return self.check(f"{where}: no error", not bad, "; ".join(b for _, b in bad))
+
+    def shot(self, path, name):
+        """Fetches a screen, photographs it, and checks it for errors while it is there."""
+        page = self.app.get(path)
+        self.no_errors(page, f"{name} as rendered")
+
+        if self.camera is not None:
+            self.camera.take(self.app.url, self.app.token, path, name)
+
+        return page
+
+    def picture(self, page, name):
+        """Photographs an answer already in hand -- the one the checks were made against.
+
+        For anything the application answers with rather than saves. Fetching the screen
+        again would photograph what is stored, which for a preview is a different screen
+        than the one being checked.
+        """
+        self.no_errors(page, f"{name} as rendered")
+
+        if self.camera is not None:
+            self.camera.render(page, self.app.url, name)
+
+        return page
+
+    # ----------------------------------------------------------------- the shared opening
+    def sign_in(self):
+        page = self.app.get("/")
+        page = self.app.post("/?handler=SignIn", [
+            ("__RequestVerificationToken", token_of(page)),
+            ("Ori", ORI), ("Key", ""), ("EndpointUrl", ENDPOINT)])
+
+        return self.check(
+            "signed in", any(k == "ok" for k, _ in notes(page)),
+            "; ".join(b for _, b in notes(page)))
+
+    def choose(self, kind):
+        page = self.app.get("/Source")
+        page = self.app.post("/Source", [
+            ("__RequestVerificationToken", token_of(page)), ("kind", kind)])
+        return page
+
+    def connect(self, dsn):
+        page = self.app.get("/OdbcConnect")
+        page = self.app.post("/OdbcConnect", [
+            ("__RequestVerificationToken", token_of(page)),
+            ("DataSourceName", dsn), ("ConnectionString", f"DSN={dsn}"),
+            ("AuthMode", "Windows")])
+
+        return self.no_errors(page, "connect")
+
+    def run_query(self, sql, table):
+        page = self.app.get("/OdbcQuery")
+        page = self.app.post("/OdbcQuery?handler=Run", [
+            ("__RequestVerificationToken", token_of(page)),
+            ("Sql", sql), ("SelectedTable", table)])
+
+        headers, rows = grid(page)
+        self.check("the query returned columns", bool(headers), str(headers))
+        self.check("the query returned rows", bool(rows))
+
+        return page, headers, rows
+
+    def classify(self, mapping, several=False, agency_column=None):
+        page = self.app.get("/Classify")
+        fields = [("__RequestVerificationToken", token_of(page))]
+
+        for field, column in mapping.items():
+            fields.append((f"Assignments[{field}]", column))
+
+        if several:
+            fields.append(("SeveralAgencies", "true"))
+            fields.append(("AgencyColumn", agency_column or ""))
+
+        page = self.app.post("/Classify", fields)
+        return page
+
+    def schedule(self, backend=None, daily=None, pattern=None, key=None, action=None):
+        """Sets the schedule and reads back what the screen then shows."""
+        page = self.app.get("/Schedule")
+        current = settings()
+
+        fields = [
+            ("__RequestVerificationToken", token_of(page)),
+            ("Backend", backend or current["ScheduleBackend"][0]),
+            ("DailyRange", daily or current["DataRange"][0]),
+            ("Pattern", pattern or current["RecurrencePattern"][0]),
+            ("Key", key or current["WindowKey"][0]),
+            # Required, and deliberately starting on nothing -- it goes into every batch
+            # the agency ever sends, so the screen refuses to assume one. A driver that
+            # does not send it is checking a screen that is refusing it.
+            ("Action", action or current["BatchAction"][0]),
+            ("EveryHours", "4"),
+            ("WindowStart", "06:00"),
+            ("WindowEnd", "22:00"),
+            ("DayOfMonth", "1"),
+            ("RunTimes", "02:00"),
+            ("DaysOfWeek", "Monday"),
+        ]
+
+        return self.app.post("/Schedule", fields)
+
+
+def walk_odbc(app, dsn, several, camera=None):
+    """The database route, with or without an agency split."""
+    walk = Walk(app, f"odbc, {'several agencies' if several else 'one agency'}", camera)
+
+    if not walk.sign_in():
+        return walk
+
+    # Photographed by the first journey only. Both journeys cross these screens
+    # identically, and a second copy of each under a second name is noise in a folder
+    # somebody is meant to be able to scroll.
+    if not several:
+        walk.shot("/Source", "source-choice")
+
+    walk.choose("Odbc")
+
+    if not several:
+        walk.shot("/OdbcConnect", "odbc-connect")
+
+    walk.connect(dsn)
+
+    sql = ("SELECT [LWMAIN].[CASE_NBR], [LWMAIN].[OFFENSE_DESC], [LWMAIN].[OCC_DTTM], "
+           "[LWMAIN].[ADDR_FULL], [LWMAIN].[INC_TIME], [LWMAIN].[ORI], "
+           "[LWMAIN].[AGENCY_NAME] FROM [LWMAIN]")
+
+    page, headers, rows = walk.run_query(sql, "LWMAIN")
+    walk.shot("/OdbcQuery", f"query-{'several' if several else 'one'}")
+
+    # Every selected column carries a value. A column that comes back blank in every row
+    # is what a `time` column did for two releases, taking the agency column with it.
+    for column in ("ORI", "AGENCY_NAME", "INC_TIME"):
+        if column in headers:
+            at = headers.index(column)
+            filled = sum(1 for r in rows if at < len(r) and r[at])
+            walk.check(f"{column} carries values", filled > 0, f"{filled} of {len(rows)} rows")
+
+    page = walk.classify({
+        "ReportNumber": "CASE_NBR",
+        "Crime": "OFFENSE_DESC",
+        "FirstDateTime": "OCC_DTTM",
+        "Address": "ADDR_FULL",
+    }, several=several, agency_column="ORI" if several else None)
+
+    walk.no_errors(page, "classify")
+
+    page = walk.shot("/Classify", f"classify-{'several' if several else 'one'}")
+
+    # THE STEP INTO A SPLIT IS OPTED INTO, and this is the check that says so.
+    #
+    # The agency column on this screen is filled in from the analysis whether or not
+    # anybody asked for a split, so the button through to the agencies screen used to be
+    # live on any source carrying an ORI column -- and the agencies screen proposes a
+    # column of its own and pulls the agencies out of the data. An engineer who ticked
+    # nothing could walk into a multi-agency setup. By default every incident goes up
+    # under the ORI signed in with.
+    dead = is_disabled(page, "agency-set-up")
+
+    walk.check("the set-up-agencies button is on the classification screen",
+               dead is not None, "no button with that id")
+
+    walk.check(
+        f"the set-up-agencies button is {'live' if several else 'dead'} here",
+        dead is (not several), f"disabled={dead}")
+
+    if not several:
+        # What the assignment actually produced, which is the screen the engineer reads
+        # to decide the mapping is right before anything is ever uploaded.
+        walk.shot("/Preview", "preview-mapped")
+
+    if several:
+        page = walk.shot("/Agencies", "agencies-pulled")
+        walk.check("the agencies screen opens on the identifier",
+                   selected(page, "Column") == "ORI", str(selected(page, "Column")))
+
+        headers, agency_rows = grid(page)
+        found = [r for r in agency_rows if r and any(c for c in r)]
+        walk.check("the agencies are pulled from the data", len(found) > 1, f"{len(found)} rows")
+
+        walk.check("a way back exists", "Common_Back" in page or ">Back<" in page)
+        walk.no_errors(page, "agencies")
+
+        # TWO AGENCY IDS UNDER ONE ORI, which is the setup that was reported and the one
+        # the preview has to be able to show. Both use the signed-in ORI, because that is
+        # the only one this run has a key for -- and a key is required before an agency
+        # can be saved, which is the point of that rule.
+        # READ FROM THE INPUTS, not from the cell text. The agency grid is a grid of
+        # BOXES, so stripping tags out of a cell gives an empty string and the walk
+        # posted no rows at all while the screen said six agencies were saved.
+        values = re.findall(r'name="Values\[\d+\]" value="([^"]+)"', page)[:2]
+
+        if len(values) >= 2:
+            page = app.get("/Agencies")
+
+            saved = app.post("/Agencies", [
+                ("__RequestVerificationToken", token_of(page)),
+                ("Column", "ORI"),
+                # INDEXED, the way the screen names them. The grid posts Values[0],
+                # Oris[0] and so on -- a flat list binds to nothing and the save quietly
+                # does nothing at all.
+                *[(f"Values[{i}]", v) for i, v in enumerate(values)],
+                *[(f"Oris[{i}]", ORI) for i in range(len(values))],
+                *[(f"Keys[{i}]", "") for i in range(len(values))],
+                *[(f"Include[{i}]", "true") for i in range(len(values))],
+            ])
+
+            walk.no_errors(saved, "agencies after saving two ids under one ORI")
+
+            # AFTER the agencies are set up, because that is when the preview has
+            # anything to split. Photographed here for the same reason: before it, the
+            # screen is correctly showing one grid and a picture of it proves nothing.
+            page = walk.shot("/Preview", "preview-per-agency")
+
+            walk.check("the preview names the ORI each upload goes to",
+                       "Uploading under" in page, "no ORI heading on the preview")
+
+            walk.check("the preview names each agency separately",
+                       page.count("Agency ") > 1, "the agencies are not shown one by one")
+
+    return walk
+
+
+def walk_settings(app, dsn, camera=None):
+    """Every schedule backend, range, pattern and mode, set and read back."""
+    walk = Walk(app, "every schedule setting", camera)
+
+    if not walk.sign_in():
+        return walk
+
+    walk.choose("Odbc")
+    walk.connect(dsn)
+    walk.run_query("SELECT [LWMAIN].[CASE_NBR], [LWMAIN].[OCC_DTTM] FROM [LWMAIN]", "LWMAIN")
+    walk.classify({"ReportNumber": "CASE_NBR", "FirstDateTime": "OCC_DTTM"})
+
+    offered = settings()
+
+    # WHAT THE SCREEN OFFERS, read off the screen -- then compared with what the code
+    # models. Walking the enum alone reported SystemTray as a defect; it is not one, it
+    # is a backend the tray sets for itself and this screen has never offered. Two
+    # different facts, and the useful check is the DIFFERENCE between them.
+    on_screen = radio_values(app.get("/Schedule"), "Backend")
+
+    walk.check("the schedule screen offers backends at all", bool(on_screen))
+
+    for backend in on_screen:
+        walk.check(f"backend {backend} is one the code has",
+                   backend in offered["ScheduleBackend"],
+                   "the screen offers a backend the enum does not have")
+
+        page = walk.schedule(backend=backend)
+        shown = radio_chosen(page, "Backend") or selected(page, "Backend")
+        walk.check(f"backend {backend} is kept", shown == backend, f"screen shows {shown}")
+
+        # A picture of each choice, because "does the last screen make sense for THIS
+        # backend" is a question a person answers by looking, not by reading HTML.
+        #
+        # Of the ANSWER. This form previews rather than saves, so fetching the screen
+        # again would photograph the saved backend every time -- which it did, three
+        # identical pictures under three different names.
+        walk.picture(page, f"backend-{backend.lower()}")
+        finish = walk.shot("/Finish", f"finish-{backend.lower()}")
+        walk.check(f"backend {backend} reaches the last screen",
+                   "Finish" in heading(finish) or notes(finish, "error") == [],
+                   heading(finish))
+
+    unreachable = [b for b in offered["ScheduleBackend"] if b not in on_screen]
+
+    if unreachable:
+        walk.notes_only.append(
+            f"the schedule screen offers {len(on_screen)} of {len(offered['ScheduleBackend'])} "
+            f"backends; {', '.join(unreachable)} "
+            f"{'exists' if len(unreachable) == 1 else 'exist'} in the code and "
+            f"{'is' if len(unreachable) == 1 else 'are'} not on it")
+
+    for daily in offered["DataRange"]:
+        page = walk.schedule(daily=daily)
+        walk.check(f"range {daily} is kept", selected(page, "DailyRange") == daily,
+                   f"screen shows {selected(page, 'DailyRange')}")
+
+    for pattern in offered["RecurrencePattern"]:
+        page = walk.schedule(pattern=pattern)
+        walk.check(f"pattern {pattern} is kept", selected(page, "Pattern") == pattern,
+                   f"screen shows {selected(page, 'Pattern')}")
+
+        # Each pattern shows a different set of controls -- times, an hour gap, days of
+        # the week, a day of the month -- and each was laid out by hand. A picture is how
+        # a control drawn on top of another gets noticed.
+        walk.picture(page, f"pattern-{pattern.lower()}")
+
+    for key in offered["WindowKey"]:
+        page = walk.schedule(key=key)
+        walk.check(f"window key {key} is kept", selected(page, "Key") == key,
+                   f"screen shows {selected(page, 'Key')}")
+
+    # The batch action, which goes into every upload the agency ever sends and is the one
+    # setting on this screen that starts on nothing. Both values walked and photographed.
+    for action in offered["BatchAction"]:
+        page = walk.schedule(action=action)
+        walk.check(f"action {action} is kept", selected(page, "Action") == action,
+                   f"screen shows {selected(page, 'Action')}")
+
+        walk.picture(page, f"action-{action}")
+
+    # THE IMPORT MODE IS GONE FROM THE SCREEN, and that is what is checked now.
+    #
+    # This walk used to report it as a finding: an enum of five members behind a hidden
+    # input pinned to one of them, four of them unreachable. That was acted on -- the
+    # enum was retired in 1.48.0 and the value became a constant -- so what is left to
+    # prove is that the screen carries no field for it at all. A hidden input that
+    # survives a removal still posts, and still binds.
+    page = walk.schedule()
+
+    walk.check("the schedule screen has no import mode field",
+               hidden_value(page, "Mode") is None
+               and radio_chosen(page, "Mode") is None
+               and selected(page, "Mode") is None,
+               "the screen still carries a Mode field")
+
+    # The screen that writes the batch files. It is the LAST STEP of the batch-file
+    # route now rather than a tool off to one side, so it is walked as a screen rather
+    # than merely photographed.
+    page = walk.shot("/Automation", "automation")
+
+    walk.check("the batch-file screen names a file to write",
+               'name="Name"' in page, "no name box")
+
+    # CLOSING TO THE TASKBAR IS THE END OF THE ROUTE, and dead until there is something
+    # to leave behind. Nothing has been written in this walk, so it must be dead here --
+    # a live one would mean somebody could park the application with an empty folder, a
+    # schedule nothing runs, and no file to point their own scheduler at.
+    dead = is_disabled(page, "close-to-tray")
+
+    walk.check("the batch-file screen offers closing to the taskbar",
+               dead is not None, "no button with that id")
+
+    walk.check("closing to the taskbar is dead until a file is written",
+               dead is True, f"disabled={dead}")
+
+    return walk
+
+
+def walk_every_screen(app, camera=None):
+    """Every screen answers at all, which is the floor everything else stands on."""
+    walk = Walk(app, "every screen answers", camera)
+    walk.sign_in()
+
+    pages = sorted(
+        p.stem for p in (ROOT / "src/CommunityUploader.Web/Pages").glob("*.cshtml")
+        if not p.stem.startswith("_") and p.stem not in ("Error", "Exit"))
+
+    # WHAT THIS WALK IS ACTUALLY LOOKING AT. Nothing has been set up yet, so a screen
+    # further along than the setup has reached sends you back to the one you are on --
+    # which is the wizard working. Asking for eight of them and photographing each answer
+    # produced eight identical pictures filed under eight different screens' names.
+    #
+    # A picture of the wrong screen under the right name is a lie a folder tells quietly,
+    # so each distinct screen is photographed ONCE and the rest are counted as what they
+    # are: the wizard holding its order. The screens themselves are photographed properly
+    # by the journeys that actually reach them.
+    photographed = {}
+    turned_back = []
+
+    for name in pages:
+        path = "/" + name if name != "Index" else "/"
+
+        try:
+            page = app.get(path)
+            walk.check(f"/{name} answers", "<html" in page.lower(), heading(page))
+
+            where = heading(page)
+
+            if where in photographed:
+                turned_back.append(name)
+                walk.no_errors(page, f"/{name}")
+            else:
+                photographed[where] = name
+
+                # Named for where it LANDED. Asking for /Agencies before anything is set
+                # up lands on the sign-in screen, and filing that picture under
+                # "screen-agencies" is the same lie as photographing the wrong screen --
+                # the file name is what somebody reads before they open it.
+                walk.picture(page, f"landed-{slug(where)}")
+        except Exception as ex:
+            walk.check(f"/{name} answers", False, type(ex).__name__)
+
+    # And that is a rule, not an accident: a screen ahead of the setup must land you on a
+    # screen, never on an error and never on a blank.
+    walk.check("a screen ahead of the setup lands on one of the screens already reached",
+               all(name not in photographed.values() for name in turned_back),
+               "a screen was both photographed and turned back")
+
+    if turned_back:
+        walk.notes_only.append(
+            f"{len(turned_back)} screen(s) ahead of the setup sent the walk back to a "
+            f"screen it had already reached: {', '.join(sorted(turned_back))}")
+
+    return walk
+
+
+# --------------------------------------------------------------------------------- report
+def main():
+    folder = None
+    dsn = "Crime"
+    show = False
+    args = sys.argv[1:]
+
+    for i, arg in enumerate(args):
+        if arg == "--dsn" and i + 1 < len(args):
+            dsn = args[i + 1]
+        elif arg == "--show":
+            show = True
+        elif not arg.startswith("--") and (i == 0 or args[i - 1] != "--dsn"):
+            folder = arg
+
+    if folder is None:
+        raise SystemExit(__doc__)
+
+    offered = settings()
+
+    print("what the application offers, read from its own source:")
+    for name, members in offered.items():
+        print(f"  {name:<18} {len(members):>2}  {', '.join(members)}")
+
+    missing = [name for name, members in offered.items() if not members]
+
+    if missing:
+        # Not skipped. A settings list that came back empty means the parser and the
+        # source have drifted, and walking "every setting" while knowing about none of
+        # them is the kind of pass that is worse than a failure.
+        raise SystemExit(f"\nthese settings could not be read from the source: {missing}")
+
+    app = App(folder, show=show)
+    shots = ROOT / "build" / "journeys" / "screens"
+    camera = Camera(shots)
+    walks = []
+
+    if camera.why_not:
+        print(f"\nno pictures will be taken: {camera.why_not}")
+
+    try:
+        app.start()
+        print(f"\nrunning at {app.url}")
+        print("the application window is open; the walk drives it from here\n" if show
+              else "no window (add --show to watch it); the screens are photographed "
+                   "instead\n")
+
+        walks.append(walk_every_screen(app, camera))
+        walks.append(walk_odbc(app, dsn, several=False, camera=camera))
+        walks.append(walk_odbc(app, dsn, several=True, camera=camera))
+        walks.append(walk_settings(app, dsn, camera))
+    finally:
+        app.stop()
+
+    print()
+    checked = failed = 0
+
+    for walk in walks:
+        checked += len(walk.checks)
+        failed += len(walk.failures)
+
+        mark = "ok  " if not walk.failures else "FAIL"
+        print(f"{mark} {walk.name}: {len(walk.checks)} checks, {len(walk.failures)} failed")
+
+        for failure in walk.failures:
+            print(f"       {failure}")
+
+        for note in walk.notes_only:
+            print(f"       note: {note}")
+
+    print("\n" + "=" * 78)
+    print(f"{checked - failed} of {checked} checks passed across {len(walks)} journeys")
+
+    # REPORTED, NEVER AVERAGED INTO THE WALK. A picture that could not be taken is a
+    # fact about this machine -- a browser that would not start, a profile it could not
+    # open, a screen that took longer to draw than it was given. Counting it as a failed
+    # check put that in the same number as "the application is broken", which is the
+    # averaging this whole assessment exists to refuse. It also made the sweep flaky:
+    # one slow screenshot after a long mutation run failed the Journeys verdict for a
+    # product that was working.
+    if camera.taken:
+        print(f"{len(camera.taken)} screens photographed into {shots}")
+
+        for names in camera.twins():
+            print(f"       note: these pictures are identical: {', '.join(names)}")
+    elif camera.why_not:
+        print(f"no screens were photographed: {camera.why_not}")
+
+    if camera.failed:
+        print(f"       NOT PHOTOGRAPHED ({len(camera.failed)}): {', '.join(camera.failed)}")
+        print("       The walk still ran. These are screens the camera could not draw,")
+        print("       which says something about this machine and nothing about the app.")
+
+    # EVERY error seen anywhere, gathered. A failing journey says where it stopped;
+    # this answers the question actually asked -- are there errors ANYWHERE in the
+    # application -- and a screen can show one without failing a check.
+    everywhere = [seen for walk in walks for seen in walk.errors_seen]
+
+    if everywhere:
+        print(f"\n{len(everywhere)} error message(s) appeared while walking:")
+
+        for seen in everywhere:
+            print(f"  {seen}")
+    else:
+        print("No screen showed an error anywhere in the walk.")
+
+    if failed:
+        raise SystemExit(1)
+
+    print("Every route and every setting the application offers was walked and read back.")
+
+
+if __name__ == "__main__":
+    main()

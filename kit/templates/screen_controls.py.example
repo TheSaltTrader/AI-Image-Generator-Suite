@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""Every control on every screen, read out of the screens themselves.
+
+WHY THIS EXISTS
+---------------
+The clicking sweep walked the journeys somebody thought of. That is worth a great deal
+and it is not an answer to "is every facet tested", because the list of journeys is a
+hand-written list -- the exact thing this whole assessment refuses everywhere else.
+
+So the subjects are enumerated from the artefact: every button, link, box, list and tick
+the application renders. The walk records what it touched, and what it did not touch is
+COUNTED AND NAMED rather than quietly left out. A control that is deliberately never
+clicked is declared with a reason, in the open, where somebody can disagree with it.
+
+    python tools/screen_controls.py            what the screens offer, by screen
+    python tools/screen_controls.py --ids      one identifier per line, for a walk to use
+
+WHAT COUNTS AS A CONTROL
+------------------------
+Anything a person can press, type into or choose from. Hidden inputs are not controls --
+nobody clicks one -- but they are not ignored either: a hidden field beside a checkbox of
+the same name is the pair that cost a release, and that pairing is checked by its own
+test rather than by pretending the hidden is something to click.
+"""
+
+import json
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+PAGES = ROOT / "src" / "CommunityUploader.Web" / "Pages"
+LEDGER = ROOT / "tools" / "clicking-ledger.json"
+RESX = ROOT / "src" / "CommunityUploader.Web" / "Resources" / "SharedResource.resx"
+
+#: Every resource key the application has, read from the file the screens render from.
+#: A quoted word inside a Razor fragment is a label only if it is really one of these --
+#: which is what stops an ordinary attribute value being mistaken for a button's words.
+KEYS = set(re.findall(r'<data name="([^"]+)"', RESX.read_text(encoding="utf-8-sig")))
+
+#: Class names that say how a button LOOKS, not which button it is. Useless as an
+#: identity, because a screen has several of each.
+DECORATION = {"btn", "small", "big", "primary", "secondary", "danger", "warn",
+              "linklike", "link-button", "wide", "quiet"}
+
+
+class Control:
+    """One thing on one screen that a person can act on."""
+
+    def __init__(self, screen, kind, name, labels=None, text=None):
+        self.screen = screen
+        self.kind = kind
+        self.name = name
+
+        # THE WORDS AS WRITTEN, whatever they turn out to be. A button labelled with a
+        # file name has no resource key and is not therefore a button with nothing on
+        # it -- and a census that says "nothing says what this does" about a button
+        # that plainly does is a census nobody believes twice.
+        self.text = (text or "").strip() or None
+
+        # LABELS, plural. A button can say one of two things -- Finish writes either
+        # "Install" or "Write the batch file" from the same tag -- and a reader that
+        # took the first found neither, because neither was written the plain way.
+        self.labels = [labels] if isinstance(labels, str) else list(labels or [])
+
+    @property
+    def label(self):
+        """The words to press it by, when it has words."""
+        return self.labels[0] if self.labels else None
+
+    @property
+    def aliases(self):
+        """Every name this control answers to.
+
+        A button has two: the handler it posts to, which is what tells two buttons on one
+        form apart, and the resource key of what it says, which is what a walk presses it
+        by. Matching on one of them only would report a control as never clicked because
+        the walk knew it by its other name.
+        """
+        names = {name for name in [self.name, *self.labels] if name}
+
+        # A control inside a grid is written once with a Razor index -- Values[@i] --
+        # and rendered once per row as Values[0], Values[1]. The walk touches a row; the
+        # census names the template. Without this they never meet and every control in
+        # every grid reads as never clicked.
+        for name in list(names):
+            if "[@" in name:
+                names.add(name[:name.index("[@")] + "[]")
+
+        return names
+
+    @property
+    def id(self):
+        """How this control is named everywhere: Screen.kind:name."""
+        return f"{self.screen}.{self.kind}:{self.name}"
+
+    def __repr__(self):
+        return self.id
+
+
+def _resources(fragment):
+    """Every resource key in a Razor fragment, in the order they appear.
+
+    THE READER THIS REPLACES required T[" and a closing bracket, so it found nothing in
+    T[Model.WritesABatchFile ? "Finish_WriteBatch" : "Finish_Install"] or in
+    T["Odbc_TickedCount", a, b] -- and those buttons were reported as "unnamed", which
+    is a control nothing can address and therefore a control nothing ever clicked.
+
+    Any quoted word that is really a key in the resource file counts. Checking against
+    the file is what keeps an ordinary attribute value from being taken for a label.
+    """
+    return [word for word in re.findall(r'"([A-Za-z][A-Za-z0-9_]*)"', fragment)
+            if word in KEYS]
+
+
+def _marker(tag):
+    """A class that says WHICH button this is, when nothing else names it."""
+    found = re.search(r'class="([^"]*)"', tag)
+
+    if not found:
+        return None
+
+    for word in found.group(1).split():
+        if word not in DECORATION and "@" not in word:
+            return word
+
+    return None
+
+
+def controls_in(path):
+    """Every control one screen declares."""
+    screen = path.stem
+    markup = path.read_text(encoding="utf-8-sig")
+    found = []
+
+    # Buttons, named by the handler they post to when they have one -- that is what
+    # tells two buttons on one form apart -- and by what they say otherwise.
+    # FOUR WAYS TO BE NAMED, in the order that tells buttons apart most reliably: the
+    # handler it posts to, the words it says, the field it posts under, and last the
+    # class that says which one it is. Only the first two existed, and every button with
+    # neither came out "unnamed" -- four of them, on four different screens, all of them
+    # reported as never clicked because none of them could be addressed at all.
+    for tag, inner in re.findall(r"(<button\b[^>]*>)(.*?)</button>", markup, re.S):
+        handler = re.search(r'asp-page-handler="([^"]+)"', tag)
+        says = _resources(inner) or _resources(tag)
+        field = re.search(r'\bname="([^"]+)"', tag)
+        marker = _marker(tag)
+
+        name = (handler.group(1) if handler
+                else says[0] if says
+                else field.group(1) if field
+                else marker or "unnamed")
+
+        found.append(Control(screen, "button", name, says, text=inner))
+
+    # Links that are dressed as buttons. A link that looks like a button is one.
+    #
+    # ITS WORDS ARE READ TOO. Only the opening tag was read before, so every link came
+    # back with no label at all -- which made four of them unpressable by a walk that
+    # presses things by what they say, and unexplainable by a guide that says what each
+    # control does.
+    for tag, inner in re.findall(r'(<a\b[^>]*class="[^"]*\bbtn\b[^"]*"[^>]*>)(.*?)</a>',
+                                 markup, re.S):
+        page = re.search(r'asp-page="([^"]+)"', tag)
+        found.append(Control(screen, "link", page.group(1) if page else "unnamed",
+                             _resources(inner) or _resources(tag), text=inner))
+
+    # Boxes and ticks. Hidden fields are not controls: nobody clicks one.
+    for tag in re.findall(r"<input\b[^>]*>", markup):
+        if 'type="hidden"' in tag:
+            continue
+
+        name = re.search(r'(?:name|asp-for)="([^"]+)"', tag)
+
+        if name is None:
+            continue
+
+        kind = "tick" if 'type="checkbox"' in tag or 'type="radio"' in tag else "box"
+        found.append(Control(screen, kind, name.group(1)))
+
+    # Lists.
+    for tag in re.findall(r"<select\b[^>]*>", markup):
+        name = re.search(r'(?:name|asp-for)="([^"]+)"', tag)
+
+        if name is not None:
+            found.append(Control(screen, "list", name.group(1)))
+
+    return found
+
+
+def every_control():
+    """Every control the application renders, on every screen."""
+    found = []
+
+    for path in sorted(PAGES.glob("*.cshtml")):
+        if path.stem.startswith("_"):
+            continue
+
+        found.extend(controls_in(path))
+
+    # One entry per identifier. A grid renders the same control once per row; the walk
+    # clicks one of them, and clicking all six proves nothing the first did not.
+    seen = {}
+
+    for control in found:
+        seen.setdefault(control.id, control)
+
+    return list(seen.values())
+
+
+def declared():
+    """Controls deliberately never clicked, and why, read from the ledger."""
+    if not LEDGER.exists():
+        return {}
+
+    return {key: why for key, why in json.loads(LEDGER.read_text(encoding="utf-8")).items()
+            if not key.startswith("_")}
+
+
+def main():
+    controls = every_control()
+
+    if "--ids" in sys.argv:
+        for control in controls:
+            print(control.id)
+
+        return 0
+
+    excused = declared()
+    by_screen = {}
+
+    for control in controls:
+        by_screen.setdefault(control.screen, []).append(control)
+
+    for screen, on_it in by_screen.items():
+        print(f"\n{screen}  ({len(on_it)})")
+
+        for control in on_it:
+            why = excused.get(control.id)
+            print(f"    {control.kind:<7} {control.name:<28}"
+                  + (f"  declared: {why}" if why else ""))
+
+    print(f"\n{len(controls)} controls on {len(by_screen)} screens; "
+          f"{len(excused)} declared as never clicked")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

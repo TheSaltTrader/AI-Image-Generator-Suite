@@ -1,5 +1,19 @@
 # Changelog — AI Image Generator Suite
 
+## v2.2.0 — 2026-09-08
+- **New app icon** — an artist drawing (a pencil sketching on a canvas). It
+  is the desktop shortcut, taskbar and window icon from this release on.
+- **Security hardening (OWASP pass).** The download and install paths were
+  re-reviewed against the OWASP Top 10 and tightened: the face-swap model is
+  now verified against a pinned SHA-256 before it is used, the face-swap
+  engine is pinned to a known version, the installer's archive extraction got
+  the same anti-path-traversal guard the rest of the app already had, and
+  model downloads are refused unless they are HTTPS.
+- **Full validation run.** Added the Lodestone assessment kit (`kit/`): a
+  census that runs each test suite and names what it could not check rather
+  than averaging it into a score. This release: 7 suites pass (414 checks, 0
+  failures); the live-engine, GPU and journey checks are named as not run.
+
 ## v2.1.0 — 2026-09-08
 - **The Clone Tool actually looks like the person now.** The old face
   swap re-rendered the face with a huge editor model (Qwen/Kontext) that

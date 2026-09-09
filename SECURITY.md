@@ -28,15 +28,41 @@ responses, and the local engine port.
 | A09 | Logging Failures | ✅ Pass | `engine.log` holds engine stdout only; the API key is never logged or echoed. PNG metadata embeds prompts/settings by design (user-visible feature). |
 | A10 | SSRF | ✅ Pass | API hosts are hard-coded; the CivitAI model id is regex-extracted digits; the returned `downloadUrl` must be HTTPS. The app never fetches user-typed URLs directly. |
 
+## v2.2.0 re-review (2026-09-08) — the download/install surface
+
+The v1.0.0 table above predates the self-updater, the engine/IP-Adapter
+installs, and the face-swap engine, which added download and install paths.
+Re-reviewed against the OWASP Top 10. Design is unchanged and sound
+(loopback engine, safetensors-only, DPAPI key, no `shell=True`, fixed HTTPS
+hosts); the only regressions were in **A08 Software & Data Integrity**, now
+addressed:
+
+- **inswapper_128.onnx is SHA-256 pinned** (`INSWAPPER_SHA256`) and verified
+  before it is kept or loaded — a retargeted/tampered host cannot substitute
+  a different file.
+- **insightface is pinned to `==2.0`** in the engine-venv install (no
+  floating version pulling arbitrary setup code).
+- **`setup_installer.py` extraction now has the same zip-slip guard**
+  (`_safe_extractall`) the runtime extractors in `self_update.py` and
+  `engine_files.py` already carried.
+- **Model downloads are HTTPS-enforced** — `download_model_update` refuses a
+  non-`https://` URL, matching the CivitAI and self-update paths.
+
+Self-update itself already gates on a valid PE header + a strictly-newer
+version and rolls back a half-failed swap; every zip extract is path-checked.
+
 ## Residual risks (accepted, documented)
 
 1. **Unauthenticated local engine** — inherent to ComfyUI; loopback-only.
-2. **No model checksums** — HTTPS + trusted hosts only; add hash pinning if
-   supply-chain hardening becomes a priority.
-3. **Unsigned executable** — expect SmartScreen on machines that download
+2. **Unsigned executable** — expect SmartScreen on machines that download
    the release; code-signing would remove this.
-4. **Community models/LoRAs are untrusted content** — safetensors keeps this
+3. **Community models/LoRAs are untrusted content** — safetensors keeps this
    at the image level, not the code level.
+4. **insightface's `buffalo_l` detector auto-downloads** from insightface's
+   own source on first use (the swap model itself is pinned; the detector is
+   not yet). Vendoring it would close this.
+5. **No automated security suite** — the OWASP review is done by hand each
+   release (tracked as the `security-owasp` sweep in the Lodestone kit).
 
 ## Secure-coding notes for contributors
 
