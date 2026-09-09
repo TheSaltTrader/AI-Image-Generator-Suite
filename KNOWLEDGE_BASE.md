@@ -1003,6 +1003,34 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Variations — save/recall a person (v2.7.0).** New subsystem
+  `app/variations_db.py` (`VariationsDB`): a per-install store at
+  `<project>/variations/` = SQLite index `variations.db` + copied image files
+  under `images/` (never referenced in place). A Variation row = name,
+  description, face_path, ref_path, `config` (JSON = `_collect_ui_state()`, the
+  generation recipe), seed. API: add/list/get/delete/`config_of`/export_zip/
+  import_zip (portable across installs; import copies images in under fresh
+  `secrets.token_hex` names so a same-second burst can't collide; zip-slip
+  guarded). UI: a "🧬 More of this person" button in the gallery `brow`
+  (`_save_variation` — saves the SELECTED session image + current
+  `_collect_ui_state()` + that image's seed + a description) and a **Variations
+  section** in the Clone Tool with its OWN enable checkbox `var_enable_var`
+  (page-level, NOT inside clone_body, so it isn't greyed by the clone toggle).
+  `_apply_variation`: `_apply_ui_state(config_of(row))` restores the recipe,
+  then LOCKS identity — swap on, method=faceswap (CLONE_METHODS[0][0]),
+  face_paths=[face], random_seed ON (new pose each run), `_variation_ref` =
+  the full image fed as an SDXL IP-Adapter ref in `_generate` (appended to
+  rag_refs, SDXL-only), and switches to `_best_sdxl_model()` if the model is
+  flux/sd3. `_apply_variation_lock` greys model_dd + clone_method_dd + the face
+  source rows. GOTCHA (fixed): `_refresh_editor_state`->`_apply_clone_enabled`
+  ungreys clone_body children, so it used to un-grey the locked method; fix =
+  `_apply_clone_enabled` re-asserts `_apply_variation_lock()` at its end so the
+  lock always wins regardless of call order. Variation state is SESSION-ONLY
+  (not persisted to settings) by design. Tests: variations_test 18 (Lodestone
+  census: add/list/get/delete-removes-files/unique-names/export-import/
+  zip-slip), update_ui +11 (179). Headless recall path verified end to end.
+  NB the "generate more of the SAME person across new seeds" only holds because
+  the FACE SWAP locks identity — prompt+seed alone give different people.
 - **RAG artifact fix + preset auto-balance + SD3.5 self-heal (v2.6.1).**
   (1) IP-Adapter `end_at` was 1.0, so an embeds map's source photos dragged
   their baked-in lens-flares/watermarks into the final image (glaring after the

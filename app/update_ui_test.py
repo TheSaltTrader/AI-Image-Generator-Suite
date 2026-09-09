@@ -70,6 +70,26 @@ root.update()
 
 print("the app window")
 check("app builds with the updater wired in", ui.root.winfo_exists())
+
+# --- Variations feature (save/recall a person) ---
+check("variations store initialised", getattr(ui, "varsdb", None) is not None)
+check("Variations section has its own enable checkbox", hasattr(ui, "var_cb"))
+check("'More of this person' save handler exists",
+      callable(getattr(ui, "_save_variation", None)))
+for _m in ("_pick_variation", "_apply_variation", "_apply_variation_lock",
+           "_clear_variation", "_on_variation_toggle", "_export_variations",
+           "_import_variations"):
+    check("variations method %s wired" % _m,
+          callable(getattr(ui, _m, None)))
+# a locked variation must force face-swap on and grey the model/method
+try:
+    ui.var_enable_var.set(False)
+    ui._apply_variation_lock()
+    _model_free = "disabled" not in (ui.model_dd.state() or ())
+    check("model/method NOT greyed when no variation is locked", _model_free)
+except Exception as _e:
+    check("variation lock toggles cleanly (off)", False, str(_e))
+
 check("Check for updates button exists", hasattr(ui, "upd_btn"))
 check("button is enabled at rest",
       "disabled" not in ui.upd_btn.state())

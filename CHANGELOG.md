@@ -1,5 +1,23 @@
 # Changelog — AI Image Generator Suite
 
+## v2.7.0 — 2026-09-09
+- **New: Variations — save a person you like and make more of them.** When a
+  batch gives you a great person in one image, select it and press the new
+  **🧬 More of this person** button under the gallery. It saves that image as a
+  *Variation*: the full settings recipe that made it, plus the face and a
+  reference image, plus your description.
+- **Recall a Variation to generate more.** A new **Variations** section in the
+  Clone Tool (its own on/off checkbox) lets you pick a saved person — the app
+  restores that generation's settings and **locks the face + reference** so
+  every Generate makes *more of the same person*. Change the prompt for new
+  scenes; the person stays. It automatically turns on the face swap, switches
+  to a compatible model if needed, and greys the controls that would break the
+  lock, until you switch it off.
+- **Export / import your Variations.** From the Variations picker you can export
+  your whole collection to a `.zip` and import it on another install, so your
+  saved people travel with you. (They reproduce best where the same model/LoRA
+  they were made with is installed.)
+
 ## v2.6.1 — 2026-09-09
 - **Fixed hi-res "add details" adding lens-flares, glare and watermark ghosts.**
   When a RAG map steered a generation, the reference photos' own baked-in
