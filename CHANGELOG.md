@@ -1,5 +1,15 @@
 # Changelog — AI Image Generator Suite
 
+## v2.7.9 — 2026-09-09
+- **The selected clone's image now shows in the Cloning section itself.**
+  Before, picking a saved clone dropped its picture into the **Face Swap**
+  section's "Using:" strip — the wrong place, since Face Swap and Cloning are
+  separate, mutually-exclusive tools. Cloning now has its own **"Using:"**
+  preview: pick a clone and its image appears right there under the picker,
+  and the Face Swap section stays untouched (empty and off). The clone still
+  drives the face swap internally — it just no longer borrows the Face Swap
+  section's controls to do it.
+
 ## v2.7.8 — 2026-09-09
 - **Renamed for clarity:** the "Clone Tool" section is now **Face Swap**, and
   the "Variations" section is now **Cloning** (its saved people are "clones";

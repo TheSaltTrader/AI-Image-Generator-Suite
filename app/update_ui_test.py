@@ -511,6 +511,51 @@ try:
     ui.swap_rag_var.set(True); ui.var_enable_var.set(False)
 except Exception as _e:
     check("Face Swap / Cloning mutual exclusion", False, str(_e))
+
+# a selected clone's image belongs to the Cloning section's OWN "Using:"
+# preview — it must NOT leak into the Face Swap section's face_paths/strip
+try:
+    _cdir = Path(tempfile.mkdtemp())
+    _cface = _cdir / "clone_face.png"; _cref = _cdir / "clone_ref.png"
+    app.Image.new("RGB", (48, 48), (200, 40, 40)).save(_cface)
+    app.Image.new("RGB", (48, 48), (40, 60, 200)).save(_cref)
+    ui.swap_rag_var.set(False); ui.face_paths = []
+    ui.variation_sel = {"id": -1, "name": "tester", "description": "tester",
+                        "face_path": str(_cface), "ref_path": str(_cref),
+                        "config": json.dumps({}), "seed": "",
+                        "created": "20260101000000"}
+    ui.var_enable_var.set(True)
+    ui._apply_variation()
+    root.update()
+    check("the Cloning section has its own 'Using:' preview widget",
+          hasattr(ui, "clone_preview_lab") and hasattr(ui, "clone_preview_name"))
+    check("selecting a clone does NOT put its face in the Face Swap section",
+          ui.face_paths == [], ui.face_paths)
+    check("the clone's face is held by the Cloning section, not Face Swap",
+          ui._variation_face == str(_cface))
+    check("the Cloning 'Using:' names the selected clone",
+          "tester" in ui.clone_preview_name.get())
+    check("the swap draws its face from the clone while Cloning is on",
+          ui._swap_face_source() == [str(_cface)])
+    check("Face Swap stays OFF when a clone is selected (mutually exclusive)",
+          not ui.swap_rag_var.get())
+    # the Face Swap 'Using:' strip must not show the clone image
+    _fs_names = [str(getattr(w, "cget", lambda *_: "")("text"))
+                 for w in _walk(ui.face_using) if w.winfo_class() == "TLabel"]
+    check("the Face Swap 'Using:' strip does not display the clone image",
+          not any("clone_face" in t for t in _fs_names), _fs_names)
+    # turning Cloning off clears the clone preview and its face
+    ui.var_enable_var.set(False); ui._on_variation_toggle()
+    check("turning Cloning off clears the clone face and preview",
+          ui._variation_face is None
+          and ui.clone_preview_name.get() == "no clone selected")
+except Exception as _e:
+    check("clone image lives in the Cloning section, not Face Swap",
+          False, repr(_e))
+finally:
+    ui.swap_rag_var.set(False); ui.var_enable_var.set(False)
+    ui.variation_sel = None; ui._variation_face = None; ui.face_paths = []
+
 check("a Clone method dropdown exists with all three engines",
       hasattr(ui, "clone_method_dd")
       and len(ui.clone_method_dd["values"]) == 3)

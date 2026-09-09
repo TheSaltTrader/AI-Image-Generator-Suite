@@ -1003,6 +1003,30 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Clone image decoupled into the Cloning section (v2.7.9).** USER BUG:
+  "when selecting a clone, the image goes into Face Swap — it should go into
+  its own Using section." Root cause: `_apply_variation` set `self.face_paths =
+  [row["face_path"]]` + `face_source_var="file"`, which fed the clone's photo
+  into the Face Swap section's state and its `face_using` strip (via
+  `_refresh_face_list`). FIX: added `self._variation_face` (the clone's face,
+  held apart from `face_paths`) + a `clone_preview_lab`/`clone_preview_name`
+  "Using:" row inside the Cloning body (`vurow`, row 2 of `vb`), fed by
+  `_update_clone_preview(path)` (keeps a `self._clone_preview_img` ref so Tk
+  doesn't GC it; prefers `ref_path`, falls back to `face_path`). `_apply_variation`
+  now sets `_variation_face`/`_variation_ref` + calls `_update_clone_preview`,
+  and FORCES the Face Swap section empty/off (`face_paths=[]`, `swap_rag=False`,
+  `_refresh_face_list`) so the clone never lands there. `_swap_face_source()`
+  returns `[self._variation_face]` first when Cloning is active (var_enable +
+  variation_sel + _variation_face) — so the swap still runs off the clone's
+  face with the Face Swap checkbox OFF. `_on_variation_toggle` (off),
+  `_on_clone_toggle`, `_on_variation_pick` (none), `_clear_variation`, and the
+  `_create_more` gallery-transient branch all clear/set `_variation_face` +
+  preview instead of touching `face_paths`. The transient "Create more" (no
+  saved clone picked) now builds a transient `variation_sel` dict + enables
+  Cloning rather than turning on Face Swap. `_drop_variation_face` is now dead
+  (kept as a harmless legacy clearer). update_ui 216 (added 8 decoupling
+  checks: clone face not in `face_paths`, `_swap_face_source`==clone face,
+  Face Swap strip doesn't show the clone, off clears preview).
 - **Rename + mutual exclusion + Face Swap independence + rebuild history
   (v2.7.8).** RENAMES (labels only, internal var names unchanged): "CLONE TOOL"
   section -> "FACE SWAP", `swap_cb` text -> "Swap this face…"; "VARIATIONS"

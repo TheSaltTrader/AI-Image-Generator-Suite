@@ -102,7 +102,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.7.8"
+APP_VERSION = "2.7.9"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -3340,7 +3340,9 @@ class App:
             self.varsdb = None
         self.variation_sel = None   # the applied variation row (dict) or None
         self._variation_ref = None  # its full image, fed as an IP-Adapter ref
+        self._variation_face = None  # the clone's face, swapped internally
         self._variation_thumb = None  # keep the Tk thumbnail from being GC'd
+        self._clone_preview_img = None  # Cloning section's own "Using:" thumb
         self._face_from_variation = False  # is the swap face from a clone?
         self.vram_gb = gpu_vram_gb()   # None = no NVIDIA GPU detected
         self._model_fits = {}      # raw name -> fits in VRAM
@@ -4182,6 +4184,16 @@ class App:
                    command=self._export_variations).pack(side="left", padx=(6, 0))
         ttk.Button(vmrow, text="⬇ Import", width=9,
                    command=self._import_variations).pack(side="left", padx=(6, 0))
+        # this section's OWN "Using:" — the clone's image lives here, not in the
+        # Face Swap section
+        vurow = ttk.Frame(vb); vurow.grid(row=2, sticky=W, pady=(2, 2))
+        ttk.Label(vurow, text="Using:", style="Dim.TLabel").pack(side="left")
+        self.clone_preview_lab = ttk.Label(vurow)
+        self.clone_preview_lab.pack(side="left", padx=(6, 0))
+        self.clone_preview_name = StringVar(value="no clone selected")
+        ttk.Label(vurow, textvariable=self.clone_preview_name,
+                  style="Dim.TLabel", wraplength=170).pack(side="left",
+                                                           padx=(6, 0))
         self._refresh_variation_dd()       # populate from the saved store
         self._apply_variation_enabled()    # greyed until the box is ticked
 
@@ -7767,7 +7779,8 @@ class App:
             self.var_enable_var.set(False)
             self.variation_sel = None
             self._variation_ref = None
-            self._drop_variation_face()
+            self._variation_face = None
+            self._update_clone_preview(None)
             self._apply_variation_enabled()
         self._apply_clone_enabled()
         self._refresh_editor_state()
@@ -7864,6 +7877,8 @@ class App:
         if row is None:
             self.variation_sel = None
             self._variation_ref = None
+            self._variation_face = None
+            self._update_clone_preview(None)
             self._apply_variation_lock()
             self.status_var.set("No variation selected.")
         else:
@@ -7885,13 +7900,20 @@ class App:
             if not path or not Path(path).exists():
                 self.status_var.set("That image has no file to make more from.")
                 return
-            # lock the gallery image as the person (transient — not saved)
+            # lock the gallery image as the person via Cloning (transient — not
+            # saved to the store); the image shows in the Cloning "Using:"
+            # strip, and the Face Swap section stays off and empty
+            self.variation_sel = {"description": "this image",
+                                  "name": "this image",
+                                  "face_path": path, "ref_path": path}
+            self._variation_face = path
             self._variation_ref = path
-            self.face_paths = [path]
+            self.swap_rag_var.set(False)
+            self.face_paths = []
+            self._face_from_variation = False
             self.face_source_var.set("file")
             self._on_face_source()
             self._set_face_label()
-            self.swap_rag_var.set(True)
             self.clone_method_var.set(CLONE_METHODS[0][0])
             self.random_seed_var.set(True)
             if model_family(self._model_raw() or "") in ("flux", "schnell",
@@ -7903,6 +7925,12 @@ class App:
                         if name == best:
                             self.model_var.set(disp)
                             break
+            if hasattr(self, "var_enable_var"):
+                self.var_enable_var.set(True)
+                self._apply_variation_enabled()
+            if hasattr(self, "variation_var"):
+                self.variation_var.set(VAR_NONE)
+            self._update_clone_preview(path)
             self._apply_clone_enabled()
         else:
             self.status_var.set("Pick a variation, or select an image in the "
@@ -7971,13 +7999,37 @@ class App:
     def _clear_variation(self):
         self.variation_sel = None
         self._variation_ref = None
+        self._variation_face = None
         if hasattr(self, "var_enable_var"):
             self.var_enable_var.set(False)
         if hasattr(self, "variation_var"):
             self.variation_var.set(VAR_NONE)
         self._variation_thumb = None
+        self._update_clone_preview(None)
         self._apply_variation_lock()
         self._schedule_persist()
+
+    def _update_clone_preview(self, path=None):
+        """Show the selected clone's own image in the Cloning section's
+        'Using:' strip. The clone's face/reference lives HERE — never in the
+        (mutually exclusive) Face Swap section."""
+        if not hasattr(self, "clone_preview_lab"):
+            return
+        self._clone_preview_img = None
+        if path and Path(str(path)).exists():
+            try:
+                img = Image.open(path).convert("RGB")
+                img.thumbnail((56, 56), Image.LANCZOS)
+                self._clone_preview_img = ImageTk.PhotoImage(img)
+            except Exception:
+                self._clone_preview_img = None
+        self.clone_preview_lab.configure(image=self._clone_preview_img or "")
+        if self.variation_sel:
+            self.clone_preview_name.set(
+                self.variation_sel.get("description")
+                or self.variation_sel.get("name") or "clone")
+        else:
+            self.clone_preview_name.set("no clone selected")
 
     def _apply_variation_enabled(self):
         """Grey the Variations body until the section's checkbox is ticked —
@@ -8019,7 +8071,8 @@ class App:
             self._apply_variation_enabled()
             self.variation_sel = None
             self._variation_ref = None
-            self._drop_variation_face()
+            self._variation_face = None
+            self._update_clone_preview(None)
             self.status_var.set("Cloning off — normal generation.")
         self._schedule_persist()
 
@@ -8033,22 +8086,25 @@ class App:
             self._apply_ui_state(VariationsDB.config_of(row))
         except Exception:
             applog.exception("variation config restore failed")
-        # the restored recipe may carry swap_rag=on; Cloning is mutually
-        # exclusive with the Face Swap checkbox, so force it off (the clone
-        # still drives the swap via _swap_active)
+        # the restored recipe may carry swap_rag=on and a saved face_paths;
+        # Cloning is mutually exclusive with the Face Swap section, so force
+        # that section OFF and empty so the clone's image never lands there
         self.swap_rag_var.set(False)
-        # set up the identity: the clone drives the swap internally (Cloning
-        # is separate from — and mutually exclusive with — the Face Swap
-        # checkbox, so we do NOT tick that box). New seed each run = a new pose
-        # of the same person; the full image is the look reference.
-        self.clone_method_var.set(CLONE_METHODS[0][0])   # "Face swap …"
-        self.face_paths = [row["face_path"]]
-        self._face_from_variation = True
+        self.face_paths = []
+        self._face_from_variation = False
         self.face_source_var.set("file")
         self._on_face_source()
         self._set_face_label()
-        self.random_seed_var.set(True)
+        # set up the identity: the clone drives the swap internally (Cloning
+        # is separate from the Face Swap checkbox, so we do NOT tick that box)
+        # and its image shows in THIS section's own "Using:" strip. New seed
+        # each run = a new pose of the same person; the full image is the look
+        # reference.
+        self.clone_method_var.set(CLONE_METHODS[0][0])   # "Face swap …"
+        self._variation_face = row["face_path"]
         self._variation_ref = row["ref_path"]
+        self.random_seed_var.set(True)
+        self._update_clone_preview(row["ref_path"] or row["face_path"])
         # a Flux/SD3 model can't face-swap the base — switch to an SDXL one
         if model_family(self._model_raw() or "") in ("flux", "schnell", "sd3"):
             best = self._best_sdxl_model()
@@ -8226,6 +8282,12 @@ class App:
         Empty list if neither. A future multi-photo Actor DB only needs
         `_actor_ref_paths` to return more entries — everything downstream
         already takes the list."""
+        # a Cloning clone drives the swap with its own saved face — kept apart
+        # from the (mutually exclusive) Face Swap section's face_paths
+        if (getattr(self, "var_enable_var", None) and self.var_enable_var.get()
+                and self.variation_sel
+                and getattr(self, "_variation_face", None)):
+            return [self._variation_face]
         if self.face_source_var.get() == "file":
             return list(self.face_paths[:self.SWAP_MAX_FACES])
         if self.actor_sel:
