@@ -1003,6 +1003,23 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **QoL batch: window/sash persistence, batch ETA, keep-resident, threaded
+  rebuild (v2.10.0).** WINDOW STATE: `_collect_window_state()` (geometry or
+  zoomed + `sash_h`/`sash_v`) saved in `settings["window"]` by `_persist`;
+  `__init__` restores geometry after `_load_settings`; `_init_sashes` restores
+  the saved sashes (clamped) else the computed defaults. BATCH ETA: module
+  `_fmt_duration(secs)` ('45s'/'4m'/'1m 30s'/'1h 1m'); Generator batch loop
+  tracks `t_batch`/`done_ct` and appends "~<eta> left" to the per-image status.
+  KEEP MODEL RESIDENT: `keep_resident_var` checkbox in QUALITY (arow col1) →
+  `_on_keep_resident` writes `settings["prefs"]["keep_model_resident"]`;
+  `start_engine()` reads SETTINGS_FILE prefs and appends `--highvram` (module
+  fn, no App instance). Off by default (shared 5090). Needs restart. THREADED
+  REBUILD: `_rebuild_history` now spawns a worker that `Image.open().load()` +
+  `_params_from_png` (both Tk-free) OFF the UI thread and posts `rebuild_add`
+  per image + `rebuild_done`; `_handle_msg` makes the Tk thumbnail on the UI
+  thread (same pattern as generation). `_rebuilding` guard blocks re-entry.
+  VALIDATED LIVE (scratchpad rebuild_test.py, real Tk, 6 PNGs): grew by 6,
+  6 thumbs, idempotent, no freeze. update_ui 234→241.
 - **Variations→100, hi-res denoise fix, preview debounce (v2.9.0).**
   VARIATIONS: `batch_sb` max 10→100 (stored as `self.batch_sb`); the batch loop
   already generates in turn with Stop/keep-done. HI-RES FIX (user: "hi-res makes

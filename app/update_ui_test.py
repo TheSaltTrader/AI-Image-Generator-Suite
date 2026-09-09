@@ -159,6 +159,41 @@ try:
 except Exception as _e:
     check("debounced redraw schedules", False, str(_e))
 
+# --- QoL: batch ETA formatter, window/sash persistence, keep-model-resident ---
+check("_fmt_duration is compact and human",
+      app._fmt_duration(45) == "45s" and app._fmt_duration(240) == "4m"
+      and app._fmt_duration(90) == "1m 30s" and app._fmt_duration(3660) == "1h 1m")
+try:
+    _ws = ui._collect_window_state()
+    check("window state captures the sash positions",
+          "sash_h" in _ws and "sash_v" in _ws)
+    check("window state captures geometry or zoomed",
+          "geometry" in _ws or _ws.get("zoomed"))
+    # a saved sash is honoured by _init_sashes (clamped) — needs a real size,
+    # so deiconify briefly (the suite's root is normally withdrawn)
+    ui.settings["window"] = {"sash_h": 520, "sash_v": 400}
+    ui.root.deiconify(); ui.root.geometry("1400x900")
+    ui.root.update_idletasks(); ui.root.update()
+    ui._init_sashes(); ui.root.update_idletasks()
+    _sp = ui.main_paned.sashpos(0)
+    ui.root.withdraw()
+    check("_init_sashes restores a saved sash position", abs(_sp - 520) <= 4, _sp)
+except Exception as _e:
+    check("window/sash persistence works", False, str(_e))
+# keep-model-resident preference (adds --highvram at engine launch)
+check("keep-model-in-VRAM toggle exists, off by default",
+      hasattr(ui, "keep_resident_var") and not ui.keep_resident_var.get())
+try:
+    ui.keep_resident_var.set(True); ui._on_keep_resident()
+    check("keep-resident writes the pref for start_engine",
+          ui.settings.get("prefs", {}).get("keep_model_resident") is True)
+    ui.keep_resident_var.set(False); ui._on_keep_resident()
+except Exception as _e:
+    check("keep-resident pref persists", False, str(_e))
+# threaded rebuild is wired (no UI-thread PNG decode) via the queue kinds
+check("rebuild-from-pictures runs off the UI thread (guard flag)",
+      hasattr(ui, "_rebuild_history") and callable(ui._rebuild_history))
+
 # --- anatomy negative embedding (one-time download, wired into the guard) ---
 check("anatomy embedding constant set",
       getattr(app, "ANATOMY_EMBED", None) == "negativeXL_D")

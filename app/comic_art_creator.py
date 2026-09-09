@@ -102,7 +102,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.9.0"
+APP_VERSION = "2.10.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -339,6 +339,18 @@ def engine_log_tail(n=12):
         return ""
 
 
+def _fmt_duration(secs):
+    """Compact human duration for batch ETAs: '45s', '4m', '1m 30s', '1h 5m'."""
+    secs = max(0, int(secs))
+    if secs < 60:
+        return f"{secs}s"
+    m, s = divmod(secs, 60)
+    if m < 60:
+        return f"{m}m {s}s" if s else f"{m}m"
+    h, m = divmod(m, 60)
+    return f"{h}h {m}m" if m else f"{h}h"
+
+
 def start_engine():
     """Spawn headless ComfyUI with our model paths and scratch output dir."""
     # (re)write the model-paths config with THIS machine's absolute path,
@@ -361,6 +373,17 @@ def start_engine():
            "--extra-model-paths-config", str(EXTRA_PATHS_YAML),
            "--output-directory", str(RAW_OUT),
            "--disable-auto-launch"]
+    # optional: keep the model resident on the GPU between jobs for faster
+    # repeat generations (a user preference; off by default because it holds
+    # VRAM that other GPU work may need). Read straight from settings so the
+    # module-level launcher doesn't need the App instance.
+    try:
+        _prefs = json.loads(SETTINGS_FILE.read_text(encoding="utf-8")) \
+            .get("prefs", {})
+        if _prefs.get("keep_model_resident"):
+            cmd.append("--highvram")
+    except Exception:
+        pass
     log = open(PROJECT / "engine.log", "w", encoding="utf-8", errors="replace")
     global _ENGINE_PROC
     _ENGINE_PROC = subprocess.Popen(cmd, cwd=str(ENGINE_DIR), stdout=log,
@@ -2853,17 +2876,24 @@ class Generator:
                    timeout=30)
         try:
             pending_swaps = []        # (base image, its params) — swapped after
-            for i in range(params["batch"]):
+            n_batch = params["batch"]
+            t_batch = time.time()
+            done_ct = 0               # images finished — drives the ETA
+            for i in range(n_batch):
                 if CANCEL.is_set():
                     self.q.put(("status", f"Cancelled — stopped after "
-                                          f"{i} of {params['batch']}."))
+                                          f"{i} of {n_batch}."))
                     break
                 p = dict(params)
                 if i > 0:
                     p["seed"] = random.randrange(2**32) if params["random_seed"] \
                         else params["seed"] + i
-                self.q.put(("status", f"Generating {i + 1}/{params['batch']} "
-                                      f"(seed {p['seed']})…"))
+                eta = ""
+                if done_ct and n_batch > 1:
+                    avg = (time.time() - t_batch) / done_ct
+                    eta = "  ·  ~" + _fmt_duration(avg * (n_batch - i)) + " left"
+                self.q.put(("status", f"Generating {i + 1}/{n_batch} "
+                                      f"(seed {p['seed']}){eta}…"))
                 graph = build_graph(p)
                 r = requests.post(f"{ENGINE_URL}/prompt",
                                   json={"prompt": graph,
@@ -2917,8 +2947,9 @@ class Generator:
                     # interrupted mid-picture: nothing usable came back,
                     # and the pictures already finished are kept
                     self.q.put(("status", f"Cancelled — stopped after "
-                                          f"{i} of {params['batch']}."))
+                                          f"{i} of {n_batch}."))
                     break
+                done_ct += 1          # a full image finished (feeds the ETA)
                 for img_meta in images:
                     img = self._fetch_image(img_meta)
                     if params.get("border_clean") \
@@ -3302,6 +3333,16 @@ class App:
         root.minsize(1200, 780)
         self.presets = json.loads(PRESETS_FILE.read_text(encoding="utf-8"))["presets"]
         self.settings = self._load_settings()
+        # restore the last window size/position (sashes are restored in
+        # _init_sashes, once the paned widgets have a size)
+        _win = self.settings.get("window", {})
+        try:
+            if _win.get("zoomed"):
+                root.state("zoomed")
+            elif _win.get("geometry"):
+                root.geometry(_win["geometry"])
+        except Exception:
+            pass
         prefs = self.settings.get("prefs", {})
         apply_theme(prefs.get("theme", "dark"))
         globals()["UI_FONT"] = prefs.get("font", "Segoe UI")
@@ -3997,6 +4038,18 @@ class App:
                   "at SDXL's native size, then upscales to your chosen size — "
                   "oversized bases are the main cause of extra limbs. SDXL "
                   "models only; adds a little time (it upscales like Hi-res).")
+        self.keep_resident_var = BooleanVar(
+            value=bool(self.settings.get("prefs", {}).get("keep_model_resident")))
+        keep_cb = ttk.Checkbutton(
+            arow, text="⚡ Keep model in VRAM (faster repeats)",
+            variable=self.keep_resident_var, command=self._on_keep_resident)
+        keep_cb.grid(row=0, column=1, sticky=W, padx=(16, 0))
+        self._tip(keep_cb,
+                  "Keep the model loaded on the GPU between generations so "
+                  "repeat runs start instantly instead of reloading it. Uses "
+                  "more VRAM for the whole session — leave off if the GPU is "
+                  "shared with other AI work. Takes effect after you restart "
+                  "the app.")
 
         seedrow = ttk.Frame(left); seedrow.grid(row=r, sticky=NSEW, pady=4); r += 1
         ttk.Label(seedrow, text="Seed", style="Dim.TLabel").grid(row=0, column=0)
@@ -4888,16 +4941,24 @@ class App:
         self.root.after(300, self._init_sashes)
 
     def _init_sashes(self):
-        """Sensible initial sash positions once the window has a real size;
-        the user drags from there. Clamped so nothing starts collapsed."""
+        """Restore the saved sash positions, or sensible defaults, once the
+        window has a real size; the user drags from there. Clamped so nothing
+        starts collapsed."""
         try:
             self.root.update_idletasks()
+            win = self.settings.get("window", {})
             w = self.main_paned.winfo_width()
             if w > 300:
-                self.main_paned.sashpos(0, min(470, max(320, w - 420)))
+                saved = win.get("sash_h")
+                pos = saved if (isinstance(saved, int) and 200 < saved < w - 200) \
+                    else min(470, max(320, w - 420))
+                self.main_paned.sashpos(0, pos)
             h = self.right_paned.winfo_height()
             if h > 300:
-                self.right_paned.sashpos(0, max(220, h - 190))
+                saved = win.get("sash_v")
+                pos = saved if (isinstance(saved, int) and 120 < saved < h - 60) \
+                    else max(220, h - 190)
+                self.right_paned.sashpos(0, pos)
         except Exception:
             applog.exception("init sashes failed")
 
@@ -6580,7 +6641,40 @@ class App:
 
     def _persist(self):
         self.settings["ui"] = self._collect_ui_state()
+        try:
+            self.settings["window"] = self._collect_window_state()
+        except Exception:
+            pass
         self._save_settings()
+
+    def _collect_window_state(self):
+        """The window size/position and the two panel sash positions, so the
+        layout the user set up comes back on the next launch."""
+        st = {}
+        try:
+            if self.root.state() == "zoomed":
+                st["zoomed"] = True
+            else:
+                st["geometry"] = self.root.geometry()
+        except Exception:
+            pass
+        try:
+            st["sash_h"] = self.main_paned.sashpos(0)
+            st["sash_v"] = self.right_paned.sashpos(0)
+        except Exception:
+            pass
+        return st
+
+    def _on_keep_resident(self):
+        """Save the keep-model-in-VRAM preference; it changes how the engine
+        is launched, so it applies on the next restart."""
+        self.settings.setdefault("prefs", {})["keep_model_resident"] = \
+            bool(self.keep_resident_var.get())
+        self._save_settings()
+        self.status_var.set(
+            ("Keep model in VRAM ON" if self.keep_resident_var.get()
+             else "Keep model in VRAM off")
+            + " — restart the app for it to take effect.")
 
     def _wire_autosave(self):
         """Persist every change as it happens (debounced), so settings
@@ -8995,6 +9089,26 @@ class App:
                     self._add_thumb(self.current)
                     self._update_editor_btn()
                     self.status_var.set(f"Saved  {path.name}")
+                elif kind == "rebuild_add":
+                    # one image decoded off-thread by _rebuild_history — the
+                    # Tk thumbnail is made here on the UI thread
+                    _, img, params, path = msg
+                    if not any(p == path for _i, _p, p in self.session):
+                        self.session.append((img, params, path))
+                        self._add_thumb(len(self.session) - 1)
+                elif kind == "rebuild_done":
+                    _, n = msg
+                    self._rebuilding = False
+                    if n:
+                        self.current = len(self.session) - 1
+                        self._show_current()
+                        self._refresh_tag_ui()
+                        self._update_editor_btn()
+                        self.status_var.set(f"Rebuilt history — loaded {n} "
+                                            "image(s) from the output folder.")
+                    else:
+                        self.status_var.set("Gallery already shows all the "
+                                            "output images.")
                 elif kind == "done":
                     self.busy = False
                     self.go_btn.state(["!disabled"])
@@ -9648,8 +9762,11 @@ class App:
 
     def _rebuild_history(self):
         """Repopulate the gallery from images already in the output folder —
-        after Clear history or a restart. Loads the most recent images with
-        their saved settings when present."""
+        after Clear history or a restart. The PNGs are decoded OFF the UI
+        thread (200 of them froze the app), and thumbnails appear as each one
+        loads; only the Tk work (thumbnail, gallery) runs on the UI thread."""
+        if getattr(self, "_rebuilding", False):
+            return
         try:
             files = sorted(OUTPUT.glob("*.png"), key=lambda f: f.stat().st_mtime)
         except OSError:
@@ -9659,28 +9776,30 @@ class App:
                                 "rebuild from.")
             return
         have = {p for _i, _p, p in self.session}
-        added = 0
-        for f in files[-200:]:          # newest 200, oldest first
-            if str(f) in have:
-                continue
-            try:
-                img = Image.open(f)
-                img.load()
-                params = self._params_from_png(img)
-                self.session.append((img, params, str(f)))
-                self._add_thumb(len(self.session) - 1)
-                added += 1
-            except Exception:
-                continue
-        if added:
-            self.current = len(self.session) - 1
-            self._show_current()
-            self._refresh_tag_ui()
-            self._update_editor_btn()
-            self.status_var.set(f"Rebuilt history — loaded {added} image(s) "
-                                "from the output folder.")
-        else:
+        todo = [f for f in files[-200:] if str(f) not in have]  # newest 200
+        if not todo:
             self.status_var.set("Gallery already shows all the output images.")
+            return
+        self._rebuilding = True
+        self.status_var.set(f"Rebuilding history — loading {len(todo)} "
+                            "image(s)…")
+
+        def work():
+            n = 0
+            for f in todo:
+                if not getattr(self, "_rebuilding", False):
+                    break
+                try:
+                    img = Image.open(f)
+                    img.load()                       # decode now, off the UI
+                    params = self._params_from_png(img)
+                    self.ui_queue.put(("rebuild_add", img, params, str(f)))
+                    n += 1
+                except Exception:
+                    continue
+            self.ui_queue.put(("rebuild_done", n))
+
+        threading.Thread(target=work, daemon=True).start()
 
     def _clear_history(self):
         """Empty the session gallery. Files already saved in output\\ are

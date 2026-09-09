@@ -1,5 +1,19 @@
 # Changelog — AI Image Generator Suite
 
+## v2.10.0 — 2026-09-09
+Quality-of-life features:
+- **Your window layout is remembered.** The app reopens at the size and
+  position you left it, with the panel dividers where you dragged them.
+- **Batch progress + ETA.** Large runs now show "Generating 12/100 · ~4m
+  left" so you know how long a big batch will take.
+- **"Keep model in VRAM" option** (in QUALITY, off by default). Turn it on to
+  keep the model loaded on the GPU between generations, so repeat runs start
+  instantly instead of reloading it. Uses more VRAM for the session — leave
+  off if the GPU is shared with other AI work. Takes effect after a restart.
+- **"Rebuild from pictures" no longer freezes the app.** It now loads the
+  output folder's images in the background, and thumbnails appear as they come
+  in, instead of locking up while up to 200 images decode.
+
 ## v2.9.0 — 2026-09-09
 - **Variations up to 100.** The "Variations" count now goes from 1 to 100, so
   you can make a big batch from one prompt and pick the best. Each image is
