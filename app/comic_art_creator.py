@@ -102,7 +102,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.7.7"
+APP_VERSION = "2.7.8"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -217,7 +217,7 @@ SIZE_PRESETS = {
 
 NONE_LORA = "— none —"
 NONE_PRESET = "— none (raw prompt) —"
-VAR_NONE = "— no variation —"   # the Variations dropdown's "none" entry
+VAR_NONE = "— no clone —"   # the Cloning dropdown's "none" entry
 
 # colors \u2014 two themes; apply_theme() rebinds the globals below before the
 # UI is built, and again (best-effort) when the user switches in Settings.
@@ -3341,6 +3341,7 @@ class App:
         self.variation_sel = None   # the applied variation row (dict) or None
         self._variation_ref = None  # its full image, fed as an IP-Adapter ref
         self._variation_thumb = None  # keep the Tk thumbnail from being GC'd
+        self._face_from_variation = False  # is the swap face from a clone?
         self.vram_gb = gpu_vram_gb()   # None = no NVIDIA GPU detected
         self._model_fits = {}      # raw name -> fits in VRAM
         self._last_fit_display = ""
@@ -3998,7 +3999,7 @@ class App:
         # image editor — Gemini-style instruction editing
         r = self._rule(left, r)
         # ---------- CLONE A FACE onto the generated image ----------
-        fc_head = ttk.Label(left, text="CLONE TOOL (optional)",
+        fc_head = ttk.Label(left, text="FACE SWAP (optional)",
                             style="Head.TLabel")
         fc_head.grid(row=r, sticky=W, pady=(10, 0)); r += 1
         self._tip(fc_head,
@@ -4011,7 +4012,7 @@ class App:
         # the on/off checkbox at the TOP; unticking greys the whole section
         self.swap_rag_var = BooleanVar(value=True)
         self.swap_cb = ttk.Checkbutton(
-            left, text="Clone this face onto the generated image",
+            left, text="Swap this face onto the generated image",
             variable=self.swap_rag_var, command=self._on_clone_toggle)
         self.swap_cb.grid(row=r, sticky=W, pady=(2, 2)); r += 1
         self._tip(self.swap_cb,
@@ -4134,7 +4135,7 @@ class App:
 
         # ---------- VARIATIONS: recall a saved person and make more ----------
         r = self._rule(left, r)
-        var_head = ttk.Label(left, text="VARIATIONS (optional)",
+        var_head = ttk.Label(left, text="CLONING (optional)",
                              style="Head.TLabel")
         var_head.grid(row=r, sticky=W, pady=(6, 0)); r += 1
         self._tip(var_head,
@@ -4145,7 +4146,7 @@ class App:
         # on/off checkbox at the top; off greys the section (like Clone)
         self.var_enable_var = BooleanVar(value=False)
         self.var_cb = ttk.Checkbutton(
-            left, text="Use a saved Variation",
+            left, text="Use a saved clone",
             variable=self.var_enable_var, command=self._on_variation_toggle)
         self.var_cb.grid(row=r, sticky=W, pady=(2, 2)); r += 1
         self._tip(self.var_cb,
@@ -4719,7 +4720,7 @@ class App:
         brow = ttk.Frame(right); brow.grid(row=2, column=0, sticky=NSEW, pady=(8, 4))
         # "More of this person" — two clean actions, kept leftmost so they are
         # always visible (the rest of the row can be wide)
-        savevar_btn = ttk.Button(brow, text="💾 Save Variation",
+        savevar_btn = ttk.Button(brow, text="💾 Save Clone",
                                  command=self._save_variation)
         savevar_btn.pack(side="left", padx=(0, 6))
         self._tip(savevar_btn, "Save the selected person as a Variation — its "
@@ -4802,6 +4803,13 @@ class App:
                   "the selected picture.")
         gbtns = ttk.Frame(gwrap)
         gbtns.grid(row=0, column=1, rowspan=2, sticky="s", padx=(8, 0))
+        rebuild_btn = ttk.Button(gbtns, text="↻ Rebuild from pictures",
+                                 command=self._rebuild_history)
+        rebuild_btn.pack(fill="x", pady=(0, 3))
+        self._tip(rebuild_btn, "Repopulate the gallery from the images already "
+                               "saved in the output folder — handy after Clear "
+                               "history or a restart. Loads the most recent "
+                               "images (with their saved settings when present).")
         clrhist_btn = ttk.Button(gbtns, text="🗑 Clear history",
                                  command=self._clear_history)
         clrhist_btn.pack(fill="x", pady=(0, 3))
@@ -7733,7 +7741,34 @@ class App:
             self._edit_menu.grab_release()
         return "break"
 
+    def _swap_active(self):
+        """A face swap will run next generation: the Face Swap section is on,
+        OR a Cloning clone is selected (Cloning drives the swap internally).
+        The two sections are mutually exclusive in the UI."""
+        return bool(self.swap_rag_var.get()
+                    or (getattr(self, "var_enable_var", None)
+                        and self.var_enable_var.get()
+                        and self.variation_sel))
+
+    def _drop_variation_face(self):
+        """Clear a face that a clone put in the Face Swap section (leave a
+        face the user chose themselves)."""
+        if getattr(self, "_face_from_variation", False):
+            self.face_paths = []
+            self._face_from_variation = False
+            if hasattr(self, "_set_face_label"):
+                self._set_face_label()
+
     def _on_clone_toggle(self, *_a):
+        # Face Swap and Cloning are mutually exclusive — turning Face Swap on
+        # switches Cloning off and drops the clone's carried-over face
+        if self.swap_rag_var.get() and getattr(self, "var_enable_var", None) \
+                and self.var_enable_var.get():
+            self.var_enable_var.set(False)
+            self.variation_sel = None
+            self._variation_ref = None
+            self._drop_variation_face()
+            self._apply_variation_enabled()
         self._apply_clone_enabled()
         self._refresh_editor_state()
         self._schedule_persist()
@@ -7964,23 +7999,28 @@ class App:
         setstate(self.variation_body)
 
     def _on_variation_toggle(self):
-        """The Variations checkbox: on ungreys the picker (and locks the
-        picked person, if any); off greys it and returns to normal generation."""
-        self._apply_variation_enabled()
+        """The Cloning checkbox: on ungreys the picker (and, mutually exclusive
+        with Face Swap, switches Face Swap off); off greys it and returns to
+        normal generation."""
         if self.var_enable_var.get():
+            # mutually exclusive with the Face Swap section
+            if self.swap_rag_var.get():
+                self.swap_rag_var.set(False)
+                self._apply_clone_enabled()
+            self._apply_variation_enabled()
             row = self._selected_variation()
             if row is None:
-                self.status_var.set("Variations on — pick a saved person "
-                                    "below (or 💾 Save Variation first).")
-                self._apply_variation_lock()
+                self.status_var.set("Cloning on — pick a saved clone below "
+                                    "(or 💾 Save Clone first).")
             else:
                 self.variation_sel = row
                 self._apply_variation()
         else:
+            self._apply_variation_enabled()
             self.variation_sel = None
             self._variation_ref = None
-            self._apply_variation_lock()        # off -> ungrey clone controls
-            self.status_var.set("Variations off — normal generation.")
+            self._drop_variation_face()
+            self.status_var.set("Cloning off — normal generation.")
         self._schedule_persist()
 
     def _apply_variation(self):
@@ -7993,11 +8033,17 @@ class App:
             self._apply_ui_state(VariationsDB.config_of(row))
         except Exception:
             applog.exception("variation config restore failed")
-        # lock the identity: face-swap ON with this face, new seed each run
-        # (a NEW pose of the SAME person), full image as the look reference
-        self.swap_rag_var.set(True)
+        # the restored recipe may carry swap_rag=on; Cloning is mutually
+        # exclusive with the Face Swap checkbox, so force it off (the clone
+        # still drives the swap via _swap_active)
+        self.swap_rag_var.set(False)
+        # set up the identity: the clone drives the swap internally (Cloning
+        # is separate from — and mutually exclusive with — the Face Swap
+        # checkbox, so we do NOT tick that box). New seed each run = a new pose
+        # of the same person; the full image is the look reference.
         self.clone_method_var.set(CLONE_METHODS[0][0])   # "Face swap …"
         self.face_paths = [row["face_path"]]
+        self._face_from_variation = True
         self.face_source_var.set("file")
         self._on_face_source()
         self._set_face_label()
@@ -8031,28 +8077,16 @@ class App:
             "for a new scene and Generate — same person, more images.")
 
     def _apply_variation_lock(self):
-        """When a variation is active, grey the controls that would stop the
-        person from displaying (model, clone method, face source) so the lock
-        can't be broken by accident; restore them when it is off."""
-        on = bool(getattr(self, "var_enable_var", None)
-                  and self.var_enable_var.get() and self.variation_sel)
-        for name in ("model_dd", "clone_method_dd"):
-            w = getattr(self, name, None)
-            try:
-                if w is not None:
-                    w.state(["disabled"] if on else ["!disabled"])
-            except Exception:
-                pass
-        for fr in (getattr(self, "face_file_row", None),
-                   getattr(self, "face_db_row", None)):
-            if fr is None:
-                continue
-            for c in fr.winfo_children():
-                try:
-                    if isinstance(c, (ttk.Button, ttk.Radiobutton)):
-                        c.state(["disabled"] if on else ["!disabled"])
-                except Exception:
-                    pass
+        """Cloning is its own section now and no longer greys/locks the Face
+        Swap controls — that cross-locking (and the carried-over face) was the
+        old merged design. Just make sure the model picker isn't left greyed by
+        a previous lock; the Face Swap body is governed by its own checkbox
+        (_apply_clone_enabled)."""
+        try:
+            if getattr(self, "model_dd", None) is not None:
+                self.model_dd.state(["!disabled"])
+        except Exception:
+            pass
 
     def _on_face_source(self, *_a):
         """Show the file row or the database rows for the chosen source."""
@@ -8079,6 +8113,7 @@ class App:
             ("All files", "*.*")])
         if paths:
             self.face_paths = list(paths)
+            self._face_from_variation = False   # a face the user chose
             self.face_source_var.set("file")
             self._on_face_source()
             self._set_face_label()
@@ -8089,6 +8124,7 @@ class App:
 
     def _clear_face(self):
         self.face_paths = []
+        self._face_from_variation = False
         self._set_face_label()
         self._refresh_editor_state()
         self._schedule_persist()
@@ -8240,7 +8276,7 @@ class App:
         # in image-swap mode a loaded image is the FACE, not an edit
         # target — LoRAs/RAG still drive the base generation
         swap_mode = hasattr(self, "swap_rag_var") \
-            and self.swap_rag_var.get() \
+            and self._swap_active() \
             and (bool(getattr(self, "face_paths", [])) or bool(self.actor_sel))
         editing = False   # Edit is its own tab; GENERATE never edits
         model = self._model_raw()
@@ -8346,7 +8382,7 @@ class App:
         swap_editor = "faceswap"
         if isinstance(swap_face, str):
             swap_face = [swap_face]
-        if swap_face is None and self.swap_rag_var.get() and not ref_paths:
+        if swap_face is None and self._swap_active() and not ref_paths:
             swap_face = self._swap_face_source()
             missing = [p for p in swap_face if not Path(p).exists()]
             if missing:
@@ -9387,6 +9423,57 @@ class App:
                 f"Permanently delete {Path(path).name} from disk?"):
             return
         self._delete_paths([path])
+
+    def _params_from_png(self, img):
+        """Reconstruct a generation-params dict from a saved PNG's embedded
+        metadata (best-effort — older/foreign PNGs just get a minimal dict)."""
+        try:
+            rec = json.loads(img.info.get("comic_art_creator") or "{}")
+        except (ValueError, TypeError):
+            rec = {}
+        prompt = img.info.get("parameters") or rec.get("user_prompt") or ""
+        params = dict(rec)
+        params["prompt"] = prompt
+        params.setdefault("user_prompt", rec.get("user_prompt", prompt))
+        params.setdefault("seed", rec.get("seed", "?"))
+        params.setdefault("model", rec.get("model") or "image")
+        return params
+
+    def _rebuild_history(self):
+        """Repopulate the gallery from images already in the output folder —
+        after Clear history or a restart. Loads the most recent images with
+        their saved settings when present."""
+        try:
+            files = sorted(OUTPUT.glob("*.png"), key=lambda f: f.stat().st_mtime)
+        except OSError:
+            files = []
+        if not files:
+            self.status_var.set("No saved images in the output folder to "
+                                "rebuild from.")
+            return
+        have = {p for _i, _p, p in self.session}
+        added = 0
+        for f in files[-200:]:          # newest 200, oldest first
+            if str(f) in have:
+                continue
+            try:
+                img = Image.open(f)
+                img.load()
+                params = self._params_from_png(img)
+                self.session.append((img, params, str(f)))
+                self._add_thumb(len(self.session) - 1)
+                added += 1
+            except Exception:
+                continue
+        if added:
+            self.current = len(self.session) - 1
+            self._show_current()
+            self._refresh_tag_ui()
+            self._update_editor_btn()
+            self.status_var.set(f"Rebuilt history — loaded {added} image(s) "
+                                "from the output folder.")
+        else:
+            self.status_var.set("Gallery already shows all the output images.")
 
     def _clear_history(self):
         """Empty the session gallery. Files already saved in output\\ are

@@ -1,5 +1,21 @@
 # Changelog — AI Image Generator Suite
 
+## v2.7.8 — 2026-09-09
+- **Renamed for clarity:** the "Clone Tool" section is now **Face Swap**, and
+  the "Variations" section is now **Cloning** (its saved people are "clones";
+  the gallery button is **💾 Save Clone**).
+- **Face Swap and Cloning are now mutually exclusive** — turning one on turns
+  the other off, so they never fight over the same generation.
+- **Fixed the Face Swap section being stuck:** with a face loaded from a file,
+  **Browse** and the remove (✕) button could stay greyed, and a face could be
+  carried over from before — both were leftovers from when Face Swap and
+  Cloning were one section. Face Swap is now fully independent and always
+  editable.
+- **New: "↻ Rebuild from pictures"** button (above Clear history) repopulates
+  the gallery from the images already in your output folder — handy after
+  clearing history or restarting. It restores each image's saved settings when
+  they're embedded in the file.
+
 ## v2.7.7 — 2026-09-09
 - **Variations is now its own section**, separate from the Clone Tool — it was
   too cluttered sharing one. It has its own **on/off checkbox (off by

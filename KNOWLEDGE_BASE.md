@@ -1003,6 +1003,29 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Rename + mutual exclusion + Face Swap independence + rebuild history
+  (v2.7.8).** RENAMES (labels only, internal var names unchanged): "CLONE TOOL"
+  section -> "FACE SWAP", `swap_cb` text -> "Swap this face…"; "VARIATIONS"
+  section -> "CLONING", `var_cb` -> "Use a saved clone", gallery "Save
+  Variation" -> "Save Clone", VAR_NONE -> "— no clone —". MUTUAL EXCLUSION:
+  Face Swap (`swap_rag_var`) and Cloning (`var_enable_var`) can't both be on —
+  `_on_clone_toggle` turns Cloning off (+ drops the clone face), `_on_variation_toggle`
+  turns Face Swap off. Since Cloning drives the swap internally, added
+  `_swap_active()` = `swap_rag_var OR (var_enable and variation_sel)`; the swap
+  trigger in `_generate` and `swap_mode` now use it (so Cloning swaps with the
+  Face Swap checkbox OFF). `_apply_variation` NO LONGER sets swap_rag on, and
+  FORCES swap_rag OFF after `_apply_ui_state` (the restored recipe carried
+  swap_rag=on -> was re-enabling Face Swap). FIX (user bug): `_apply_variation_lock`
+  used to grey the Face Swap Browse/✕/model/method whenever a clone was active
+  (merged-design leftover) — neutered to a near-no-op (just un-greys model_dd);
+  Face Swap body is governed only by its own `_apply_clone_enabled`. Carried-over
+  face fixed via `_face_from_variation` flag + `_drop_variation_face()` (clears
+  a clone-sourced face on section switch; a user's manual `_pick_face` sets the
+  flag False so it's kept). NEW "↻ Rebuild from pictures" button (gbtns, above
+  Clear history) -> `_rebuild_history`: loads newest 200 OUTPUT/*.png into the
+  session (dedup by path), params via `_params_from_png` (reads the PNG's
+  "comic_art_creator" JSON + "parameters" text; defaults model="image" so
+  `_show_current` doesn't KeyError on foreign PNGs). update_ui 208.
 - **Variations promoted to its own section (v2.7.7).** Split out of the Clone
   Tool into a standalone "VARIATIONS (optional)" section with its own
   `var_enable_var` checkbox (OFF by default) + a `variation_body` frame greyed

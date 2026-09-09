@@ -142,6 +142,11 @@ except Exception as _e:
 check("Delete-all button is the red Danger style",
       str(ui.delfiles_btn.cget("style")) == "Danger.TButton")
 
+# --- Rebuild history from pictures ---
+check("rebuild-from-pictures handler + png parser exist",
+      callable(getattr(ui, "_rebuild_history", None))
+      and callable(getattr(ui, "_params_from_png", None)))
+
 # --- Incognito toggle (hide images + history) ---
 check("incognito eye button exists next to the badges",
       hasattr(ui, "incog_btn"))
@@ -487,11 +492,25 @@ check("no quality radio / no canvas option; always Best + canvas",
       and ui.editor_canvas_var.get())
 check("the Using strip exists (thumbnail samples)",
       hasattr(ui, "face_using") and hasattr(ui, "_face_thumb_image"))
-# ---- Clone Tool: selectable method, defaulting to the fast face swap ----
-check("the section is titled CLONE TOOL",
-      any(str(getattr(w, "cget", lambda *_: "")("text")) .startswith("CLONE TOOL")
-          for w in _walk(ui._page_gen)
-          if w.winfo_class() == "TLabel"))
+# ---- Face Swap: selectable method, defaulting to the fast face swap ----
+_labels = [str(getattr(w, "cget", lambda *_: "")("text"))
+           for w in _walk(ui._page_gen) if w.winfo_class() == "TLabel"]
+check("the face section is titled FACE SWAP (renamed from Clone Tool)",
+      any(t.startswith("FACE SWAP") for t in _labels))
+check("the cloning section is titled CLONING (renamed from Variations)",
+      any(t.startswith("CLONING") for t in _labels))
+# Face Swap and Cloning are mutually exclusive
+try:
+    ui.swap_rag_var.set(False); ui.var_enable_var.set(False)
+    ui.var_enable_var.set(True); ui._on_variation_toggle()
+    _fs_off = not ui.swap_rag_var.get()
+    ui.swap_rag_var.set(True); ui._on_clone_toggle()
+    _cl_off = not ui.var_enable_var.get()
+    check("enabling one of Face Swap / Cloning disables the other",
+          _fs_off and _cl_off)
+    ui.swap_rag_var.set(True); ui.var_enable_var.set(False)
+except Exception as _e:
+    check("Face Swap / Cloning mutual exclusion", False, str(_e))
 check("a Clone method dropdown exists with all three engines",
       hasattr(ui, "clone_method_dd")
       and len(ui.clone_method_dd["values"]) == 3)
