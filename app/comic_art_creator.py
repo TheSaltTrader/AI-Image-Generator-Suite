@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "2.2.1"
+APP_VERSION = "2.3.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -1530,14 +1530,43 @@ def build_graph(p):
                   "inputs": {"width": p["width"], "height": p["height"],
                              "batch_size": 1}}
 
+    # Extra detail (FreeU): reweights the UNet skip connections for more
+    # contrast and fine detail — a near-free quality bump on SDXL families
+    # (not Flux/Schnell, which don't use this UNet shape).
+    if p.get("freeu") and fam not in ("flux", "schnell"):
+        g["18"] = {"class_type": "FreeU_V2",
+                   "inputs": {"model": model_ref, "b1": 1.3, "b2": 1.4,
+                              "s1": 0.9, "s2": 0.2}}
+        model_ref = ["18", 0]
+
     g["6"] = {"class_type": "KSampler",
               "inputs": {"model": model_ref, "positive": pos_ref,
                          "negative": ["3", 0], "latent_image": latent_ref,
                          "seed": p["seed"], "steps": steps, "cfg": cfg,
                          "sampler_name": d["sampler"], "scheduler": d["scheduler"],
                          "denoise": denoise}}
+    sampler_out = ["6", 0]
+    # Hi-res fix: a REAL detail pass (not just the 4x model upscaler) —
+    # upscale the latent and run a short second sampling at low denoise, so
+    # detail is added and anatomy firms up. Skipped for img2img and border
+    # jobs, where a second pass would fight the reference/mask.
+    if p.get("hires") and not p.get("border_assets") \
+            and not p.get("ref_image_name"):
+        scale = float(p.get("hires_scale") or 1.5)
+        g["60"] = {"class_type": "LatentUpscaleBy",
+                   "inputs": {"samples": ["6", 0],
+                              "upscale_method": "bislerp", "scale_by": scale}}
+        g["61"] = {"class_type": "KSampler",
+                   "inputs": {"model": model_ref, "positive": pos_ref,
+                              "negative": ["3", 0], "latent_image": ["60", 0],
+                              "seed": p["seed"],
+                              "steps": max(10, int(steps * 0.6)), "cfg": cfg,
+                              "sampler_name": d["sampler"],
+                              "scheduler": d["scheduler"],
+                              "denoise": float(p.get("hires_denoise") or 0.45)}}
+        sampler_out = ["61", 0]
     g["7"] = {"class_type": "VAEDecode",
-              "inputs": {"samples": ["6", 0], "vae": ["1", 2]}}
+              "inputs": {"samples": sampler_out, "vae": ["1", 2]}}
     img_out = ["7", 0]
     # optional hi-res pass: run the decoded image through a 4x upscale model
     if p.get("upscale") and (MODELS / "upscale_models" / UPSCALE_MODEL).exists():
@@ -2493,6 +2522,13 @@ def builtin_enhance(text, style="", family="sdxl"):
     base = " ".join((text or "").split()).strip().rstrip(",")
     if not base:
         return ""
+    # a light emphasis on the main subject (the first clause) nudges SDXL-family
+    # models to stick to it; Flux ignores attention weights, so leave it be
+    if family not in ("flux", "schnell") and "(" not in base:
+        head, sep, rest = base.partition(",")
+        head = head.strip()
+        if head and len(head) <= 60:
+            base = f"({head}:1.15)" + (sep + rest if sep else "")
     have = base.lower()
     parts = [base]
     st = (style or "").strip().rstrip(",")
@@ -3661,12 +3697,39 @@ class App:
         trans_cb.grid(row=0, column=4)
         self._tip(trans_cb, "Cut out the background so the subject is on "
                             "transparency (PNG). Good for stickers/sprites.")
+
+        # ---------- QUALITY (optional extra-quality passes) ----------
+        q_head = ttk.Label(left, text="QUALITY", style="Head.TLabel")
+        q_head.grid(row=r, sticky=W, pady=(6, 0)); r += 1
+        self._tip(q_head, "Optional extra-quality passes — each adds time and "
+                          "VRAM, and all are off by default.")
+        qrow = ttk.Frame(left); qrow.grid(row=r, sticky=W, pady=(2, 4)); r += 1
+        self.hires_var = BooleanVar(value=False)
+        hires_cb = ttk.Checkbutton(qrow, text="Hi-res fix (add detail)",
+                                   variable=self.hires_var)
+        hires_cb.grid(row=0, column=0, sticky=W)
+        self._tip(hires_cb,
+                  "A real second detail pass: the picture is upscaled in latent "
+                  "space and lightly re-sampled, so texture and detail are "
+                  "ADDED, not just enlarged. The biggest quality lever; it "
+                  "roughly doubles the time.")
+        self.hires_scale_var = StringVar(value="1.5×")
+        ttk.Combobox(qrow, textvariable=self.hires_scale_var, state="readonly",
+                     exportselection=False, width=4,
+                     values=["1.5×", "2×"]).grid(row=0, column=1, padx=(4, 12))
+        self.freeu_var = BooleanVar(value=False)
+        freeu_cb = ttk.Checkbutton(qrow, text="Extra detail",
+                                   variable=self.freeu_var)
+        freeu_cb.grid(row=0, column=2, padx=(0, 12))
+        self._tip(freeu_cb,
+                  "FreeU: a near-free contrast and fine-detail boost on SDXL "
+                  "models (no effect on Flux). Cheap to leave on.")
         self.upscale_var = BooleanVar(value=False)
-        up_cb = ttk.Checkbutton(grow, text="Upscale 4x (hi-res)",
+        up_cb = ttk.Checkbutton(qrow, text="Upscale 4×",
                                 variable=self.upscale_var)
-        up_cb.grid(row=0, column=5, padx=(12, 0))
-        self._tip(up_cb, "Run the finished image through a 4× hi-res upscaler. "
-                         "Slower and uses more VRAM.")
+        up_cb.grid(row=0, column=3)
+        self._tip(up_cb, "Enlarge the finished image 4× with an upscaler model "
+                         "(applied last of all). Slower and uses more VRAM.")
 
         seedrow = ttk.Frame(left); seedrow.grid(row=r, sticky=NSEW, pady=4); r += 1
         ttk.Label(seedrow, text="Seed", style="Dim.TLabel").grid(row=0, column=0)
@@ -5915,6 +5978,9 @@ class App:
             "batch": self.batch_var.get(),
             "transparent": self.transparent_var.get(),
             "upscale": self.upscale_var.get(),
+            "hires": self.hires_var.get(),
+            "hires_scale": self.hires_scale_var.get(),
+            "freeu": self.freeu_var.get(),
             "tab": (self.left_tabs.index("current")
                     if hasattr(self, "left_tabs") else 0),
             "ragmap_path": self.ragmap_path,
@@ -6013,6 +6079,9 @@ class App:
             self.batch_var.set(st.get("batch", 1))
             self.transparent_var.set(st.get("transparent", False))
             self.upscale_var.set(st.get("upscale", False))
+            self.hires_var.set(st.get("hires", False))
+            self.hires_scale_var.set(st.get("hires_scale", "1.5×"))
+            self.freeu_var.set(st.get("freeu", False))
             self.face_source_var.set(st.get("face_source", "file"))
             self.face_paths = [p for p in (st.get("face_paths") or [])
                                if Path(p).exists()]
@@ -6072,6 +6141,7 @@ class App:
         for var in (self.model_var, self.preset_var, self.size_var,
                     self.steps_var, self.seed_var, self.batch_var,
                     self.transparent_var, self.upscale_var,
+                    self.hires_var, self.hires_scale_var, self.freeu_var,
                     self.random_seed_var,
                     self.lora_strength, self.change_var, self.editor_var,
                     self.editor_canvas_var,
@@ -7747,6 +7817,10 @@ class App:
                       random_seed=self.random_seed_var.get(),
                       transparent=self.transparent_var.get(),
                       upscale=self.upscale_var.get(),
+                      hires=self.hires_var.get(),
+                      hires_scale=(2.0 if self.hires_scale_var.get()
+                                   .startswith("2") else 1.5),
+                      freeu=self.freeu_var.get(),
                       preset=self.preset_var.get(),
                       ref_images=edit_refs,
                       rag_ref_paths=rag_refs, rag_embed_paths=rag_embed_paths,

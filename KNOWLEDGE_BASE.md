@@ -969,6 +969,19 @@ the run.
   `actor_excluded` (sets -> sorted lists), restored BEFORE `_set_actor`
   so the view reflects it. `_refresh_actor_view` shows "photo i/N
   (dropped) · K sent"; the Using list lists the kept photos.
+- **Quality suite (v2.3.0).** A new QUALITY UI section on the gen tab
+  (`hires_var`/`hires_scale_var`/`freeu_var`; the 4x `upscale_var` moved in).
+  build_graph additions: **hi-res fix** = `LatentUpscaleBy` (bislerp,
+  scale 1.5/2) then a SECOND `KSampler` at denoise ~0.45 and 0.6× steps, its
+  output feeding VAEDecode via a `sampler_out` var (skipped when
+  `ref_image_name` or `border_assets` — img2img/mask jobs); **FreeU_V2** on
+  `model_ref` before the sampler (SDXL family only, not flux/schnell);
+  **CLIPSetLastLayer(-2)** for the anime family (v2.2.1). `builtin_enhance`
+  now wraps the subject's first clause in `(head:1.15)` for non-Flux families
+  (Flux ignores attention weights). Params `hires`/`hires_scale`/`freeu`
+  thread through the params dict, persistence and the autosave var list. All
+  off by default. Tests: build_graph asserts the nodes appear only in the
+  right cases (SDXL vs Flux vs img2img); update_ui 161.
 - **Face-swap install loop — a method on the wrong class (v2.2.1).** app.log:
   `Face-swap setup failed: 'App' object has no attribute '_download_to'`,
   repeating every Generate. `_download_to` was defined on the **Generator**

@@ -1,5 +1,20 @@
 # Changelog — AI Image Generator Suite
 
+## v2.3.0 — 2026-09-08
+- **New QUALITY section** on the Image generation tab, grouping the
+  extra-quality passes in one place (all off by default):
+  - **Hi-res fix (add detail)** — a real second pass: the picture is
+    upscaled in latent space and lightly re-sampled, so texture and detail
+    are *added*, not just enlarged. The biggest single quality lever. Choose
+    1.5× or 2×. (Skipped for edits and border jobs.)
+  - **Extra detail (FreeU)** — a near-free contrast and fine-detail boost on
+    SDXL models.
+  - **Upscale 4×** — moved here; enlarges the finished image last of all.
+- **Anime models get their detail from the enhancer too.** The ✨ built-in
+  prompt enhancer now lightly emphasises your main subject so SDXL-family
+  models stick to it (Flux, which ignores weighting, is left alone).
+- Anime-family models already got clip skip 2 automatically in v2.2.1.
+
 ## v2.2.1 — 2026-09-08
 - **Fixed: the face-swap setup got stuck in a loop.** Setting up the Clone
   Tool's face-swap engine failed right after installing and then asked to

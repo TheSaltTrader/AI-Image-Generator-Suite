@@ -432,6 +432,28 @@ check("the face-swap install runs to 'ready' with no error (no _download_to cras
       not _errs and (_fs_tmp / ".ready").exists(), _errs)
 (app.INSIGHTFACE_DIR, app.subprocess.run, app.download_stream,
  app._sha256, ui.ui_queue) = _save
+# ---- the QUALITY section: hi-res fix, extra detail (FreeU), 4x upscale ----
+check("a QUALITY section exists with hi-res, FreeU and upscale toggles",
+      hasattr(ui, "hires_var") and hasattr(ui, "hires_scale_var")
+      and hasattr(ui, "freeu_var") and hasattr(ui, "upscale_var")
+      and any(str(getattr(w, "cget", lambda *_: "")("text")) == "QUALITY"
+              for w in _walk(ui._page_gen) if w.winfo_class() == "TLabel"))
+_pq = dict(model="Juggernaut-XL.safetensors", prompt="a hero", negative="",
+           seed=1, width=1024, height=1024, loras=[], steps=None, cfg=None,
+           hires=True, hires_scale=1.5, freeu=True)
+_qt = [v["class_type"] for v in app.build_graph(_pq).values()]
+check("Hi-res fix adds a latent upscale and a second sampling pass",
+      "LatentUpscaleBy" in _qt and _qt.count("KSampler") == 2, _qt)
+check("Extra detail adds a FreeU node on SDXL", "FreeU_V2" in _qt)
+ui.hires_var.set(True); ui.hires_scale_var.set("2×"); ui.freeu_var.set(True)
+_sq = dict(ui._collect_ui_state())
+ui.hires_var.set(False); ui.freeu_var.set(False); ui.hires_scale_var.set("1.5×")
+ui._apply_ui_state(_sq)
+root.update()
+check("the Quality toggles are remembered",
+      ui.hires_var.get() and ui.freeu_var.get()
+      and ui.hires_scale_var.get() == "2×")
+ui.hires_var.set(False); ui.freeu_var.set(False)
 # a face from a file, and the source round-trips through persistence
 import tempfile as _tf
 from PIL import Image as _Im2
