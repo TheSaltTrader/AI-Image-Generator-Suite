@@ -144,7 +144,7 @@
     "dir": "clip_vision"
   },
   {
-    "url": "https://github.com/TheSaltTrader/Comic-Book-Art-Generator/releases/download/v1.10.1/SDXL_BorderFrames_v1.safetensors",
+    "url": "https://github.com/TheSaltTrader/AI-Image-Generator-Suite/releases/download/v1.10.1/SDXL_BorderFrames_v1.safetensors",
     "local": "SDXL_BorderFrames_v1.safetensors",
     "dir": "loras"
   },
