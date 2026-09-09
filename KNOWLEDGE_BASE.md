@@ -969,6 +969,23 @@ the run.
   `actor_excluded` (sets -> sorted lists), restored BEFORE `_set_actor`
   so the view reflects it. `_refresh_actor_view` shows "photo i/N
   (dropped) · K sent"; the Using list lists the kept photos.
+- **Face-swap install loop — a method on the wrong class (v2.2.1).** app.log:
+  `Face-swap setup failed: 'App' object has no attribute '_download_to'`,
+  repeating every Generate. `_download_to` was defined on the **Generator**
+  class (next to `_face_swap_local`/`_swap_face_pass`, which ARE Generator
+  methods) but `_install_face_swap` is an **App** method — so the App call
+  `self._download_to(...)` raised, the install never wrote `.ready`,
+  `faceswap_ready()` stayed False, and the offer re-fired on every Generate.
+  The clone engine was uninstallable in the shipped v2.1/v2.2. FIX: made it a
+  module function `download_stream(url, dest, progress=None)` both classes can
+  call; `_install_face_swap` passes a `ui_queue` progress lambda. Plus a
+  `self._faceswap_installing` flag so `_generate` shows "still setting up"
+  instead of re-asking mid-install. update_ui_test now stubs subprocess/
+  download/_sha256 and asserts `_install_face_swap` reaches `.ready` with no
+  error queued. LESSON: when adding a helper, put it on the class that CALLS
+  it (or make it module-level) — the recurring "written for one shape" defect.
+  Also v2.2.1: anime family gets `CLIPSetLastLayer(-2)` (clip skip 2) in
+  build_graph (SDXL/Flux unaffected).
 - **Validation + hardening + new icon (v2.2.0).** LODESTONE: the portable kit
   (`kit/lodestone.py` + `templates/`, copied from the CDG Spec Forge kit — the
   LATEST kit is under CDG, not Community Uploader) with a project `kit/

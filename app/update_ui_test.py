@@ -407,6 +407,31 @@ root.update()
 check("the chosen clone method is remembered",
       ui._clone_method() == "qwen", ui.clone_method_var.get())
 ui.clone_method_var.set(app.CLONE_METHODS[0][0])
+# the face-swap install must not crash on a wrong-class method reference
+# (v2.1/v2.2 shipped App._install_face_swap calling Generator._download_to
+# -> AttributeError -> re-offered every Generate = an install loop)
+check("download_stream is a module-level helper, not a class method",
+      callable(getattr(app, "download_stream", None)))
+import types as _types3, tempfile as _tf3, queue as _q3
+_fs_tmp = Path(_tf3.mkdtemp())
+_save = (app.INSIGHTFACE_DIR, app.subprocess.run, app.download_stream,
+         app._sha256, ui.ui_queue)
+app.INSIGHTFACE_DIR = _fs_tmp
+app.subprocess.run = lambda *a, **k: _types3.SimpleNamespace(
+    returncode=0, stdout="DET_OK", stderr="")
+app.download_stream = lambda url, dest, progress=None: Path(dest).write_bytes(b"x")
+app._sha256 = lambda p: app.INSWAPPER_SHA256
+ui.ui_queue = _iq = _q3.Queue()
+ui._install_face_swap()
+_errs = []
+while not _iq.empty():
+    _m = _iq.get()
+    if _m[0] == "error":
+        _errs.append(_m[1])
+check("the face-swap install runs to 'ready' with no error (no _download_to crash)",
+      not _errs and (_fs_tmp / ".ready").exists(), _errs)
+(app.INSIGHTFACE_DIR, app.subprocess.run, app.download_stream,
+ app._sha256, ui.ui_queue) = _save
 # a face from a file, and the source round-trips through persistence
 import tempfile as _tf
 from PIL import Image as _Im2

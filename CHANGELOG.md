@@ -1,5 +1,15 @@
 # Changelog — AI Image Generator Suite
 
+## v2.2.1 — 2026-09-08
+- **Fixed: the face-swap setup got stuck in a loop.** Setting up the Clone
+  Tool's face-swap engine failed right after installing and then asked to
+  install again on every Generate. It now completes and the Clone Tool works.
+  (The setup routine referenced an internal helper on the wrong object; the
+  helper is now shared correctly.) While the setup is running, Generate now
+  says "still setting up" instead of re-asking.
+- **Anime models now use clip skip 2** automatically (Illustrious / NoobAI /
+  Pony / Animagine families), which fixes their slightly-off colour and detail.
+
 ## v2.2.0 — 2026-09-08
 - **New app icon** — an artist drawing (a pencil sketching on a canvas). It
   is the desktop shortcut, taskbar and window icon from this release on.

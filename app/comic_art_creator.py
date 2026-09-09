@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "2.2.0"
+APP_VERSION = "2.2.1"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -1405,6 +1405,13 @@ def build_graph(p):
         model_ref, clip_ref = [str(nid), 0], [str(nid), 1]
         nid += 1
 
+    # anime / illustrious-family models are trained expecting clip skip 2 —
+    # applying it fixes the slightly-off colour and detail they get otherwise
+    if fam == "anime":
+        g["19"] = {"class_type": "CLIPSetLastLayer",
+                   "inputs": {"clip": clip_ref, "stop_at_clip_layer": -2}}
+        clip_ref = ["19", 0]
+
     g["2"] = {"class_type": "CLIPTextEncode",
               "inputs": {"text": p["prompt"], "clip": clip_ref}}
     g["3"] = {"class_type": "CLIPTextEncode",
@@ -1647,6 +1654,27 @@ def _sha256(path):
         for block in iter(lambda: fh.read(1 << 20), b""):
             h.update(block)
     return h.hexdigest()
+
+
+def download_stream(url, dest, progress=None):
+    """Stream a file to dest atomically (via a .part file), honouring the
+    global CANCEL. progress(done, total) is called as it goes. A plain
+    function so both the App and the Generator can use it."""
+    dest = Path(dest)
+    tmp = dest.with_suffix(dest.suffix + ".part")
+    with requests.get(url, stream=True, timeout=120) as r:
+        r.raise_for_status()
+        total = int(r.headers.get("Content-Length") or 0)
+        done = 0
+        with open(tmp, "wb") as fh:
+            for chunk in r.iter_content(1 << 20):
+                if CANCEL.is_set():
+                    raise RuntimeError("cancelled")
+                fh.write(chunk)
+                done += len(chunk)
+                if progress and total:
+                    progress(done, total)
+    os.replace(tmp, dest)
 
 
 def faceswap_ready():
@@ -2800,27 +2828,6 @@ class Generator:
             self.q.put(("status", f"Face clone skipped ({e}); kept the "
                                   "image."))
         return None
-
-    def _download_to(self, url, dest, key):
-        """Stream a file to dest with progress on the loading strip (key).
-        Honours the global CANCEL. Writes atomically via a .part file."""
-        dest = Path(dest)
-        tmp = dest.with_suffix(dest.suffix + ".part")
-        with requests.get(url, stream=True, timeout=120) as r:
-            r.raise_for_status()
-            total = int(r.headers.get("Content-Length") or 0)
-            done = 0
-            with open(tmp, "wb") as fh:
-                for chunk in r.iter_content(1 << 20):
-                    if CANCEL.is_set():
-                        raise RuntimeError("cancelled")
-                    fh.write(chunk)
-                    done += len(chunk)
-                    if total:
-                        self.ui_queue.put(
-                            ("pending", key,
-                             f"downloading ({done * 100 // total}%)"))
-        os.replace(tmp, dest)
 
     def _clean_border_center(self, ws, img, p):
         """Second pass: the frame came out with content in the middle —
@@ -7503,6 +7510,12 @@ class App:
                 swap_editor = self._clone_method()
                 if swap_editor == "faceswap":
                     if not faceswap_ready():
+                        if getattr(self, "_faceswap_installing", False):
+                            self.status_var.set(
+                                "The face-swap engine is still setting up — "
+                                "watch the loading strip and Generate again "
+                                "when it says ready.")
+                            return
                         if messagebox.askyesno(
                                 "Set up face swapping",
                                 "The Face swap method needs a one-time "
@@ -8687,6 +8700,7 @@ class App:
             self.ui_queue.put(("status", "The face-swap engine is already "
                                          "setting up — watch the strip."))
             return
+        self._faceswap_installing = True
         self.ui_queue.put(("pending", "faceswap", "setting up face swap"))
         try:
             INSIGHTFACE_DIR.mkdir(parents=True, exist_ok=True)
@@ -8703,7 +8717,11 @@ class App:
             if not (dest.exists() and _sha256(dest) == INSWAPPER_SHA256):
                 self.ui_queue.put(("status", "Downloading the face-swap model "
                                              "(~550 MB, one time)…"))
-                self._download_to(INSWAPPER_URL, dest, "faceswap")
+                download_stream(
+                    INSWAPPER_URL, dest,
+                    lambda d, t: self.ui_queue.put(
+                        ("pending", "faceswap",
+                         f"downloading ({d * 100 // t}%)")))
                 if _sha256(dest) != INSWAPPER_SHA256:
                     try:
                         dest.unlink()
@@ -8728,6 +8746,7 @@ class App:
             applog.exception("face-swap setup failed")
             self.ui_queue.put(("error", f"Face-swap setup failed: {e}"))
         finally:
+            self._faceswap_installing = False
             self.ui_queue.put(("pending", "faceswap", None))
             self._addon_lock.release()
 
