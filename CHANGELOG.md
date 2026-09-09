@@ -1,5 +1,18 @@
 # Changelog — AI Image Generator Suite
 
+## v2.7.1 — 2026-09-09
+- **New: Anatomy guard (Quality section) — far fewer extra limbs and bad
+  hands.** Big image sizes are the main cause of mutant anatomy (SDXL was
+  trained near 1024px, so a large base can grow a second pair of legs). With
+  the guard on, the base is drawn at SDXL's native size and then upscaled to
+  your chosen size, and a strong anatomy negative is added. In testing at the
+  same seed it turned a figure with a duplicated floating pair of legs into a
+  single clean figure. SDXL models only; adds a little time (it upscales like
+  Hi-res).
+- **The "Delete ALL art files" button is now clearly red (danger).** It
+  permanently removes every generated image from the output folder, so it's
+  styled red and still asks for confirmation first.
+
 ## v2.7.0 — 2026-09-09
 - **New: Variations — save a person you like and make more of them.** When a
   batch gives you a great person in one image, select it and press the new

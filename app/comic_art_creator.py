@@ -102,7 +102,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.7.0"
+APP_VERSION = "2.7.1"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -174,6 +174,19 @@ REDUX_SIGLIP = "sigclip_vision_patch14_384.safetensors"
 # pass sharpened them. Validated on real embeds: flare/watermark gone, the RAG
 # look kept.
 IPA_END_AT = 0.6
+
+# Anatomy guard: appended to the negative to fight mutant anatomy. Paired with
+# a native-resolution base pass (see build_graph) because oversized bases are
+# the biggest cause of extra limbs on SDXL.
+ANATOMY_NEG = ("extra limbs, extra arms, extra legs, extra hands, "
+               "extra fingers, fused fingers, too many fingers, "
+               "missing fingers, malformed hands, mutated hands, bad hands, "
+               "poorly drawn hands, deformed, disfigured, bad anatomy, "
+               "malformed limbs, extra digit, fewer digits, long neck, "
+               "cloned face, mutation")
+# SDXL's native pixel budget — the base is drawn at (or below) this then
+# upscaled to the requested size, so anatomy stays sane at large outputs.
+ANATOMY_NATIVE_MAX = 1152
 
 
 def redux_ready():
@@ -1669,9 +1682,18 @@ def build_graph(p):
                   "inputs": {"width": p["width"], "height": p["height"],
                              "batch_size": 1}}
     else:
+        bw, bh = p["width"], p["height"]
+        if p.get("anatomy_guard") and not p.get("border_assets") \
+                and not p.get("ref_image_name"):
+            # draw the base at SDXL's native budget — oversized bases are the
+            # main cause of extra limbs; it's upscaled to full size below
+            m = max(bw, bh)
+            if m > ANATOMY_NATIVE_MAX:
+                sc = ANATOMY_NATIVE_MAX / float(m)
+                bw = max(512, int(round(bw * sc / 8)) * 8)
+                bh = max(512, int(round(bh * sc / 8)) * 8)
         g["5"] = {"class_type": "EmptyLatentImage",
-                  "inputs": {"width": p["width"], "height": p["height"],
-                             "batch_size": 1}}
+                  "inputs": {"width": bw, "height": bh, "batch_size": 1}}
 
     # Extra detail (FreeU): reweights the UNet skip connections for more
     # contrast and fine detail — a near-free quality bump on SDXL families
@@ -1689,6 +1711,26 @@ def build_graph(p):
                          "sampler_name": d["sampler"], "scheduler": d["scheduler"],
                          "denoise": denoise}}
     sampler_out = ["6", 0]
+    # Anatomy guard: the base was drawn native-small — upscale it to the
+    # requested size and lightly re-sample, so the final is full-size but
+    # without the extra-limb errors a giant base would have produced.
+    if p.get("anatomy_guard") and fam not in ("flux", "schnell") \
+            and not p.get("border_assets") and not p.get("ref_image_name") \
+            and (g["5"]["inputs"]["width"] != p["width"]
+                 or g["5"]["inputs"]["height"] != p["height"]):
+        g["62"] = {"class_type": "LatentUpscale",
+                   "inputs": {"samples": sampler_out,
+                              "upscale_method": "bislerp",
+                              "width": p["width"], "height": p["height"],
+                              "crop": "disabled"}}
+        g["63"] = {"class_type": "KSampler",
+                   "inputs": {"model": model_ref, "positive": pos_ref,
+                              "negative": ["3", 0], "latent_image": ["62", 0],
+                              "seed": p["seed"],
+                              "steps": max(12, int(steps * 0.5)), "cfg": cfg,
+                              "sampler_name": d["sampler"],
+                              "scheduler": d["scheduler"], "denoise": 0.45}}
+        sampler_out = ["63", 0]
     # Hi-res fix: a REAL detail pass (not just the 4x model upscaler) —
     # upscale the latent and run a short second sampling at low denoise, so
     # detail is added and anatomy firms up. Skipped for img2img and border
@@ -1697,7 +1739,7 @@ def build_graph(p):
             and not p.get("ref_image_name"):
         scale = float(p.get("hires_scale") or 1.5)
         g["60"] = {"class_type": "LatentUpscaleBy",
-                   "inputs": {"samples": ["6", 0],
+                   "inputs": {"samples": sampler_out,
                               "upscale_method": "bislerp", "scale_by": scale}}
         g["61"] = {"class_type": "KSampler",
                    "inputs": {"model": model_ref, "positive": pos_ref,
@@ -3393,6 +3435,11 @@ class App:
               foreground=[("selected", ACCENT2)])
         s.map("Go.TButton", background=[("active", GO_ACTIVE),
                                         ("disabled", BG3)])
+        # a loud red button for destructive "delete everything" actions
+        s.configure("Danger.TButton", background="#c0202e", foreground="white",
+                    font=(UI_FONT, 9, "bold"))
+        s.map("Danger.TButton", background=[("active", "#e02436"),
+                                            ("disabled", BG3)])
         s.configure("Danger.TButton", background="#c0392b",
                     foreground="white", padding=6)
         s.map("Danger.TButton", background=[("active", "#e74c3c")])
@@ -3906,6 +3953,18 @@ class App:
         up_cb.grid(row=0, column=3)
         self._tip(up_cb, "Enlarge the finished image 4× with an upscaler model "
                          "(applied last of all). Slower and uses more VRAM.")
+        self.anatomy_var = BooleanVar(value=False)
+        arow = ttk.Frame(left); arow.grid(row=r, sticky=W, pady=(0, 4)); r += 1
+        anat_cb = ttk.Checkbutton(
+            arow, text="🩹 Anatomy guard — fewer extra limbs / bad hands",
+            variable=self.anatomy_var)
+        anat_cb.grid(row=0, column=0, sticky=W)
+        self._tip(anat_cb,
+                  "Fights mutant anatomy — extra arms, fused fingers, malformed "
+                  "hands. It adds a strong anatomy negative AND draws the base "
+                  "at SDXL's native size, then upscales to your chosen size — "
+                  "oversized bases are the main cause of extra limbs. SDXL "
+                  "models only; adds a little time (it upscales like Hi-res).")
 
         seedrow = ttk.Frame(left); seedrow.grid(row=r, sticky=NSEW, pady=4); r += 1
         ttk.Label(seedrow, text="Seed", style="Dim.TLabel").grid(row=0, column=0)
@@ -4679,12 +4738,14 @@ class App:
         clrhist_btn.pack(fill="x", pady=(0, 3))
         self._tip(clrhist_btn, "Clear the gallery strip for this session. The "
                                "image files on disk are kept.")
-        self.delfiles_btn = ttk.Button(gbtns, text="❌ Delete art files…",
+        self.delfiles_btn = ttk.Button(gbtns, text="🗑 DELETE ALL art files",
+                                       style="Danger.TButton",
                                        command=self._delete_history_files)
         self.delfiles_btn.pack(fill="x")
         self._tip(self.delfiles_btn,
-                  "Permanently delete the generated image files from the "
-                  "output folder (asks first).")
+                  "DANGER: permanently deletes EVERY generated image file from "
+                  "the output folder — all of them, not just the gallery. Red "
+                  "because it can't be undone; it asks for confirmation first.")
 
     # -------------------------------------------------- persistence
     def _get(self, box):
@@ -6199,6 +6260,7 @@ class App:
             "hires": self.hires_var.get(),
             "hires_scale": self.hires_scale_var.get(),
             "freeu": self.freeu_var.get(),
+            "anatomy": self.anatomy_var.get(),
             "tab": (self.left_tabs.index("current")
                     if hasattr(self, "left_tabs") else 0),
             "ragmap_path": self.ragmap_path,
@@ -6298,6 +6360,7 @@ class App:
             self.transparent_var.set(st.get("transparent", False))
             self.upscale_var.set(st.get("upscale", False))
             self.hires_var.set(st.get("hires", False))
+            self.anatomy_var.set(st.get("anatomy", False))
             self.hires_scale_var.set(st.get("hires_scale", "1.5×"))
             self.freeu_var.set(st.get("freeu", False))
             self.face_source_var.set(st.get("face_source", "file"))
@@ -6360,7 +6423,7 @@ class App:
                     self.steps_var, self.seed_var, self.batch_var,
                     self.transparent_var, self.upscale_var,
                     self.hires_var, self.hires_scale_var, self.freeu_var,
-                    self.random_seed_var,
+                    self.anatomy_var, self.random_seed_var,
                     self.lora_strength, self.change_var, self.editor_var,
                     self.editor_canvas_var,
                     self.border_auto_var, self.border_aspect_var,
@@ -8423,8 +8486,16 @@ class App:
                 "shows through (turn RAG weight up in the map for more "
                 "reference, down for more style).")
 
+        # Anatomy guard: strengthen the negative and (in build_graph) draw the
+        # base at native size. SDXL families only — Flux/SD3 ignore it.
+        anatomy_on = (self.anatomy_var.get() and not editing
+                      and model_family(model) not in ("flux", "schnell", "sd3"))
+        neg = self._get(self.negative_box)
+        if anatomy_on:
+            neg = (neg + ", " + ANATOMY_NEG) if neg.strip() else ANATOMY_NEG
+
         params = dict(prompt=full_prompt, user_prompt=prompt, style=style,
-                      negative=self._get(self.negative_box),
+                      negative=neg, anatomy_guard=anatomy_on,
                       model=model, loras=loras, width=w, height=h, seed=seed,
                       steps=steps, cfg=None, batch=self.batch_var.get(),
                       random_seed=self.random_seed_var.get(),

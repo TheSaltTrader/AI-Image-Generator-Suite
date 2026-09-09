@@ -90,6 +90,29 @@ try:
 except Exception as _e:
     check("variation lock toggles cleanly (off)", False, str(_e))
 
+# --- Anatomy guard ---
+check("anatomy guard toggle exists", hasattr(ui, "anatomy_var"))
+try:
+    _p = dict(model="Juggernaut-XL-v9.safetensors", prompt="a woman",
+              negative="", style="", loras=[], width=1408, height=1408,
+              seed=1, steps=30, cfg=6.0, anatomy_guard=True, batch=1)
+    _g = app.build_graph(_p)
+    check("anatomy guard caps the base to native",
+          max(_g["5"]["inputs"]["width"], _g["5"]["inputs"]["height"])
+          <= app.ANATOMY_NATIVE_MAX)
+    check("anatomy guard adds an upscale-to-target refine",
+          "62" in _g and _g["62"]["inputs"]["width"] == 1408)
+    _p2 = dict(_p); _p2["anatomy_guard"] = False
+    _g2 = app.build_graph(_p2)
+    check("no anatomy nodes when the guard is off",
+          _g2["5"]["inputs"]["width"] == 1408 and "62" not in _g2)
+except Exception as _e:
+    check("anatomy guard build_graph works", False, str(_e))
+
+# --- red DELETE ALL danger button ---
+check("Delete-all button is the red Danger style",
+      str(ui.delfiles_btn.cget("style")) == "Danger.TButton")
+
 check("Check for updates button exists", hasattr(ui, "upd_btn"))
 check("button is enabled at rest",
       "disabled" not in ui.upd_btn.state())

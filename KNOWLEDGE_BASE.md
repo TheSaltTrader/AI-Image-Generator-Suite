@@ -1003,6 +1003,21 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Anatomy guard + red Delete-all (v2.7.1).** `anatomy_var` checkbox in the
+  QUALITY section. When on (SDXL only, not editing/border/img2img): `_generate`
+  appends `ANATOMY_NEG` to the negative and sets `p["anatomy_guard"]`;
+  build_graph draws the EmptyLatentImage base at `ANATOMY_NATIVE_MAX`=1152 (max
+  dim, /8-rounded) then `LatentUpscale` (node 62) to the requested (w,h) + a
+  refine KSampler (node 63, steps*0.5, denoise 0.45), and the hi-res block (if
+  also on) chains off `sampler_out` after it. VALIDATED at the same seed: a
+  1408 base grew a duplicated floating pair of legs; guard on (native 1152 base
+  -> upscaled) = one clean figure, correct hands. Root cause of extra limbs =
+  base bigger than SDXL's ~1024 training size. `Danger.TButton` red style
+  added; the existing "Delete art files" button (delfiles_btn ->
+  `_delete_history_files`, deletes ALL of OUTPUT+RAW_OUT with a red-text
+  confirm) is now styled red + relabelled "🗑 DELETE ALL art files" (its
+  confirm dialog already asked for Danger.TButton, which didn't exist until
+  now). Tests: update_ui 184 (+5).
 - **Variations — save/recall a person (v2.7.0).** New subsystem
   `app/variations_db.py` (`VariationsDB`): a per-install store at
   `<project>/variations/` = SQLite index `variations.db` + copied image files
