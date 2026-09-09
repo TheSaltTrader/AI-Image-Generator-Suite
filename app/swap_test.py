@@ -103,31 +103,37 @@ def run(batch, cancel_after_swaps=None):
     return msgs
 
 
+def _kind(img):
+    # the fake base is red, the fake clone is blue — tell them apart
+    px = img.convert("RGB").getpixel((0, 0))
+    return "cloned" if px[2] > px[0] else "base"
+
+
 print("ordering")
 msgs = run(3)
-images = [(m[2].get("user_prompt", "base"), m[2]["seed"])
-          for m in msgs if m[0] == "image"]
-check("three bases come first, then three swaps",
-      [u for u, _ in images] == ["base"] * 3 + ["face-swapped"] * 3, images)
-check("each swap keeps its base's seed, in order",
-      [s for u, s in images if u == "face-swapped"] == [100, 101, 102])
-check("the swap ran once per base, after all bases", order == [100, 101, 102],
+images = [(_kind(m[1]), m[2]["seed"]) for m in msgs if m[0] == "image"]
+check("one finished image per base — all cloned, no separate faceless base",
+      [u for u, _ in images] == ["cloned"] * 3, images)
+check("each cloned image keeps its base's seed, in order",
+      [s for _, s in images] == [100, 101, 102])
+check("the clone ran once per base, after all bases", order == [100, 101, 102],
       order)
-check("the swap phase says which picture it is on",
-      any("Swapping the face into picture 2/3" in str(m[1])
+check("the clone phase says which picture it is on",
+      any("Cloning the face into picture 2/3" in str(m[1])
           for m in msgs if m[0] == "status"))
 check("the run ends with done", msgs[-1][0] == "done")
-check("a single picture still swaps", len([1 for m in run(1) if m[0] == "image"]) == 2)
+check("a single picture makes exactly one finished image",
+      len([1 for m in run(1) if m[0] == "image"]) == 1)
 
 print("cancel")
 msgs = run(3, cancel_after_swaps=2)
-images = [(m[2].get("user_prompt", "base"), m[2]["seed"])
-          for m in msgs if m[0] == "image"]
-check("cancelling in the swap phase keeps every base",
-      [u for u, _ in images].count("base") == 3)
-check("…and the swaps done so far", [u for u, _ in images].count("face-swapped") == 2)
-check("…and says how many were swapped",
-      any("2 of 3 swapped" in str(m[1]) for m in msgs if m[0] == "status"),
+images = [(_kind(m[1]), m[2]["seed"]) for m in msgs if m[0] == "image"]
+check("cancelling still emits one image per base (no loss)",
+      len(images) == 3, images)
+check("…the done ones are cloned; the interrupted one keeps its base",
+      [u for u, _ in images] == ["cloned", "cloned", "base"], images)
+check("…and says how many were cloned",
+      any("2 of 3 cloned" in str(m[1]) for m in msgs if m[0] == "status"),
       [m[1] for m in msgs if m[0] == "status"][-2:])
 cac.CANCEL.clear()
 

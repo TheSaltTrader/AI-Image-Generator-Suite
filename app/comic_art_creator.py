@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -779,6 +779,14 @@ EDITOR_ENGINES = {
     "Qwen Image Edit — best text removal (Apache)": "qwen",
 }
 EDITOR_VRAM = {"kontext": 16, "qwen": 24, "wan": 16, "wanflf": 20}
+
+# The Clone Tool's selectable methods (label shown in the dropdown -> engine
+# key). "faceswap" is the fast local identity swap; the editors re-render.
+CLONE_METHODS = [
+    ("Face swap — fast, best likeness", "faceswap"),
+    ("Qwen editor — re-render (~28 GB)", "qwen"),
+    ("Flux Kontext — re-render (~11 GB)", "kontext"),
+]
 KONTEXT_FILE = "flux1-dev-kontext_fp8_scaled.safetensors"
 QWEN_EDIT_FILE = "qwen_image_edit_2511_fp8mixed.safetensors"
 QWEN_TE_FILE = "qwen_2.5_vl_7b_fp8_scaled.safetensors"
@@ -1610,6 +1618,121 @@ SWAP_GUIDANCE = 3.0
 # denoise for the swap, then restore the base's pixels wherever the swap
 # didn't genuinely change anything. (The graphs keep the swap_denoise
 # capability for future use.)
+
+
+# --------------------------------------------------------------------------
+# the local face-swap engine (insightface / inswapper) — the Clone Tool's
+# default "Face swap" method. A true identity swap: detect the face in the
+# freshly drawn image and replace it with the chosen person's face. Runs in
+# the engine venv (like rembg), ~550 MB one-time, seconds per swap, and
+# matches the selected person far more closely than a re-rendering editor.
+# --------------------------------------------------------------------------
+INSIGHTFACE_DIR = MODELS / "insightface"
+INSWAPPER_FILE = "inswapper_128.onnx"
+INSWAPPER_URL = ("https://huggingface.co/ezioruan/inswapper_128.onnx/"
+                 "resolve/main/inswapper_128.onnx")
+
+
+def faceswap_ready():
+    """True when the local face-swap engine can run: the swap model and the
+    buffalo_l detector are on disk and install verified insightface imports
+    (a .ready marker). A cheap file check — no subprocess."""
+    return ((INSIGHTFACE_DIR / INSWAPPER_FILE).exists()
+            and (INSIGHTFACE_DIR / "models" / "buffalo_l"
+                 / "det_10g.onnx").exists()
+            and (INSIGHTFACE_DIR / ".ready").exists())
+
+
+_FACESWAP_CODE = r'''
+import os, sys
+os.environ["INSIGHTFACE_HOME"] = sys.argv[1]
+import numpy as np, cv2
+from insightface.app import FaceAnalysis
+from insightface.model_zoo import get_model
+
+def imread(p):
+    try:
+        return cv2.imdecode(np.fromfile(p, dtype=np.uint8), cv2.IMREAD_COLOR)
+    except Exception:
+        return None
+
+def imwrite(p, img):
+    ok, buf = cv2.imencode(os.path.splitext(p)[1] or ".png", img)
+    if ok:
+        buf.tofile(p)
+    return ok
+
+root, insw, base_path, out_path = sys.argv[1:5]
+faces = sys.argv[5:]
+gpu = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+cpu = ["CPUExecutionProvider"]
+try:
+    fa = FaceAnalysis(name="buffalo_l", root=root, providers=gpu)
+    fa.prepare(ctx_id=0, det_size=(640, 640))
+except Exception:
+    fa = FaceAnalysis(name="buffalo_l", root=root, providers=cpu)
+    fa.prepare(ctx_id=-1, det_size=(640, 640))
+try:
+    sw = get_model(insw, providers=gpu)
+except Exception:
+    sw = get_model(insw, providers=cpu)
+
+def biggest(img):
+    fs = fa.get(img)
+    if not fs:
+        return None
+    return max(fs, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+
+embs, srcf = [], None
+for p in faces:
+    im = imread(p)
+    if im is None:
+        continue
+    f = biggest(im)
+    if f is None:
+        continue
+    srcf = f
+    embs.append(f.embedding)      # raw embedding; normed_embedding derives
+if srcf is None or not embs:
+    print("NOFACE_SOURCE")
+    sys.exit(4)
+# average the identity across all photos of the person, then let insightface
+# recompute normed_embedding from it (that property is read-only in 2.0)
+srcf.embedding = np.mean(embs, axis=0).astype(np.float32)
+base = imread(base_path)
+if base is None:
+    print("NOBASE")
+    sys.exit(5)
+tfs = fa.get(base)
+if not tfs:
+    print("NOFACE_TARGET")
+    sys.exit(6)
+res = base.copy()
+for tf in tfs:
+    res = sw.get(res, tf, srcf, paste_back=True)
+imwrite(out_path, res)
+print("OK", len(tfs))
+'''
+
+_FACESWAP_INIT_CODE = (
+    "import os, sys; os.environ['INSIGHTFACE_HOME'] = sys.argv[1]; "
+    "from insightface.app import FaceAnalysis; "
+    "fa = FaceAnalysis(name='buffalo_l', root=sys.argv[1]); "
+    "fa.prepare(ctx_id=-1, det_size=(640, 640)); print('DET_OK')")
+
+
+def run_face_swap(base_path, out_path, face_paths, timeout=900):
+    """Swap the identity from face_paths onto base_path (writing out_path),
+    in the engine venv. Returns (returncode, last_stdout_or_stderr_line)."""
+    args = [str(engine_python()), "-c", _FACESWAP_CODE,
+            str(INSIGHTFACE_DIR), str(INSIGHTFACE_DIR / INSWAPPER_FILE),
+            str(base_path), str(out_path)] + [str(p) for p in face_paths]
+    r = subprocess.run(args, capture_output=True, text=True,
+                       creationflags=NO_WINDOW, env=_contained_env(),
+                       timeout=timeout)
+    lines = [ln for ln in (r.stdout or "").splitlines() if ln.strip()]
+    tail = lines[-1] if lines else (r.stderr or "").strip()[-200:]
+    return r.returncode, tail
 
 
 SWAP_THR_CAP = 40.0        # a globally re-rendered base must not push the
@@ -2497,33 +2620,42 @@ class Generator:
                             and not params.get("edit_image_names") \
                             and not border_center_clean(img):
                         img = self._clean_border_center(ws, img, p)
-                    self.q.put(("image", img, p))
                     if params.get("swap_face"):
-                        # gen-then-swap: the swaps run AFTER every base, so
-                        # the 28 GB swap model is loaded once per batch
-                        # rather than once per picture (each switch between
-                        # it and the drawing model re-reads it from disk)
+                        # clone mode: the gallery gets ONE finished image (the
+                        # scene with the cloned face), not a separate faceless
+                        # base. Hold the base and clone it after the batch so a
+                        # heavy editor model loads at most once per batch.
                         pending_swaps.append((img, p))
+                    else:
+                        self.q.put(("image", img, p))
             for k, (img, p) in enumerate(pending_swaps):
                 if CANCEL.is_set():
+                    # cancelled before this one was cloned — keep the base so
+                    # the work isn't lost
+                    self.q.put(("image", img,
+                                {kk: vv for kk, vv in p.items()
+                                 if kk != "swap_face"}))
                     self.q.put(("status", f"Cancelled — {k} of "
-                                          f"{len(pending_swaps)} swapped."))
+                                          f"{len(pending_swaps)} cloned; kept "
+                                          "the un-cloned image."))
                     break
                 if len(pending_swaps) > 1:
-                    self.q.put(("status", "Swapping the face into picture "
+                    self.q.put(("status", "Cloning the face into picture "
                                           f"{k + 1}/{len(pending_swaps)}…"))
-                # swap at CANVAS size — the base may be 4x-upscaled
+                # clone at CANVAS size — the base may be 4x-upscaled
                 swapped = self._swap_face_pass(
                     ws, img, params["swap_face"], seed=p["seed"],
                     out_size=(p["width"], p["height"]),
-                    editor=params.get("swap_editor") or "kontext")
+                    editor=params.get("swap_editor") or "faceswap")
+                sp = dict(p)
+                sp.pop("swap_face", None)
                 if swapped is not None:
-                    sp = dict(p)
-                    sp.pop("swap_face", None)
                     sp["transparent"] = False
                     sp["upscale"] = False
-                    sp["user_prompt"] = "face-swapped"
-                    self.q.put(("image", swapped, sp))
+                # ONE image out: the cloned result when it worked, else the
+                # base (a status already explains why the clone was skipped)
+                self.q.put(("image", swapped if swapped is not None else img,
+                            sp))
             self.q.put(("done", None))
         finally:
             ws.close()
@@ -2547,10 +2679,13 @@ class Generator:
                 face_paths = [face_paths]
             face_paths = [p for p in face_paths if Path(p).exists()]
             if not face_paths:
-                self.q.put(("status", "Face swap skipped — the face image no "
+                self.q.put(("status", "Clone skipped — the face image no "
                                       "longer exists (deleted?); the base "
                                       "image is kept."))
                 return None
+            if editor == "faceswap":
+                return self._face_swap_local(base_img, face_paths, seed,
+                                             out_size)
             label = "Qwen" if editor == "qwen" else "Flux Kontext"
             self.q.put(("status", f"Swapping the face in ({label}) — the "
                                   "first swap can take minutes while the "
@@ -2611,6 +2746,65 @@ class Generator:
             self.q.put(("status", f"Face swap skipped ({e}); kept the base "
                                   "image."))
         return None
+
+    def _face_swap_local(self, base_img, face_paths, seed=0, out_size=None):
+        """The fast, local identity clone (insightface / inswapper): detect
+        the face in the freshly drawn base and replace it with the chosen
+        person's identity, averaged over all their photos. Returns the cloned
+        PIL image, or None (base kept) on any problem."""
+        try:
+            size = tuple(out_size) if out_size \
+                else (base_img.width, base_img.height)
+            up = base_img.convert("RGB")
+            if (up.width, up.height) != size:
+                up = up.resize(size, Image.LANCZOS)
+            RAW_OUT.mkdir(parents=True, exist_ok=True)
+            base_file = RAW_OUT / f"cbac_clone_base_{seed}.png"
+            out_file = RAW_OUT / f"cbac_clone_{seed}.png"
+            up.save(base_file)
+            self.q.put(("status", "Cloning the face onto the image…"))
+            rc, tail = run_face_swap(base_file, out_file,
+                                     [str(p) for p in face_paths])
+            applog.log("face clone (insightface): rc=%s %s" % (rc, tail))
+            if rc == 0 and out_file.exists():
+                return Image.open(out_file).convert("RGB")
+            if "NOFACE_TARGET" in (tail or ""):
+                self.q.put(("status", "No face was found in the generated "
+                            "image to clone onto — try a prompt with a clear, "
+                            "front-facing person; kept the image."))
+            elif "NOFACE_SOURCE" in (tail or ""):
+                self.q.put(("status", "No face was found in the chosen "
+                            "photo(s) — pick a clearer headshot; kept the "
+                            "image."))
+            else:
+                self.q.put(("status", "Face clone couldn't run; kept the "
+                            "image. (See app.log.)"))
+        except Exception as e:
+            applog.exception("local face clone failed")
+            self.q.put(("status", f"Face clone skipped ({e}); kept the "
+                                  "image."))
+        return None
+
+    def _download_to(self, url, dest, key):
+        """Stream a file to dest with progress on the loading strip (key).
+        Honours the global CANCEL. Writes atomically via a .part file."""
+        dest = Path(dest)
+        tmp = dest.with_suffix(dest.suffix + ".part")
+        with requests.get(url, stream=True, timeout=120) as r:
+            r.raise_for_status()
+            total = int(r.headers.get("Content-Length") or 0)
+            done = 0
+            with open(tmp, "wb") as fh:
+                for chunk in r.iter_content(1 << 20):
+                    if CANCEL.is_set():
+                        raise RuntimeError("cancelled")
+                    fh.write(chunk)
+                    done += len(chunk)
+                    if total:
+                        self.ui_queue.put(
+                            ("pending", key,
+                             f"downloading ({done * 100 // total}%)"))
+        os.replace(tmp, dest)
 
     def _clean_border_center(self, ws, img, p):
         """Second pass: the frame came out with content in the middle —
@@ -3476,20 +3670,20 @@ class App:
         # image editor — Gemini-style instruction editing
         r = self._rule(left, r)
         # ---------- CLONE A FACE onto the generated image ----------
-        fc_head = ttk.Label(left, text="FACE / CHARACTER (optional)",
+        fc_head = ttk.Label(left, text="CLONE TOOL (optional)",
                             style="Head.TLabel")
         fc_head.grid(row=r, sticky=W, pady=(10, 0)); r += 1
         self._tip(fc_head,
-                  "Put a specific person on the picture your prompt makes. "
-                  "Tick the box, choose a face from a file or a database, and "
-                  "Generate: your prompt (with the model, LoRAs and RAG map) "
-                  "draws the scene, then that face is placed on the person "
-                  "in it. Both pictures are kept.")
+                  "Clone a specific person onto the picture your prompt makes. "
+                  "Tick the box, pick the Method, choose a face from a file or "
+                  "a database, and Generate: your prompt (with the model, "
+                  "LoRAs and RAG map) draws the scene, then that person's face "
+                  "is cloned onto the person in it. Both pictures are kept.")
 
         # the on/off checkbox at the TOP; unticking greys the whole section
         self.swap_rag_var = BooleanVar(value=True)
         self.swap_cb = ttk.Checkbutton(
-            left, text="Put this face on the generated image",
+            left, text="Clone this face onto the generated image",
             variable=self.swap_rag_var, command=self._on_clone_toggle)
         self.swap_cb.grid(row=r, sticky=W, pady=(2, 2)); r += 1
         self._tip(self.swap_cb,
@@ -3502,6 +3696,26 @@ class App:
         self.clone_body.columnconfigure(0, weight=1)
         cb = self.clone_body
         cr = 0
+
+        # which engine does the clone — the fast local face swap by default,
+        # or a big editor that re-renders the face
+        self.clone_method_var = StringVar(value=CLONE_METHODS[0][0])
+        cmrow = ttk.Frame(cb); cmrow.grid(row=cr, sticky="ew", pady=(2, 2))
+        cr += 1
+        cmrow.columnconfigure(1, weight=1)
+        ttk.Label(cmrow, text="Method", style="Dim.TLabel").grid(row=0, column=0)
+        self.clone_method_dd = ttk.Combobox(
+            cmrow, textvariable=self.clone_method_var, state="readonly",
+            exportselection=False, values=[m[0] for m in CLONE_METHODS])
+        self.clone_method_dd.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        self.clone_method_dd.bind("<<ComboboxSelected>>",
+                                  lambda _e: self._schedule_persist())
+        self._tip(self.clone_method_dd,
+                  "How the chosen face is applied. 'Face swap' (recommended) "
+                  "is a fast, local engine (one-time ~550 MB setup) that "
+                  "closely matches the person you picked. 'Qwen' and 'Kontext' "
+                  "re-render the face with the big editor models — slower, and "
+                  "the likeness is looser.")
 
         self.face_source_var = StringVar(value="file")
         srcrow = ttk.Frame(cb); srcrow.grid(row=cr, sticky=W, pady=(2, 0)); cr += 1
@@ -5683,6 +5897,7 @@ class App:
             "ragmap_path": self.ragmap_path,
             "face_source": self.face_source_var.get(),
             "face_paths": self.face_paths,
+            "clone_method": self.clone_method_var.get(),
             "actordb_path": self.actordb_path,
             "actor_imdb": (self.actor_sel or {}).get("imdb_id"),
             "actor_photo": getattr(self, "actor_photo_i", 0),
@@ -5783,6 +5998,9 @@ class App:
             self.swap_use_rag_var.set(st.get("swap_use_rag", True))
             self.swap_use_lora_var.set(st.get("swap_use_lora", True))
             self.swap_fast_var.set(st.get("swap_fast", False))
+            cm = st.get("clone_method")
+            if cm in [m[0] for m in CLONE_METHODS]:
+                self.clone_method_var.set(cm)
             self._on_face_source()
             # the probe runs in the background, so remember the wanted
             # model and select it once the list arrives
@@ -7094,6 +7312,16 @@ class App:
         # panel when the pointer is over them
         self._arm_wheel(self.face_using)
 
+    def _clone_method(self):
+        """The engine key ('faceswap' | 'qwen' | 'kontext') for the Clone
+        Tool's selected Method."""
+        label = self.clone_method_var.get() if hasattr(self, "clone_method_var") \
+            else ""
+        for lbl, key in CLONE_METHODS:
+            if lbl == label:
+                return key
+        return "faceswap"
+
     def _swap_face_source(self):
         """The face photo(s) for an image-swap run, as a list: every loaded
         editor image (several photos of the same person sharpen the
@@ -7233,7 +7461,7 @@ class App:
         # generates first, then the face (loaded image, else the chosen
         # person) is applied to it. Qwen is the swap engine when installed
         # (native multi-image = reliable identity); Kontext otherwise.
-        swap_editor = "kontext"
+        swap_editor = "faceswap"
         if isinstance(swap_face, str):
             swap_face = [swap_face]
         if swap_face is None and self.swap_rag_var.get() and not ref_paths:
@@ -7254,37 +7482,54 @@ class App:
                     "The swap is ticked but no face is chosen — 🖼 Browse… "
                     "for a file or pick a 👤 Person. Generating normally.")
             else:
-                # Fast swap: Kontext, which fits next to the drawing model
-                qwen_fits = (self._editor_tier("qwen") != "block"
-                             and not self.swap_fast_var.get())
-                qwen_missing = self._editor_missing("qwen")
-                if qwen_fits and not qwen_missing:
-                    swap_editor = "qwen"
-                elif qwen_fits and \
-                        not self.settings.get("qwen_swap_declined"):
-                    # one-time offer — Qwen is far more reliable at
-                    # landing the face than the Kontext fallback
-                    if messagebox.askyesno(
-                            "Better face swaps",
-                            "Face swaps are much more reliable with the "
-                            "Qwen editor (~28 GB, one-time download)."
-                            "\n\nInstall it now? Choosing No uses Flux "
-                            "Kontext for swaps from here on — it keeps "
-                            "the scene, but the face may need a few "
-                            "Variations to land."):
-                        threading.Thread(
-                            target=self._install_editor,
-                            args=("qwen", qwen_missing, "progress"),
-                            daemon=True).start()
+                # the chosen Clone method decides the engine; each is set up
+                # on first use (a one-time download)
+                swap_editor = self._clone_method()
+                if swap_editor == "faceswap":
+                    if not faceswap_ready():
+                        if messagebox.askyesno(
+                                "Set up face swapping",
+                                "The Face swap method needs a one-time "
+                                "~550 MB setup (a local face-swap engine). It "
+                                "then runs in seconds and closely matches the "
+                                "person you chose.\n\nInstall it now?"):
+                            threading.Thread(
+                                target=self._install_face_swap,
+                                args=("progress",), daemon=True).start()
+                            self.status_var.set(
+                                "Setting up the face-swap engine — watch the "
+                                "loading strip and Generate again when it "
+                                "says ready.")
+                            return
                         self.status_var.set(
-                            "Downloading the Qwen editor — watch the "
-                            "progress bar and Generate again when it "
-                            "says done.")
+                            "Face swap needs its one-time setup — nothing was "
+                            "generated. Install it when asked, or pick a "
+                            "different Method.")
                         return
-                    self.settings["qwen_swap_declined"] = True
-                    self._persist()
-                if not self._ensure_editor_ready(swap_editor):
-                    return
+                else:
+                    # a re-rendering editor (Qwen / Kontext)
+                    miss = self._editor_missing(swap_editor)
+                    if miss:
+                        nm = "Qwen" if swap_editor == "qwen" else "Flux Kontext"
+                        if messagebox.askyesno(
+                                "Download the editor",
+                                f"The {nm} editor is needed for this Clone "
+                                "method and isn't installed yet.\n\nDownload "
+                                "it now?"):
+                            threading.Thread(
+                                target=self._install_editor,
+                                args=(swap_editor, miss, "progress"),
+                                daemon=True).start()
+                            self.status_var.set(
+                                f"Downloading the {nm} editor — Generate "
+                                "again when it says done.")
+                            return
+                        self.status_var.set(
+                            "Clone skipped — that editor isn't installed. "
+                            "Pick 'Face swap' or install the editor.")
+                        return
+                    if not self._ensure_editor_ready(swap_editor):
+                        return
         # swap_face set = a gen-then-swap run: force a fresh RAG/LoRA
         # generation (the loaded image / person is the face for the later
         # Kontext pass, NOT an edit target or an IP-Adapter guide).
@@ -7409,6 +7654,22 @@ class App:
                         self.status_var.set(
                             "Person photo + private RAG map are both "
                             "guiding this generation (chained IP-Adapter).")
+
+        # Clone with Face swap: also guide the BASE with the chosen face, so
+        # the scene is drawn with the person in mind; the face swap then locks
+        # the exact identity. SDXL + IP-Adapter only, and skipped silently
+        # otherwise (the swap alone still lands the face).
+        if swap_face and swap_editor == "faceswap" and not editing \
+                and model_family(model) not in ("flux", "schnell") \
+                and self._style_support_ok():
+            added = False
+            for ap in list(swap_face)[:2]:
+                if ap and ap not in rag_refs:
+                    rag_refs.append(ap)
+                    added = True
+            if added:
+                self.status_var.set("Drawing the scene with your chosen "
+                                    "person in mind, then cloning the face in.")
 
         # Reference DB person, editing: the photo joins the loaded
         # reference images, exactly as if it had been loaded with 🖼 Load…
@@ -8400,6 +8661,51 @@ class App:
             node_ok = False
         return node_ok and bool(scan_models("ipadapter")) \
             and bool(scan_models("clip_vision"))
+
+    def _install_face_swap(self, channel="progress"):
+        """One-time setup of the local face-swap engine, off the UI thread:
+        insightface into the engine venv, the inswapper model, and the
+        buffalo_l detector. Guarded so it can't double-run. Writes a .ready
+        marker only when everything is verified."""
+        if not self._addon_lock.acquire(blocking=False):
+            self.ui_queue.put(("status", "The face-swap engine is already "
+                                         "setting up — watch the strip."))
+            return
+        self.ui_queue.put(("pending", "faceswap", "setting up face swap"))
+        try:
+            INSIGHTFACE_DIR.mkdir(parents=True, exist_ok=True)
+            self.ui_queue.put(("status", "Installing the face-swap engine…"))
+            r = subprocess.run(
+                [str(engine_python()), "-m", "pip", "install",
+                 "insightface", "onnx"],
+                capture_output=True, text=True, creationflags=NO_WINDOW,
+                env=_contained_env(), timeout=1800)
+            if r.returncode != 0:
+                raise RuntimeError("could not install insightface: "
+                                   + (r.stderr or r.stdout or "")[-300:])
+            dest = INSIGHTFACE_DIR / INSWAPPER_FILE
+            if not dest.exists():
+                self.ui_queue.put(("status", "Downloading the face-swap model "
+                                             "(~550 MB, one time)…"))
+                self._download_to(INSWAPPER_URL, dest, "faceswap")
+            self.ui_queue.put(("status", "Downloading the face detector…"))
+            d = subprocess.run(
+                [str(engine_python()), "-c", _FACESWAP_INIT_CODE,
+                 str(INSIGHTFACE_DIR)],
+                capture_output=True, text=True, creationflags=NO_WINDOW,
+                env=_contained_env(), timeout=600)
+            if "DET_OK" not in (d.stdout or ""):
+                raise RuntimeError("the face detector did not download: "
+                                   + (d.stderr or d.stdout or "")[-300:])
+            (INSIGHTFACE_DIR / ".ready").write_text("ok", encoding="utf-8")
+            self.ui_queue.put(("status", "Face-swap engine ready — Generate "
+                                         "again to clone the face."))
+        except Exception as e:
+            applog.exception("face-swap setup failed")
+            self.ui_queue.put(("error", f"Face-swap setup failed: {e}"))
+        finally:
+            self.ui_queue.put(("pending", "faceswap", None))
+            self._addon_lock.release()
 
     def _install_style_support(self):
         """Self-install the IP-Adapter node + models, then restart the

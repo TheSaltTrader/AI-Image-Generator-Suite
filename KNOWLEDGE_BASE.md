@@ -969,6 +969,37 @@ the run.
   `actor_excluded` (sets -> sorted lists), restored BEFORE `_set_actor`
   so the view reflects it. `_refresh_actor_view` shows "photo i/N
   (dropped) · K sent"; the Using list lists the kept photos.
+- **Clone Tool: a REAL face swap, not an editor re-render (v2.1.0).** THE
+  fix for "the clone doesn't resemble the person at all." app.log proved the
+  cause: every Qwen/Kontext swap ended `Cancelled — 1 of 4 swapped` within
+  seconds (the 28 GB editor loads for minutes off the H: HDD; the user
+  cancels every time), and NO completed swap ever logged its
+  `face swap (...): mean change…` line — so the user only ever saw the
+  faceless base. Fix: a true identity swap via **insightface / inswapper**
+  (`inswapper_128.onnx` ~554 MB + the `buffalo_l` detector), run in the
+  engine venv like rembg (`run_face_swap`, `_FACESWAP_CODE`). Validated live:
+  swapped-face cosine similarity to the SOURCE = 0.88–0.91 (same-person),
+  vs the original face ~0.05. GOTCHAS: (1) **insightface 2.0 is a pure-python
+  wheel** — no compiler needed, so the in-app `pip install insightface onnx`
+  into the engine venv is clean. (2) **`Face.normed_embedding` is a read-only
+  property in 2.0** — to average identity over several photos, set
+  `srcf.embedding = mean(embeddings)` and let normed_embedding derive; setting
+  normed_embedding raises `AttributeError: property has no setter`. (3) request
+  `["CUDAExecutionProvider","CPUExecutionProvider"]` but wrap in try/except —
+  onnxruntime only WARNS on a missing CUDA provider (falls back to CPU), and
+  CPU is fast enough for the 128 model. (4) read images with
+  `cv2.imdecode(np.fromfile(p), ...)` for Windows/unicode paths. UI: the
+  section is renamed **CLONE TOOL**, with a **Method** dropdown
+  (`clone_method_var` / `CLONE_METHODS`, `_clone_method()` → faceswap|qwen|
+  kontext, default faceswap). Each method self-installs on first use
+  (`_install_face_swap` mirrors `_install_editor`; a `.ready` marker gates
+  `faceswap_ready()`). BEHAVIOUR: clone mode now emits ONE finished image —
+  the base is held in `pending_swaps`, never shown faceless; the gallery gets
+  the cloned result (or the base, with a status, if the swap fails/cancels).
+  When SDXL + IP-Adapter are available the base is also IP-guided by the
+  chosen face ("with the person in mind") before the exact swap. Tests:
+  update_ui 155, swap 20 (rewritten: red base vs blue clone, single-image),
+  self_update 113, ragmap 24, engine_files 65.
 - **Rename to AI Image Generator Suite (v2.0.0).** The product name changed
   everywhere the USER sees it — window titles (`comic_art_creator.py`),
   `version_app.txt`/`version_setup.txt` (ProductName/FileDescription/

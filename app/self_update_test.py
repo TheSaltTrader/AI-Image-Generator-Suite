@@ -76,7 +76,7 @@ if live.exists():
     got = su.exe_version(live)
     check("reads the shipped exe's FileVersion", got is not None, str(got))
     if got:
-        check("shipped exe reports a 1.x version", got[0] == 1, str(got))
+        check("shipped exe reports a real version (>=1)", got[0] >= 1, str(got))
         print("       (installed exe reports %s)"
               % ".".join(str(n) for n in got))
 else:

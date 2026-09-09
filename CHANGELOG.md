@@ -1,5 +1,25 @@
 # Changelog — AI Image Generator Suite
 
+## v2.1.0 — 2026-09-08
+- **The Clone Tool actually looks like the person now.** The old face
+  swap re-rendered the face with a huge editor model (Qwen/Kontext) that
+  loaded for minutes off a hard drive — so in practice it was cancelled
+  before it finished and you were left with the plain generated image
+  (a face the model invented). The renamed **Clone Tool** now defaults to
+  a real, local face-swap engine (insightface / inswapper): a one-time
+  ~550 MB setup, then it runs in seconds and closely matches the person
+  you chose.
+- **Pick your Clone method.** A new **Method** dropdown in the Clone Tool
+  lets you choose the engine: **Face swap** (fast, best likeness — the
+  default), or the **Qwen** / **Flux Kontext** editors (re-render, slower,
+  looser likeness). Each installs itself the first time you use it.
+- **One finished image, not a faceless draft plus a broken swap.** With
+  the Clone Tool on, Generate now produces a single final image — the
+  scene with the chosen person's face already in it. If your model has
+  IP-Adapter set up, the scene is also drawn with that person in mind
+  before the face is locked in.
+- Renamed the section from "Face / Character" to **Clone Tool**.
+
 ## v2.0.0 — 2026-09-08
 - **New name: AI Image Generator Suite.** The app is now a general-purpose
   local image studio. The window title, installer and About all carry the

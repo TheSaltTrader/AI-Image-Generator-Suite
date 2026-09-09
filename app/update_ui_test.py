@@ -385,6 +385,28 @@ check("no quality radio / no canvas option; always Best + canvas",
       and ui.editor_canvas_var.get())
 check("the Using strip exists (thumbnail samples)",
       hasattr(ui, "face_using") and hasattr(ui, "_face_thumb_image"))
+# ---- Clone Tool: selectable method, defaulting to the fast face swap ----
+check("the section is titled CLONE TOOL",
+      any(str(getattr(w, "cget", lambda *_: "")("text")) .startswith("CLONE TOOL")
+          for w in _walk(ui._page_gen)
+          if w.winfo_class() == "TLabel"))
+check("a Clone method dropdown exists with all three engines",
+      hasattr(ui, "clone_method_dd")
+      and len(ui.clone_method_dd["values"]) == 3)
+check("the default clone method is the fast Face swap",
+      ui._clone_method() == "faceswap")
+check("the face-swap engine helpers are module-level and callable",
+      callable(app.faceswap_ready) and callable(app.run_face_swap)
+      and isinstance(app.faceswap_ready(), bool))
+# the chosen method round-trips through persistence
+ui.clone_method_var.set(app.CLONE_METHODS[1][0])   # Qwen
+_stc = dict(ui._collect_ui_state())
+ui.clone_method_var.set(app.CLONE_METHODS[0][0])   # back to faceswap
+ui._apply_ui_state(_stc)
+root.update()
+check("the chosen clone method is remembered",
+      ui._clone_method() == "qwen", ui.clone_method_var.get())
+ui.clone_method_var.set(app.CLONE_METHODS[0][0])
 # a face from a file, and the source round-trips through persistence
 import tempfile as _tf
 from PIL import Image as _Im2
