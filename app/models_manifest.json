@@ -164,5 +164,17 @@
   "remote_file": "sigclip_vision_patch14_384.safetensors",
   "local": "sigclip_vision_patch14_384.safetensors",
   "dir": "clip_vision"
+ },
+ {
+  "repo": "Comfy-Org/stable-diffusion-3.5-fp8",
+  "remote_file": "sd3.5_large_fp8_scaled.safetensors",
+  "local": "sd3.5_large_fp8_scaled.safetensors",
+  "dir": "checkpoints"
+ },
+ {
+  "repo": "InstantX/SD3.5-Large-IP-Adapter",
+  "remote_file": "ip-adapter.bin",
+  "local": "ip_sd35l_instantx.bin",
+  "dir": "ipadapter"
  }
 ]

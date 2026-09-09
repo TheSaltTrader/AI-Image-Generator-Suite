@@ -478,6 +478,33 @@ check("SDXL RAG still uses IP-Adapter, never Redux",
       and "StyleModelApply" not in _stypes)
 for _f in _redux_made:
     _f.unlink()
+# ---- SD3.5 uses TripleCLIPLoader + the InstantX SD3 IP-Adapter for RAG ----
+check("model_family detects SD3.5",
+      app.model_family("sd3.5_large_fp8_scaled.safetensors") == "sd3")
+_ipa = Path(app.ENGINE_DIR) / "models" / "ipadapter"
+_ipa.mkdir(parents=True, exist_ok=True)
+_cv.mkdir(parents=True, exist_ok=True)
+_nodedir = Path(app.ENGINE_DIR) / "custom_nodes" / app.SD3_NODE_DIR
+_sd3_made = []
+for _pth in ((_ipa / app.SD3_IPA), (_cv / app.REDUX_SIGLIP)):
+    if not _pth.exists():
+        _pth.write_bytes(b"x"); _sd3_made.append(_pth)
+_node_made = False
+if not _nodedir.exists():
+    _nodedir.mkdir(parents=True); _node_made = True
+check("sd3_ipa_ready() sees the adapter, encoder and node", app.sd3_ipa_ready())
+_s3 = [v["class_type"] for v in app.build_graph(dict(
+    model="sd3.5_large_fp8_scaled.safetensors", prompt="x", negative="", seed=1,
+    width=1024, height=1024, loras=[], steps=None, cfg=None,
+    style_ref_names=["r.png"], style_weight=0.5)).values()]
+check("SD3.5 RAG uses the InstantX SD3 adapter, not the SDXL IP-Adapter/Redux",
+      "ApplyIPAdapterSD3" in _s3 and "IPAdapterSD3Loader" in _s3
+      and not any(("IPAdapterUnifiedLoader" in t or "StyleModelApply" in t)
+                  for t in _s3), _s3)
+for _f in _sd3_made:
+    _f.unlink()
+if _node_made:
+    _nodedir.rmdir()
 # a face from a file, and the source round-trips through persistence
 import tempfile as _tf
 from PIL import Image as _Im2

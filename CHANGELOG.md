@@ -1,5 +1,23 @@
 # Changelog — AI Image Generator Suite
 
+## v2.6.0 — 2026-09-08
+- **SD3.5 Large can now be guided by your reference images (RAG).** Stable
+  Diffusion 3.5 is the most capable base model the app supports, and it now
+  steers on a RAG map's images the same way SDXL (IP-Adapter) and Flux (Redux)
+  do — through the **InstantX SD3.5 IP-Adapter**. Point a generation at a
+  reference set and SD3.5 picks up its look while your prompt still leads
+  (guidance capped at a moderate strength).
+- **The models install for you.** The all-in-one SD3.5 Large checkpoint
+  (fp8, ~15 GB) and the InstantX SD3.5 IP-Adapter (~1.6 GB) are on the model
+  update list — you'll be *asked* before anything downloads, and can skip. The
+  small custom node SD3.5 needs is installed automatically with your add-ons at
+  update time (not on first run), so nothing extra is required of you.
+- SD3.5 ships with sensible defaults (25 steps, CFG 4.5, euler/normal) and
+  reuses the SigLIP vision encoder already installed for Flux Redux, so the
+  extra download is just the checkpoint + adapter.
+- Validated end to end on a real SD3.5 run: the reference image measurably
+  steers the picture while the result stays coherent to the prompt.
+
 ## v2.5.0 — 2026-09-08
 - **RAG maps now guide Flux with images, not just captions.** Flux couldn't
   use a RAG map's reference images before — only its text. It now steers Flux

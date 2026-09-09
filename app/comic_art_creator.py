@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "2.5.0"
+APP_VERSION = "2.6.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -770,6 +770,8 @@ def update_engine(new_sha, status_cb):
 
 def model_family(name):
     n = name.lower()
+    if "sd3" in n or "sd35" in n:
+        return "sd3"
     if "schnell" in n:
         return "schnell"
     if "flux" in n:
@@ -787,7 +789,25 @@ FAMILY_DEFAULTS = {
     "turbo": dict(steps=8,  cfg=2.0, sampler="dpmpp_sde", scheduler="karras"),
     "anime": dict(steps=28, cfg=5.5, sampler="euler_ancestral", scheduler="normal"),
     "sdxl":  dict(steps=30, cfg=6.0, sampler="dpmpp_2m", scheduler="karras"),
+    "sd3":   dict(steps=25, cfg=4.5, sampler="euler", scheduler="normal"),
 }
+
+# SD3.5 Large: its own text encoders (TripleCLIPLoader) and the InstantX
+# SD3.5 IP-Adapter (an unofficial ComfyUI node) for image-guided RAG. Reuses
+# the SigLIP vision encoder (REDUX_SIGLIP) that Flux Redux also uses.
+SD3_IPA = "ip_sd35l_instantx.bin"
+SD3_NODE_DIR = "ComfyUI-InstantX-IPAdapter-SD3"
+SD3_NODE_ZIP = ("https://github.com/Slickytail/ComfyUI-InstantX-IPAdapter-SD3/"
+                "archive/refs/heads/main.zip")
+
+
+def sd3_ipa_ready():
+    """True when SD3.5 image-guided RAG can run: the InstantX adapter (in the
+    engine's OWN models/ipadapter, where that node hardcodes its lookup), its
+    SigLIP encoder, AND the custom node are all present."""
+    return ((ENGINE_DIR / "models" / "ipadapter" / SD3_IPA).exists()
+            and (MODELS / "clip_vision" / REDUX_SIGLIP).exists()
+            and (ENGINE_DIR / "custom_nodes" / SD3_NODE_DIR).exists())
 
 
 EDITOR_ENGINES = {
@@ -1393,12 +1413,73 @@ def save_sprite_sheet(frames, png_path, json_path, fps):
                open(json_path, "w", encoding="utf-8"), indent=2)
 
 
+def build_sd3_graph(p):
+    """SD3.5 Large: an all-in-one checkpoint (model + its own text encoders +
+    VAE), plain KSampler, and (for RAG) the InstantX SD3.5 IP-Adapter. Flux/
+    SDXL LoRAs and the SDXL IP-Adapter don't apply to this architecture."""
+    d = FAMILY_DEFAULTS["sd3"]
+    steps = p.get("steps") or d["steps"]
+    cfg = p.get("cfg") if p.get("cfg") is not None else d["cfg"]
+    g = {}
+    g["1"] = {"class_type": "CheckpointLoaderSimple",
+              "inputs": {"ckpt_name": p["model"]}}
+    g["3"] = {"class_type": "CLIPTextEncode",
+              "inputs": {"text": p["prompt"], "clip": ["1", 1]}}
+    g["4"] = {"class_type": "CLIPTextEncode",
+              "inputs": {"text": p.get("negative", ""), "clip": ["1", 1]}}
+    model_ref = ["1", 0]
+    # RAG image guidance via the InstantX SD3.5 IP-Adapter (one image; the
+    # node applies a single adapter). SigLIP encodes the reference.
+    style_imgs = p.get("style_ref_names")
+    if style_imgs and (MODELS / "ipadapter" / SD3_IPA).exists() \
+            and (MODELS / "clip_vision" / REDUX_SIGLIP).exists():
+        g["20"] = {"class_type": "IPAdapterSD3Loader",
+                   "inputs": {"ipadapter": SD3_IPA, "provider": "cuda"}}
+        g["21"] = {"class_type": "CLIPVisionLoader",
+                   "inputs": {"clip_name": REDUX_SIGLIP}}
+        g["22"] = {"class_type": "LoadImage",
+                   "inputs": {"image": list(style_imgs)[0]}}
+        g["23"] = {"class_type": "CLIPVisionEncode",
+                   "inputs": {"clip_vision": ["21", 0], "image": ["22", 0],
+                              "crop": "center"}}
+        g["24"] = {"class_type": "ApplyIPAdapterSD3",
+                   "inputs": {"model": model_ref, "ipadapter": ["20", 0],
+                              "image_embed": ["23", 0],
+                              "weight": min(float(p.get("style_weight") or 0.5),
+                                            0.7),
+                              "start_percent": 0.0, "end_percent": 1.0}}
+        model_ref = ["24", 0]
+    g["5"] = {"class_type": "EmptySD3LatentImage",
+              "inputs": {"width": p["width"], "height": p["height"],
+                         "batch_size": 1}}
+    g["6"] = {"class_type": "KSampler",
+              "inputs": {"model": model_ref, "positive": ["3", 0],
+                         "negative": ["4", 0], "latent_image": ["5", 0],
+                         "seed": p["seed"], "steps": steps, "cfg": cfg,
+                         "sampler_name": d["sampler"],
+                         "scheduler": d["scheduler"], "denoise": 1.0}}
+    g["7"] = {"class_type": "VAEDecode",
+              "inputs": {"samples": ["6", 0], "vae": ["1", 2]}}
+    img_out = ["7", 0]
+    if p.get("upscale") and (MODELS / "upscale_models" / UPSCALE_MODEL).exists():
+        g["40"] = {"class_type": "UpscaleModelLoader",
+                   "inputs": {"model_name": UPSCALE_MODEL}}
+        g["41"] = {"class_type": "ImageUpscaleWithModel",
+                   "inputs": {"upscale_model": ["40", 0], "image": img_out}}
+        img_out = ["41", 0]
+    g["8"] = {"class_type": "SaveImage",
+              "inputs": {"filename_prefix": "cbac", "images": img_out}}
+    return g
+
+
 def build_graph(p):
     """Build a ComfyUI prompt graph from generation params dict."""
     if p.get("edit_image_names"):
         return build_qwen_edit_graph(p) if p.get("editor") == "qwen" \
             else build_kontext_graph(p)
     fam = model_family(p["model"])
+    if fam == "sd3":
+        return build_sd3_graph(p)
     d = FAMILY_DEFAULTS[fam]
     steps = p.get("steps") or d["steps"]
     cfg = p.get("cfg") if p.get("cfg") is not None else d["cfg"]
@@ -6734,6 +6815,37 @@ class App:
                     "status", "Setting up the face-swap engine for the Clone "
                               "Tool (one-time ~550 MB) — you can keep working."))
                 self._install_face_swap()
+            # 3) SD3.5 image guidance — only for users who have an SD3.5 model.
+            # Needs the unofficial InstantX node AND its adapter placed in the
+            # engine's OWN models/ipadapter (that node hardcodes its lookup
+            # there, ignoring the app's model path).
+            node_dir = ENGINE_DIR / "custom_nodes" / SD3_NODE_DIR
+            has_sd3 = any("sd3" in c.lower()
+                          for c in scan_models("checkpoints"))
+            if has_sd3:
+                restart = False
+                if not node_dir.exists():
+                    self.ui_queue.put((
+                        "status", "Setting up the SD3.5 image-guidance add-on…"))
+                    try:
+                        restart = engine_files.install_node_zip(
+                            SD3_NODE_ZIP, node_dir,
+                            lambda s: self.ui_queue.put(("status", s)))
+                    except Exception:
+                        applog.exception("SD3.5 node install failed")
+                src = MODELS / "ipadapter" / SD3_IPA
+                dst = ENGINE_DIR / "models" / "ipadapter" / SD3_IPA
+                if src.exists() and not dst.exists():
+                    try:
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src, dst)
+                    except Exception:
+                        applog.exception("SD3.5 adapter copy failed")
+                if restart:
+                    kill_engine()
+                    time.sleep(2)
+                    threading.Thread(target=self._boot_engine,
+                                     daemon=True).start()
         except Exception:
             applog.exception("autoheal addons failed")
 
@@ -7770,6 +7882,7 @@ class App:
                 and (not swap_face or self.swap_use_rag_var.get()):
             fam_g = model_family(model)
             flux_fam = fam_g in ("flux", "schnell")
+            sd3_fam = fam_g == "sd3"
             hits = ragmap_retrieve(self.ragmap, prompt, rng=self._rag_rng())
             rag_weight = float(self.ragmap.get("weight") or 0.8)
             lf = ragmap_lora(self.ragmap)
@@ -7787,7 +7900,12 @@ class App:
                         and not self.ragmap.get("_embeds_only"):
                     rag_refs = [h["_path"] for h in hits if h.get("_path")]
                     used_refs = bool(rag_refs)
-                elif not flux_fam and self._style_support_ok():
+                elif sd3_fam and sd3_ipa_ready() \
+                        and not self.ragmap.get("_embeds_only"):
+                    # the SD3.5 IP-Adapter node applies a single image
+                    rag_refs = [h["_path"] for h in hits if h.get("_path")][:1]
+                    used_refs = bool(rag_refs)
+                elif not flux_fam and not sd3_fam and self._style_support_ok():
                     if self.ragmap.get("_embeds_only"):
                         rag_embed_paths = [h["_ipadpt"] for h in hits
                                            if h.get("_ipadpt")]
@@ -7795,9 +7913,10 @@ class App:
                     else:
                         rag_refs = [h["_path"] for h in hits if h.get("_path")]
                         used_refs = bool(rag_refs)
-            if used_refs and flux_fam:
-                self.status_var.set("Flux is guided by the RAG map's reference "
-                                    "images (Redux).")
+            if used_refs and (flux_fam or sd3_fam):
+                self.status_var.set(
+                    ("Flux" if flux_fam else "SD3.5") + " is guided by the RAG "
+                    "map's reference image(s).")
             elif not used_refs:
                 # captions fallback: also the path for Flux + an embeds-only
                 # map, or when the image add-on isn't installed
@@ -7811,10 +7930,14 @@ class App:
                 if flux_fam and not redux_ready():
                     self.status_var.set("Flux image RAG needs the Redux add-on "
                                         "— applied the map as text for now.")
-                elif flux_fam:
-                    self.status_var.set("This RAG map ships no reference images "
-                                        "for Flux (its embeds are SDXL-only) — "
-                                        "applied as text.")
+                elif sd3_fam and not sd3_ipa_ready():
+                    self.status_var.set("SD3.5 image RAG needs its IP-Adapter "
+                                        "add-on — applied the map as text.")
+                elif flux_fam or sd3_fam:
+                    self.status_var.set(
+                        "This RAG map ships no reference images for "
+                        + ("Flux" if flux_fam else "SD3.5")
+                        + " (its embeds are SDXL-only) — applied as text.")
                 else:
                     self.status_var.set(
                         "RAG map applied as text "

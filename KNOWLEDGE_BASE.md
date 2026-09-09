@@ -1001,9 +1001,43 @@ the run.
   Comfy-Org/sigclip_vision_384) so they're on the update list + one-time
   download. Downloads (non-gated): huggingface.co/Comfy-Org/Flux1-Redux-dev &
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
-  SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask) is
-  DEFERRED: it needs the SD3.5 base checkpoint (~8-16 GB, not installed; the
-  user runs Flux/SDXL) + the InstantX SD3.5 IP-Adapter.
+  SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
+  shipped in v2.6.0 — see the next bullet.
+- **SD3.5 Large image-guided RAG via InstantX IP-Adapter (v2.6.0).** The third
+  family that can now steer on a RAG map's IMAGES (SDXL=IP-Adapter,
+  Flux=Redux, SD3.5=InstantX). `model_family()` returns `"sd3"` for any name
+  containing sd3/sd35 (checked FIRST, before flux/sdxl). `FAMILY_DEFAULTS["sd3"]`
+  = steps 25, cfg 4.5, euler/normal. `build_sd3_graph(p)` is a SEPARATE builder
+  (build_graph returns it early for fam=="sd3"): `CheckpointLoaderSimple`
+  (all-in-one fp8 checkpoint — uses its `["1",1]` CLIP output DIRECTLY; do NOT
+  add TripleCLIPLoader, the checkpoint carries all three text encoders) ->
+  CLIPTextEncode pos/neg -> `EmptySD3LatentImage` -> KSampler(euler/normal) ->
+  VAEDecode -> SaveImage. RAG block (when style_imgs present and adapter+siglip
+  there): `IPAdapterSD3Loader`(SD3_IPA, "cuda") + `CLIPVisionLoader`(REDUX_SIGLIP,
+  reused from Redux) + LoadImage(style_imgs[0]) + CLIPVisionEncode(crop=center)
+  + `ApplyIPAdapterSD3`(model, ipadapter, image_embed, weight=min(style_weight,
+  0.7), start=0, end=1). Only ONE ref image (SD3 node takes a single embed).
+  CONSTANTS: `SD3_IPA="ip_sd35l_instantx.bin"`, `SD3_NODE_DIR=
+  "ComfyUI-InstantX-IPAdapter-SD3"`, `SD3_NODE_ZIP=` Slickytail fork main.zip.
+  `sd3_ipa_ready()` checks ENGINE_DIR/models/ipadapter/SD3_IPA +
+  MODELS/clip_vision/REDUX_SIGLIP + ENGINE_DIR/custom_nodes/SD3_NODE_DIR.
+  GOTCHAS: (1) the node is UNOFFICIAL (`ComfyUI-InstantX-IPAdapter-SD3`,
+  Slickytail fork) — installed by `_autoheal_addons` via
+  `engine_files.install_node_zip` at UPDATE time (only if a sd3 checkpoint is
+  present), engine restarts after. (2) `IPAdapterSD3Loader` HARDCODES
+  `folder_paths.models_dir/ipadapter` for the .bin — the manifest downloads it
+  to MODELS/ipadapter, and autoheal ALSO copies it to
+  ENGINE_DIR/models/ipadapter so the node finds it (WinError 2 otherwise). (3)
+  the checkpoint is ALL-IN-ONE: an earlier TripleCLIPLoader attempt couldn't see
+  the 3 separate text encoders (folder mapping) — dropped both the loader and
+  the 3 encoder manifest entries. Manifest: sd3.5_large_fp8_scaled.safetensors
+  (checkpoint, ~15 GB) + ip_sd35l_instantx.bin (repo
+  InstantX/SD3.5-Large-IP-Adapter, remote_file ip-adapter.bin -> ipadapter dir,
+  ~1.6 GB). VALIDATED live on 8189: plain-vs-IP-Adapter mean pixel diff 53.3,
+  coherent output (red sports car carrying the reference's purple palette, 80s
+  on the 5090). update_ui asserts model_family=="sd3", sd3_ipa_ready(), and
+  build_graph has ApplyIPAdapterSD3+IPAdapterSD3Loader (not
+  IPAdapterUnifiedLoader/StyleModelApply) (168).
 - **Exe renamed ComicArtCreator.exe -> AIImageGeneratorSuite.exe (v2.4.0).**
   The one thing v2.0 deliberately DIDN'T rename (update safety). Done now via
   a migration that keeps existing installs updating: `self_update.APP_EXE` is
