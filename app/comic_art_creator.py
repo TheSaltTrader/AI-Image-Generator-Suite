@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "2.4.0"
+APP_VERSION = "2.5.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -157,6 +157,19 @@ def _contained_env():
 
 
 UPSCALE_MODEL = "RealESRGAN_x4plus.pth"   # optional 4x hi-res pass
+
+# Flux image-guided RAG uses Redux (Flux's native image conditioning) — the
+# equivalent of IP-Adapter on SDXL. Two small models: the Redux style model
+# and its SigLIP vision encoder.
+REDUX_FILE = "flux1-redux-dev.safetensors"
+REDUX_SIGLIP = "sigclip_vision_patch14_384.safetensors"
+
+
+def redux_ready():
+    """True when Flux image-guided RAG can run: the Redux style model and its
+    SigLIP vision encoder are both present."""
+    return ((MODELS / "style_models" / REDUX_FILE).exists()
+            and (MODELS / "clip_vision" / REDUX_SIGLIP).exists())
 
 ENGINE_HOST = "127.0.0.1"   # loopback only — engine is never exposed to LAN
 ENGINE_PORT = 8188
@@ -310,7 +323,8 @@ def start_engine():
         "  ipadapter: ipadapter\n"
         "  clip_vision: clip_vision\n"
         "  diffusion_models: diffusion_models\n"
-        "  text_encoders: text_encoders\n", encoding="utf-8")
+        "  text_encoders: text_encoders\n"
+        "  style_models: style_models\n", encoding="utf-8")
     cmd = [str(engine_python()), "main.py",
            "--listen", ENGINE_HOST, "--port", str(ENGINE_PORT),
            "--extra-model-paths-config", str(EXTRA_PATHS_YAML),
@@ -1435,7 +1449,7 @@ def build_graph(p):
     # exact graph it did before.
     style_imgs = p.get("style_ref_names")
     style_embeds = p.get("style_embed_names")
-    if style_imgs or style_embeds:
+    if (style_imgs or style_embeds) and fam not in ("flux", "schnell"):
         g["50"] = {"class_type": "IPAdapterUnifiedLoader",
                    "inputs": {"preset": "PLUS (high strength)",
                               "model": model_ref}}
@@ -1493,6 +1507,35 @@ def build_graph(p):
                                   "weight_type": p.get("ref_weight_type",
                                                        "standard")}}
             model_ref = ["51", 0]
+
+    # Flux image-guided RAG: the retrieved reference images steer generation
+    # through Redux (Flux's native image conditioning — the equivalent of the
+    # SDXL IP-Adapter block above). Applied at a capped strength so the prompt
+    # still leads rather than the reference cloning itself over the scene.
+    if fam in ("flux", "schnell") and style_imgs \
+            and (MODELS / "style_models" / REDUX_FILE).exists() \
+            and (MODELS / "clip_vision" / REDUX_SIGLIP).exists():
+        g["70"] = {"class_type": "StyleModelLoader",
+                   "inputs": {"style_model_name": REDUX_FILE}}
+        g["71"] = {"class_type": "CLIPVisionLoader",
+                   "inputs": {"clip_name": REDUX_SIGLIP}}
+        rstr = min(float(p.get("style_weight") or 0.8), 0.6)
+        rid = 72
+        for name in list(style_imgs)[:4]:
+            g[str(rid)] = {"class_type": "LoadImage",
+                           "inputs": {"image": name}}
+            g[str(rid + 1)] = {"class_type": "CLIPVisionEncode",
+                               "inputs": {"clip_vision": ["71", 0],
+                                          "image": [str(rid), 0],
+                                          "crop": "center"}}
+            g[str(rid + 2)] = {"class_type": "StyleModelApply",
+                               "inputs": {"conditioning": pos_ref,
+                                          "style_model": ["70", 0],
+                                          "clip_vision_output": [str(rid + 1), 0],
+                                          "strength": rstr,
+                                          "strength_type": "multiply"}}
+            pos_ref = [str(rid + 2), 0]
+            rid += 3
 
     denoise = 1.0
     latent_ref = ["5", 0]
@@ -7725,40 +7768,54 @@ class App:
         rag_weight = 0.8
         if self.ragmap and not editing \
                 and (not swap_face or self.swap_use_rag_var.get()):
-            if model_family(model) in ("flux", "schnell"):
-                self.status_var.set("RAG image guidance needs an SDXL model "
-                                    "(Juggernaut/DreamShaper) — skipped for "
-                                    "this Flux model.")
-            else:
-                hits = ragmap_retrieve(self.ragmap, prompt,
-                                       rng=self._rag_rng())
-                rag_weight = float(self.ragmap.get("weight") or 0.8)
-                lf = ragmap_lora(self.ragmap)
-                if lf and lf not in [n for n, _s in loras]:
-                    loras.append((lf, strength))
-                trg = self.ragmap.get("trigger", "")
-                if trg and trg.lower() not in full_prompt.lower():
-                    full_prompt = f"{trg}, {full_prompt}"
-                used_refs = False
-                if hits and self._style_support_ok():
+            fam_g = model_family(model)
+            flux_fam = fam_g in ("flux", "schnell")
+            hits = ragmap_retrieve(self.ragmap, prompt, rng=self._rag_rng())
+            rag_weight = float(self.ragmap.get("weight") or 0.8)
+            lf = ragmap_lora(self.ragmap)
+            if lf and lf not in [n for n, _s in loras]:
+                loras.append((lf, strength))
+            trg = self.ragmap.get("trigger", "")
+            if trg and trg.lower() not in full_prompt.lower():
+                full_prompt = f"{trg}, {full_prompt}"
+            used_refs = False
+            # Flux steers on the retrieved IMAGES via Redux; SDXL via
+            # IP-Adapter (images or precomputed .ipadpt embeds). An embeds-only
+            # map has no viewable images, so Flux can't Redux it.
+            if hits:
+                if flux_fam and redux_ready() \
+                        and not self.ragmap.get("_embeds_only"):
+                    rag_refs = [h["_path"] for h in hits if h.get("_path")]
+                    used_refs = bool(rag_refs)
+                elif not flux_fam and self._style_support_ok():
                     if self.ragmap.get("_embeds_only"):
-                        # precomputed IP-Adapter embeds, no viewable images
                         rag_embed_paths = [h["_ipadpt"] for h in hits
                                            if h.get("_ipadpt")]
                         used_refs = bool(rag_embed_paths)
                     else:
                         rag_refs = [h["_path"] for h in hits if h.get("_path")]
                         used_refs = bool(rag_refs)
-                if not used_refs:
-                    # no IP-Adapter, or the references didn't travel with the
-                    # map — use what is there, which is the captions
-                    text_hits = hits or ragmap_retrieve(
-                        self.ragmap, prompt, require_image=False,
-                        rng=self._rag_rng())
-                    caps = "; ".join(h.get("caption", "") for h in text_hits
-                                     if h.get("caption"))
-                    if caps:
-                        full_prompt = f"{full_prompt}, {caps}"
+            if used_refs and flux_fam:
+                self.status_var.set("Flux is guided by the RAG map's reference "
+                                    "images (Redux).")
+            elif not used_refs:
+                # captions fallback: also the path for Flux + an embeds-only
+                # map, or when the image add-on isn't installed
+                text_hits = hits or ragmap_retrieve(
+                    self.ragmap, prompt, require_image=False,
+                    rng=self._rag_rng())
+                caps = "; ".join(h.get("caption", "") for h in text_hits
+                                 if h.get("caption"))
+                if caps:
+                    full_prompt = f"{full_prompt}, {caps}"
+                if flux_fam and not redux_ready():
+                    self.status_var.set("Flux image RAG needs the Redux add-on "
+                                        "— applied the map as text for now.")
+                elif flux_fam:
+                    self.status_var.set("This RAG map ships no reference images "
+                                        "for Flux (its embeds are SDXL-only) — "
+                                        "applied as text.")
+                else:
                     self.status_var.set(
                         "RAG map applied as text "
                         + ("(this map carries no references)." if not hits else
@@ -9300,19 +9357,32 @@ def main():
                                      "finish closing…", padding=(24, 38))
         _wait.pack()
         root.update()
-        _mutex_handle, already = wait_for_previous_instance(
-            leaving, timeout=30 if leaving else 12, tick=root.update)
-        _wait.destroy()
+        try:
+            _mutex_handle, already = wait_for_previous_instance(
+                leaving, timeout=30 if leaving else 12, tick=root.update)
+            _wait.destroy()
+        except Exception:
+            # the little wait window was closed while we waited — the root is
+            # gone; this copy just exits quietly rather than throwing an
+            # "application has been destroyed" crash box
+            return
     if already:
         from tkinter import messagebox as _mb
-        if not _mb.askyesno(
+        try:
+            open_anyway = _mb.askyesno(
                 "Already running",
                 "AI Image Generator Suite appears to be already "
                 "running.\n\n"
                 "Running a second copy can make generations and progress go "
                 "to the wrong window, and both share one engine.\n\n"
-                "Open another window anyway?"):
-            root.destroy()
+                "Open another window anyway?")
+        except Exception:
+            return
+        if not open_anyway:
+            try:
+                root.destroy()
+            except Exception:
+                pass
             return
     App(root)
     root.mainloop()

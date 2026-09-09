@@ -969,6 +969,41 @@ the run.
   `actor_excluded` (sets -> sorted lists), restored BEFORE `_set_actor`
   so the view reflects it. `_refresh_actor_view` shows "photo i/N
   (dropped) · K sent"; the Using list lists the kept photos.
+- **Startup "application has been destroyed" crash box (v2.5.0).** app.log:
+  `ERROR unhandled ... main ... tkinter destroy ... _tkinter.TclError: can't
+  invoke "destroy" command: application has been destroyed`, and the frozen app
+  showed PyInstaller's "failed to execute script comic_art_creator" dialog. It
+  was the SECOND-copy / update-relaunch path in `main()`: `wait_for_previous_
+  instance(tick=root.update)` pumps events, the little "Waiting…" window can be
+  closed mid-wait (default WM_DELETE destroys root, no _on_close set yet), then
+  `_wait.destroy()` / `root.destroy()` raise on the dead root -> unhandled ->
+  scary box. The MAIN copy was unaffected (log continued to "Starting local
+  engine"). FIX: wrap the wait+destroy and the askyesno+destroy in try/except
+  and `return` quietly. NB the internal entry script stays `comic_art_creator.py`
+  (only the EXE was renamed at v2.4), so error text naming it is expected.
+- **Flux image-guided RAG via Redux (v2.5.0).** Flux couldn't use a RAG map's
+  IMAGES (IP-Adapter is SDXL-only) — it fell back to captions. Now Flux uses
+  **Redux**, which is NATIVE in ComfyUI (no custom node): `StyleModelLoader`
+  (`flux1-redux-dev.safetensors`, ~129 MB) + `CLIPVisionLoader`
+  (`sigclip_vision_patch14_384.safetensors`, ~445 MB) + per-ref
+  `LoadImage`->`CLIPVisionEncode`(crop=center)->`StyleModelApply`(conditioning,
+  style_model, clip_vision_output, strength, strength_type="multiply"), chaining
+  StyleModelApply over pos_ref. VALIDATED live on 8189: plain-vs-Redux mean
+  pixel diff 88.7 at strength 1.0 (it basically CLONES the ref and overrides the
+  prompt), so the app CAPS strength at `min(style_weight, 0.6)` so the prompt
+  leads. GOTCHAS: (1) the SDXL IP-Adapter block in build_graph was NOT
+  family-guarded — added `and fam not in ("flux","schnell")` or it fires the
+  IPAdapterUnifiedLoader on Flux and 400s. (2) `start_engine`'s
+  extra_model_paths.yaml was MISSING `style_models: style_models` — Redux model
+  invisible without it. (3) Redux needs viewable IMAGES; an embeds-only map
+  (.ipadpt are IP-Adapter/SDXL) has none, so Flux falls back to captions there.
+  Models added to models_manifest.json (repo Comfy-Org/Flux1-Redux-dev &
+  Comfy-Org/sigclip_vision_384) so they're on the update list + one-time
+  download. Downloads (non-gated): huggingface.co/Comfy-Org/Flux1-Redux-dev &
+  /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
+  SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask) is
+  DEFERRED: it needs the SD3.5 base checkpoint (~8-16 GB, not installed; the
+  user runs Flux/SDXL) + the InstantX SD3.5 IP-Adapter.
 - **Exe renamed ComicArtCreator.exe -> AIImageGeneratorSuite.exe (v2.4.0).**
   The one thing v2.0 deliberately DIDN'T rename (update safety). Done now via
   a migration that keeps existing installs updating: `self_update.APP_EXE` is

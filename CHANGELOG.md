@@ -1,5 +1,21 @@
 # Changelog — AI Image Generator Suite
 
+## v2.5.0 — 2026-09-08
+- **RAG maps now guide Flux with images, not just captions.** Flux couldn't
+  use a RAG map's reference images before — only its text. It now steers Flux
+  generations through **Redux**, Flux's native image conditioning (the
+  equivalent of what IP-Adapter does on SDXL), applied at a moderate strength
+  so your prompt still leads. The two small Redux models (~575 MB total)
+  install automatically with the model updates.
+- Validated end to end on a real Flux run (the reference image measurably
+  steers the picture).
+- Note: an *embeds-only* RAG map has no viewable images, so Flux still applies
+  those maps as text — Redux needs actual reference images to guide from.
+- **Fixed a startup crash box** ("failed to execute script … application has
+  been destroyed"). If a second copy launched while one was running — or during
+  an update relaunch — the extra copy could throw an unhandled error instead of
+  bowing out quietly. It now exits cleanly.
+
 ## v2.4.0 — 2026-09-08
 - **The program file is now `AIImageGeneratorSuite.exe`,** matching the app's
   name. New installs get the new filename. Existing installs keep updating

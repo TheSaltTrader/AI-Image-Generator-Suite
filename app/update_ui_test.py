@@ -454,6 +454,30 @@ check("the Quality toggles are remembered",
       ui.hires_var.get() and ui.freeu_var.get()
       and ui.hires_scale_var.get() == "2×")
 ui.hires_var.set(False); ui.freeu_var.set(False)
+# ---- Flux image-guided RAG goes through Redux, SDXL through IP-Adapter ----
+_sm = Path(app.MODELS) / "style_models"; _cv = Path(app.MODELS) / "clip_vision"
+_sm.mkdir(parents=True, exist_ok=True); _cv.mkdir(parents=True, exist_ok=True)
+_redux_made = []
+for _d, _f in ((_sm, app.REDUX_FILE), (_cv, app.REDUX_SIGLIP)):
+    if not (_d / _f).exists():
+        (_d / _f).write_bytes(b"x"); _redux_made.append(_d / _f)
+check("redux_ready() sees the Redux models", app.redux_ready())
+_ftypes = [v["class_type"] for v in app.build_graph(dict(
+    model="flux1-dev-fp8.safetensors", prompt="x", negative="", seed=1,
+    width=512, height=512, loras=[], steps=None, cfg=None,
+    style_ref_names=["r.png"], style_weight=0.6)).values()]
+check("Flux RAG uses Redux (StyleModelApply), never IP-Adapter",
+      "StyleModelApply" in _ftypes and "StyleModelLoader" in _ftypes
+      and not any("IPAdapter" in t for t in _ftypes), _ftypes)
+_stypes = [v["class_type"] for v in app.build_graph(dict(
+    model="Juggernaut-XL.safetensors", prompt="x", negative="", seed=1,
+    width=512, height=512, loras=[], steps=None, cfg=None,
+    style_ref_names=["r.png"], style_weight=0.6)).values()]
+check("SDXL RAG still uses IP-Adapter, never Redux",
+      any("IPAdapter" in t for t in _stypes)
+      and "StyleModelApply" not in _stypes)
+for _f in _redux_made:
+    _f.unlink()
 # a face from a file, and the source round-trips through persistence
 import tempfile as _tf
 from PIL import Image as _Im2
