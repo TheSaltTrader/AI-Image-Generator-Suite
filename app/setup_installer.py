@@ -418,7 +418,7 @@ class SetupApp:
                 self.status.set("Already installed and up to date - "
                                 "nothing to do.")
                 self.log("Everything is installed and matches the latest "
-                         "releases.\nLaunch ComicArtCreator.exe to "
+                         "releases.\nLaunch AIImageGeneratorSuite.exe to "
                          "create art.")
             elif engine_ok:
                 gb = sum(e["size"] for e in needed) / (1 << 30)
@@ -474,11 +474,11 @@ class SetupApp:
             run_install(self.skip_models.get(), self.log, self.set_status,
                         self.set_progress)
             ok = True
-            self.log("\nAll done! Launch ComicArtCreator.exe")
+            self.log("\nAll done! Launch AIImageGeneratorSuite.exe")
             self.set_status("Setup complete.")
             self.root.after(0, lambda: messagebox.showinfo(
                 "Setup complete",
-                "Everything is installed.\n\nLaunch ComicArtCreator.exe "
+                "Everything is installed.\n\nLaunch AIImageGeneratorSuite.exe "
                 "to start creating."))
         except Exception as e:
             self.log(f"\nFAILED: {e}")

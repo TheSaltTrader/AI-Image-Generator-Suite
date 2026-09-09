@@ -44,6 +44,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import threading
 import zipfile
 from pathlib import Path
@@ -58,7 +59,13 @@ RELEASES_API = ("https://api.github.com/repos/TheSaltTrader/"
 RELEASES_PAGE = ("https://github.com/TheSaltTrader/"
                  "AI-Image-Generator-Suite/releases/latest")
 
-APP_EXE = "ComicArtCreator.exe"
+# The app can run under either filename — it was renamed to
+# AIImageGeneratorSuite.exe at v2.4, and older installs stay ComicArtCreator.exe.
+# The updater always acts on whatever exe is ACTUALLY running (so both keep
+# updating in place), and releases ship BOTH names in the zip during the
+# transition so either install finds its own exe.
+APP_EXE = (Path(sys.executable).name if getattr(sys, "frozen", False)
+           else "ComicArtCreator.exe")
 SETUP_EXE = "Setup.exe"
 
 # refreshed from the release zip alongside the exes — see the module note.

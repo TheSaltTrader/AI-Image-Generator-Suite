@@ -1,5 +1,13 @@
 # Changelog — AI Image Generator Suite
 
+## v2.4.0 — 2026-09-08
+- **The program file is now `AIImageGeneratorSuite.exe`,** matching the app's
+  name. New installs get the new filename. Existing installs keep updating
+  normally — the updater now acts on whatever the app is actually named, and
+  releases carry both filenames during the changeover so nobody's auto-update
+  breaks. (You'll only notice this if you look at the folder; the app is
+  launched from its shortcut.)
+
 ## v2.3.2 — 2026-09-08
 - **Fixed: VRAM not freed after closing the app.** The engine (which keeps
   the last model resident, up to ~17 GB) was only shut down when the app

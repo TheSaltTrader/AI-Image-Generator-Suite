@@ -969,6 +969,23 @@ the run.
   `actor_excluded` (sets -> sorted lists), restored BEFORE `_set_actor`
   so the view reflects it. `_refresh_actor_view` shows "photo i/N
   (dropped) · K sent"; the Using list lists the kept photos.
+- **Exe renamed ComicArtCreator.exe -> AIImageGeneratorSuite.exe (v2.4.0).**
+  The one thing v2.0 deliberately DIDN'T rename (update safety). Done now via
+  a migration that keeps existing installs updating: `self_update.APP_EXE` is
+  now DYNAMIC = `Path(sys.executable).name` when frozen (else "ComicArtCreator.exe"
+  in dev), so the updater always finds/installs/relaunches whatever exe is
+  actually running. `install_staged` copies only the exe matching APP_EXE, so
+  each install keeps its own filename. THE TRANSITION TRICK: every release zip
+  ships BOTH `AIImageGeneratorSuite.exe` (the real build, from the spec's
+  `name=`) AND a byte-identical copy named `ComicArtCreator.exe`, so an old
+  install (hardcoded APP_EXE="ComicArtCreator.exe") still finds its exe in the
+  zip and updates, while a new install finds the new name. Also renamed:
+  version_app.txt InternalName/OriginalFilename, the spec `name=`, Setup's
+  "Launch …" messages. The USER's own H: install was renamed in place (exe +
+  shortcut) since they're the primary user (they chose "rename your install
+  directly"). self_update_test unchanged (dev APP_EXE stays ComicArtCreator.exe
+  so its hardcoded-name zips still match). Once old installs age out, drop the
+  ComicArtCreator.exe copy from the zip.
 - **Engine (VRAM) not freed on close (v2.3.2).** User: "is the app not clearing
   vram when it closes?" Correct. `_on_close` only killed the engine
   `if engine_ours_to_stop()` — which is False when the owner pid no longer
