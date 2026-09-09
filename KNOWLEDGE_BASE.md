@@ -1003,6 +1003,22 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Engine-boot false alarm + SD3.5 diffusers dep + Create-more visibility
+  (v2.7.6).** From a user error-log: engine.log showed the SD3 InstantX node
+  failing with `ModuleNotFoundError: No module named 'diffusers'` — the embedded
+  engine python lacks diffusers (dev happened to have it). `_ensure_sd3_support`
+  now `pip install diffusers` into `engine_python()` when the node is present
+  but the import fails (returns needs-restart). The recurring "engine stopped
+  while starting" was a FALSE ALARM: `_boot_engine` sets crashed when
+  `proc.poll() is not None`, and the engine was crashing transiently on the
+  first start (VRAM clearing / init) then recovering ("Engine ready" ~26s
+  later). Now `_boot_engine` auto-retries up to 2× on a start crash before
+  showing the error (guard `_boot_retries`, reset on a start that gets
+  through). NB the engine reaches "To see the GUI"/serves even with the SD3
+  node import failing (non-fatal warning), so diffusers wasn't the crash cause
+  — the crash is transient. Create-more button was packed after 6 others in the
+  gallery `brow` and overflowed off-screen; moved it + Save Variation to the
+  FRONT (leftmost) so both are always visible. update_ui 202.
 - **Variations UI simplified + seamless recall (v2.7.5).** Gallery "More of
   this person" -> two buttons: `_save_variation` (now NO simpledialog — auto-
   named via `_auto_variation_name` from the prompt) and `_create_more`

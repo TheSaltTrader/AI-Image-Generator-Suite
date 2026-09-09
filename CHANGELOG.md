@@ -1,5 +1,20 @@
 # Changelog — AI Image Generator Suite
 
+## v2.7.6 — 2026-09-09
+- **Fixed the "engine stopped while starting" error you kept seeing.** Your
+  engine was actually starting fine — it just takes a while to boot and would
+  occasionally hiccup on the first try, which showed a scary (but wrong) error.
+  It now retries quietly a couple of times and only reports a problem if it
+  truly can't start.
+- **Fixed SD3.5 image guidance not loading.** The SD3.5 add-on needs the
+  `diffusers` library, which wasn't being installed — so the add-on failed to
+  load (you'd have seen it in engine.log). The app now installs that dependency
+  automatically for anyone with an SD3.5 model. (This was also the source of
+  the add-on warning in the engine log.)
+- **The 🧬 Create more button is now always visible.** It (and 💾 Save
+  Variation) moved to the front of the gallery button row, so they're no longer
+  pushed off the edge.
+
 ## v2.7.5 — 2026-09-09
 - **Simpler, cleaner Variations — no pop-ups.** Under the gallery, "More of
   this person" is now two clear buttons: **💾 Save Variation** (saves the

@@ -102,7 +102,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.7.5"
+APP_VERSION = "2.7.6"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -4711,6 +4711,22 @@ class App:
                   "drag to pan while zoomed, double-click to fit again.")
 
         brow = ttk.Frame(right); brow.grid(row=2, column=0, sticky=NSEW, pady=(8, 4))
+        # "More of this person" — two clean actions, kept leftmost so they are
+        # always visible (the rest of the row can be wide)
+        savevar_btn = ttk.Button(brow, text="💾 Save Variation",
+                                 command=self._save_variation)
+        savevar_btn.pack(side="left", padx=(0, 6))
+        self._tip(savevar_btn, "Save the selected person as a Variation — its "
+                               "settings + face + reference — to the database. "
+                               "No prompts; named from your prompt. It appears "
+                               "in the Variations dropdown under the Clone Tool.")
+        createmore_btn = ttk.Button(brow, text="🧬 Create more",
+                                    command=self._create_more)
+        createmore_btn.pack(side="left", padx=(0, 12))
+        self._tip(createmore_btn, "Generate more images of the selected person "
+                                  "— the count is the 'Make' number under the "
+                                  "Clone Tool's Variations. Same face + look in "
+                                  "new scenes.")
         saveas_btn = ttk.Button(brow, text="💾 Save As…", command=self._save_as)
         saveas_btn.pack(side="left")
         self._tip(saveas_btn, "Save the selected image (or GIF) somewhere of "
@@ -4748,23 +4764,6 @@ class App:
         self._tip(addtrain_btn, "Save the selected image + its prompt into a "
                                 "dataset folder, for training your own LoRA "
                                 "later with an external trainer.")
-        # More of this person → two clean actions (no pop-ups)
-        savevar_btn = ttk.Button(brow, text="💾 Save Variation",
-                                 command=self._save_variation)
-        savevar_btn.pack(side="left", padx=6)
-        self._tip(savevar_btn, "Save the selected person as a Variation — its "
-                               "settings recipe + face + reference image — to "
-                               "the Variations database. No prompts; it's named "
-                               "from your prompt automatically and appears in "
-                               "the Variations dropdown under the Clone Tool.")
-        createmore_btn = ttk.Button(brow, text="🧬 Create more",
-                                    command=self._create_more)
-        createmore_btn.pack(side="left", padx=(0, 6))
-        self._tip(createmore_btn, "Generate more images of the selected person "
-                                  "— the count is the 'Make' number under the "
-                                  "Clone Tool's Variations. Locks the face + "
-                                  "reference so it's the same person in new "
-                                  "scenes.")
         self.info_var = StringVar(value="")
         ttk.Label(brow, textvariable=self.info_var,
                   style="Dim.TLabel").pack(side="right")
@@ -7033,6 +7032,32 @@ class App:
                         restart = True
                 except Exception:
                     applog.exception("SD3.5 node install failed")
+            # the InstantX node imports `diffusers`, which the embedded engine
+            # python may lack — without it the node fails to load and SD3.5 RAG
+            # silently doesn't work. Install it once.
+            if node_dir.exists():
+                try:
+                    chk = subprocess.run(
+                        [str(engine_python()), "-c", "import diffusers"],
+                        capture_output=True, creationflags=NO_WINDOW,
+                        env=_contained_env(), timeout=60)
+                    if chk.returncode != 0:
+                        self.ui_queue.put((
+                            "status", "Installing the SD3.5 add-on dependency "
+                                      "(diffusers) — one moment…"))
+                        r = subprocess.run(
+                            [str(engine_python()), "-m", "pip", "install",
+                             "diffusers"],
+                            capture_output=True, text=True,
+                            creationflags=NO_WINDOW, env=_contained_env(),
+                            timeout=1800)
+                        if r.returncode == 0:
+                            restart = True
+                        else:
+                            applog.log("diffusers install failed: "
+                                       + (r.stderr or r.stdout or "")[-300:])
+                except Exception:
+                    applog.exception("diffusers check/install failed")
             src = MODELS / "ipadapter" / SD3_IPA
             dst = ENGINE_DIR / "models" / "ipadapter" / SD3_IPA
             if src.exists() and not dst.exists():
@@ -7139,15 +7164,24 @@ class App:
             if crashed:
                 if self._repair_engine_files(from_log=True):
                     return          # the repair started a working engine
+                # a first start can crash transiently (VRAM still clearing, a
+                # node settling) yet succeed on a retry — try a couple of times
+                # quietly before alarming the user with an error box
+                if getattr(self, "_boot_retries", 0) < 2:
+                    self._boot_retries = getattr(self, "_boot_retries", 0) + 1
+                    self.ui_queue.put(("status", "Engine start hiccup — "
+                                                 "retrying…"))
+                    time.sleep(3)
+                    self._boot_engine()
+                    return
                 tail = engine_log_tail()
                 self.ui_queue.put(("pending", "engine", None))
                 self.ui_queue.put((
-                    "error", "The engine stopped while starting. This often "
-                    "means a just-installed add-on (IP-Adapter) or engine "
-                    "update did not load — see engine.log in the project "
-                    "folder."
+                    "error", "The engine stopped while starting several times "
+                    "— see engine.log in the project folder."
                     + ("\n\nLast engine.log lines:\n" + tail if tail else "")))
                 return
+        self._boot_retries = 0      # a start got through: reset the retry count
         # a stale engine from an old session may have been started with
         # wrong model paths: if it can't see models that exist on disk,
         # restart it with our config (start_engine rewrites the yaml)
