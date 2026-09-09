@@ -969,6 +969,22 @@ the run.
   `actor_excluded` (sets -> sorted lists), restored BEFORE `_set_actor`
   so the view reflects it. `_refresh_actor_view` shows "photo i/N
   (dropped) · K sent"; the Using list lists the kept photos.
+- **Engine (VRAM) not freed on close (v2.3.2).** User: "is the app not clearing
+  vram when it closes?" Correct. `_on_close` only killed the engine
+  `if engine_ours_to_stop()` — which is False when the owner pid no longer
+  matches (after an update RELAUNCHED the app, ownership drifted) or the owner
+  file is missing → the ComfyUI engine (last model resident, up to ~17 GB)
+  survived every close. FIX: `_on_close` now calls `kill_engine()`
+  UNCONDITIONALLY — it's already scoped to this install's own PROJECT path
+  (`CommandLine.Contains(PROJECT)`), so it never touches a different install or
+  a foreign ComfyUI; the ownership gate was the leak. Since kill_engine kills
+  ALL matching python+main.py+PROJECT procs, one launch+close of the fixed app
+  also cleans accumulated orphans. update_ui_test asserts kill_engine fires on
+  close even when `engine_ours_to_stop` is stubbed False (162). DIAGNOSIS NOTE:
+  the ~11 GB the user saw was MOSTLY my leftover DEV engines on the shared 5090
+  (dev testing left ComfyUI on 8188/8189 with models loaded); killing the C:
+  dev engines dropped used VRAM 12 GB → 2.3 GB. So on this shared GPU, always
+  sweep dev engines after testing — they masquerade as the user's app leaking.
 - **IP-Adapter validation rejection + install-at-update (v2.3.1).** User: base
   generation failed with `Engine rejected the request: Prompt outputs failed
   validation (nodes: IPAdapterLoadEmbeds …)` — for EVERY Clone method (each

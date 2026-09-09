@@ -1,5 +1,13 @@
 # Changelog — AI Image Generator Suite
 
+## v2.3.2 — 2026-09-08
+- **Fixed: VRAM not freed after closing the app.** The engine (which keeps
+  the last model resident, up to ~17 GB) was only shut down when the app
+  thought it "owned" it. After an update relaunched the app, that ownership
+  no longer matched, so the engine — and its VRAM — kept running after every
+  close. The app now always shuts down its own engine on close (still scoped
+  to this install, so it never touches another program's ComfyUI).
+
 ## v2.3.1 — 2026-09-08
 - **Fixed: generation failing with "engine rejected the request … IPAdapter".**
   When a RAG map's image guidance was rejected by the engine's IP-Adapter

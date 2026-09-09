@@ -936,12 +936,21 @@ check("the window is closed once the hand-over is done", bool(destroyed))
 # ---- closing ------------------------------------------------------------
 print("closing")
 destroyed.clear()
+# the engine must be killed on close EVEN when we don't "own" it — the
+# ownership gate used to leave the engine (and its VRAM) running after an
+# update relaunched the app
+_killed = []
+_real_kill = app.kill_engine
+app.kill_engine = lambda: _killed.append(1)
 app.engine_ours_to_stop = lambda: False
 ui._on_close()
 check("closing returns before the engine shutdown is done", not destroyed)
 pump(root, lambda: destroyed, timeout=10)
 check("the app closes once the shutdown thread reports back",
       bool(destroyed))
+check("the engine is killed on close even when not 'ours' (no VRAM leak)",
+      bool(_killed))
+app.kill_engine = _real_kill
 
 print()
 print("%d passed, %d failed" % (len(PASS), len(FAIL)))

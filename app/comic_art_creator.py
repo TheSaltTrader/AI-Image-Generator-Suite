@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "2.3.1"
+APP_VERSION = "2.3.2"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -6226,9 +6226,15 @@ class App:
 
             def work():
                 try:
-                    if engine_ours_to_stop():
-                        kill_engine()
-                        ENGINE_OWNER_FILE.unlink(missing_ok=True)
+                    # Always take THIS install's engine down. kill_engine is
+                    # scoped to our own project path, so it can never touch a
+                    # different install or a foreign ComfyUI. Gating this on
+                    # "did WE start it" left the engine — and up to ~17 GB of
+                    # VRAM — running whenever an update had relaunched the app
+                    # (ownership no longer matched), so the card stayed
+                    # occupied after every close.
+                    kill_engine()
+                    ENGINE_OWNER_FILE.unlink(missing_ok=True)
                 except Exception:
                     pass      # never let cleanup stop the app from closing
                 self.ui_queue.put(("quit", None))
