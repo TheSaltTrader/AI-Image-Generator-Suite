@@ -1003,6 +1003,23 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Anatomy negative embedding (v2.7.3).** The deferred piece from v2.7.1.
+  `ANATOMY_EMBED = "negativeXL_D"` — a trained SDXL negative TI from
+  `gsdf/CounterfeitXL` (VERIFIED: HF resolve URL 200, 128KB, keys clip_g
+  (16,1280)+clip_l (16,768) = real SDXL dual-encoder). Wiring: (1) manifest
+  entry {repo gsdf/CounterfeitXL, remote_file embeddings/negativeXL_D.safetensors
+  (subpath works via resolve/main/<remote_file>), local negativeXL_D.safetensors,
+  dir embeddings} — one-time ~130KB download; (2) start_engine yaml gained an
+  `embeddings: embeddings` line (ComfyUI had no embeddings path before); (3)
+  `_generate` prepends `embedding:negativeXL_D, ` to the negative ONLY when
+  anatomy_on AND MODELS/embeddings/negativeXL_D.safetensors exists (so it's
+  graceful without the download). VERIFIED live: a gen with
+  `embedding:negativeXL_D` in the negative completed with NO "embedding does
+  not exist" warning in the engine log (ComfyUI warns loudly when missing), so
+  it loaded. NB the default ComfyUI embeddings dir is ComfyUI/models/embeddings
+  (used on the plain dev launch); the app's yaml points embeddings ->
+  MODELS/embeddings. Tests: update_ui 194 (+3: constant + manifest entry
+  well-formed).
 - **Incognito toggle (v2.7.2).** Eye button in the top-right badge row
   (`incog_btn`, next to lora/rag badges). `_toggle_incognito` grid_removes the
   preview `self.canvas` + the gallery `self._gwrap` and grids `_incog_cover`

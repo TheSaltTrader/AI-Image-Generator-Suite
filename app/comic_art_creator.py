@@ -102,7 +102,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.7.2"
+APP_VERSION = "2.7.3"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -187,6 +187,11 @@ ANATOMY_NEG = ("extra limbs, extra arms, extra legs, extra hands, "
 # SDXL's native pixel budget — the base is drawn at (or below) this then
 # upscaled to the requested size, so anatomy stays sane at large outputs.
 ANATOMY_NATIVE_MAX = 1152
+# A trained SDXL negative embedding (gsdf/CounterfeitXL, clip_g+clip_l) that
+# further suppresses bad hands/anatomy. One-time download via the manifest;
+# referenced in the negative (as `embedding:<stem>`) only when the file is
+# actually present, so the guard still works without it.
+ANATOMY_EMBED = "negativeXL_D"
 
 
 def redux_ready():
@@ -348,7 +353,8 @@ def start_engine():
         "  clip_vision: clip_vision\n"
         "  diffusion_models: diffusion_models\n"
         "  text_encoders: text_encoders\n"
-        "  style_models: style_models\n", encoding="utf-8")
+        "  style_models: style_models\n"
+        "  embeddings: embeddings\n", encoding="utf-8")
     cmd = [str(engine_python()), "main.py",
            "--listen", ENGINE_HOST, "--port", str(ENGINE_PORT),
            "--extra-model-paths-config", str(EXTRA_PATHS_YAML),
@@ -8514,6 +8520,11 @@ class App:
         neg = self._get(self.negative_box)
         if anatomy_on:
             neg = (neg + ", " + ANATOMY_NEG) if neg.strip() else ANATOMY_NEG
+            # if the trained SDXL negative embedding was downloaded, prepend it
+            # (ComfyUI reads `embedding:<name>` from the engine's embeddings dir)
+            if (MODELS / "embeddings"
+                    / (ANATOMY_EMBED + ".safetensors")).exists():
+                neg = f"embedding:{ANATOMY_EMBED}, " + neg
 
         params = dict(prompt=full_prompt, user_prompt=prompt, style=style,
                       negative=neg, anatomy_guard=anatomy_on,

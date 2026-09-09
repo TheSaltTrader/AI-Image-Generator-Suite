@@ -1,5 +1,14 @@
 # Changelog — AI Image Generator Suite
 
+## v2.7.3 — 2026-09-09
+- **Anatomy guard now also uses a trained negative embedding.** On top of the
+  anatomy negative text and the native-resolution base, the guard now pulls in
+  a proven SDXL negative embedding (`negativeXL_D`) that specifically suppresses
+  bad hands and mutant anatomy. It's a small one-time download (~130 KB) that
+  installs with the model updates; until it's downloaded the guard still works
+  with the text + native-res base, and the embedding is only applied when it's
+  actually present.
+
 ## v2.7.2 — 2026-09-09
 - **New: Incognito toggle (privacy).** An eye button next to the LoRA/RAG
   badges hides the preview image and the whole gallery/history at a glance —

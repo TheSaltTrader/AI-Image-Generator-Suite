@@ -1,180 +1,186 @@
 [
- {
-  "repo": "Comfy-Org/flux1-dev",
-  "remote_file": "flux1-dev-fp8.safetensors",
-  "local": "flux1-dev-fp8.safetensors",
-  "dir": "checkpoints"
- },
- {
-  "repo": "Comfy-Org/flux1-schnell",
-  "remote_file": "flux1-schnell-fp8.safetensors",
-  "local": "Flux1-Schnell-fp8.safetensors",
-  "dir": "checkpoints"
- },
- {
-  "repo": "RunDiffusion/Juggernaut-XL-v9",
-  "remote_file": "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors",
-  "local": "Juggernaut-XL-v9.safetensors",
-  "dir": "checkpoints"
- },
- {
-  "repo": "Lykon/dreamshaper-xl-v2-turbo",
-  "remote_file": "DreamShaperXL_Turbo_v2_1.safetensors",
-  "local": "DreamShaperXL-Turbo-v2.1.safetensors",
-  "dir": "checkpoints"
- },
- {
-  "repo": "cagliostrolab/animagine-xl-4.0",
-  "remote_file": "animagine-xl-4.0-opt.safetensors",
-  "local": "Animagine-XL-4.0.safetensors",
-  "dir": "checkpoints"
- },
- {
-  "repo": "renderartist/retrocomicflux",
-  "remote_file": "Retro_Comic_Flux_v2_renderartist.safetensors",
-  "local": "Flux_RetroComic_v2.safetensors",
-  "dir": "loras"
- },
- {
-  "repo": "XLabs-AI/flux-lora-collection",
-  "remote_file": "art_lora_comfy_converted.safetensors",
-  "local": "Flux_ArtStyle_XLabs.safetensors",
-  "dir": "loras"
- },
- {
-  "repo": "XLabs-AI/flux-lora-collection",
-  "remote_file": "realism_lora_comfy_converted.safetensors",
-  "local": "Flux_Realism_XLabs.safetensors",
-  "dir": "loras"
- },
- {
-  "repo": "blink7630/graphic-novel-illustration",
-  "remote_file": "Graphic_Novel_Illustration-000007.safetensors",
-  "local": "SDXL_GraphicNovel.safetensors",
-  "dir": "loras"
- },
- {
-  "repo": "alvdansen/BandW-Manga",
-  "remote_file": "BW-000014.safetensors",
-  "local": "SDXL_BW_Manga.safetensors",
-  "dir": "loras"
- },
- {
-  "repo": "artificialguybr/LineAniRedmond-LinearMangaSDXL-V2",
-  "remote_file": "LineAniRedmondV2-Lineart-LineAniAF.safetensors",
-  "local": "SDXL_LineArt_Manga.safetensors",
-  "dir": "loras"
- },
- {
-  "repo": "Linaqruf/style-enhancer-xl-lora",
-  "remote_file": "style-enhancer-xl.safetensors",
-  "local": "SDXL_StyleEnhancer_Anime.safetensors",
-  "dir": "loras"
- },
- {
-  "repo": "Comfy-Org/flux1-kontext-dev_ComfyUI",
-  "remote_file": "split_files/diffusion_models/flux1-dev-kontext_fp8_scaled.safetensors",
-  "local": "flux1-dev-kontext_fp8_scaled.safetensors",
-  "dir": "diffusion_models"
- },
- {
-  "repo": "Comfy-Org/Qwen-Image-Edit_ComfyUI",
-  "remote_file": "split_files/diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors",
-  "local": "qwen_image_edit_2511_fp8mixed.safetensors",
-  "dir": "diffusion_models"
- },
- {
-  "repo": "Comfy-Org/Qwen-Image_ComfyUI",
-  "remote_file": "split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors",
-  "local": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
-  "dir": "text_encoders"
- },
- {
-  "repo": "Comfy-Org/Qwen-Image_ComfyUI",
-  "remote_file": "split_files/vae/qwen_image_vae.safetensors",
-  "local": "qwen_image_vae.safetensors",
-  "dir": "vae"
- },
- {
-  "repo": "Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
-  "remote_file": "split_files/diffusion_models/wan2.2_ti2v_5B_fp16.safetensors",
-  "local": "wan2.2_ti2v_5B_fp16.safetensors",
-  "dir": "diffusion_models"
- },
- {
-  "repo": "Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
-  "remote_file": "split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
-  "local": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
-  "dir": "text_encoders"
- },
- {
-  "repo": "Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
-  "remote_file": "split_files/vae/wan2.2_vae.safetensors",
-  "local": "wan2.2_vae.safetensors",
-  "dir": "vae"
- },
- {
-  "repo": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
-  "remote_file": "split_files/diffusion_models/wan2.1_flf2v_720p_14B_fp8_e4m3fn.safetensors",
-  "local": "wan2.1_flf2v_720p_14B_fp8_e4m3fn.safetensors",
-  "dir": "diffusion_models"
- },
- {
-  "repo": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
-  "remote_file": "split_files/clip_vision/clip_vision_h.safetensors",
-  "local": "clip_vision_h.safetensors",
-  "dir": "clip_vision"
- },
- {
-  "repo": "Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
-  "remote_file": "split_files/vae/wan_2.1_vae.safetensors",
-  "local": "wan_2.1_vae.safetensors",
-  "dir": "vae"
- },
- {
-  "repo": "h94/IP-Adapter",
-  "remote_file": "sdxl_models/ip-adapter-plus_sdxl_vit-h.safetensors",
-  "local": "ip-adapter-plus_sdxl_vit-h.safetensors",
-  "dir": "ipadapter"
- },
- {
-  "repo": "h94/IP-Adapter",
-  "remote_file": "models/image_encoder/model.safetensors",
-  "local": "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors",
-  "dir": "clip_vision"
- },
- {
-  "url": "https://github.com/TheSaltTrader/AI-Image-Generator-Suite/releases/download/v1.10.1/SDXL_BorderFrames_v1.safetensors",
-  "local": "SDXL_BorderFrames_v1.safetensors",
-  "dir": "loras"
- },
- {
-  "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
-  "local": "RealESRGAN_x4plus.pth",
-  "dir": "upscale_models"
- },
- {
-  "repo": "Comfy-Org/Flux1-Redux-dev",
-  "remote_file": "flux1-redux-dev.safetensors",
-  "local": "flux1-redux-dev.safetensors",
-  "dir": "style_models"
- },
- {
-  "repo": "Comfy-Org/sigclip_vision_384",
-  "remote_file": "sigclip_vision_patch14_384.safetensors",
-  "local": "sigclip_vision_patch14_384.safetensors",
-  "dir": "clip_vision"
- },
- {
-  "repo": "Comfy-Org/stable-diffusion-3.5-fp8",
-  "remote_file": "sd3.5_large_fp8_scaled.safetensors",
-  "local": "sd3.5_large_fp8_scaled.safetensors",
-  "dir": "checkpoints"
- },
- {
-  "repo": "InstantX/SD3.5-Large-IP-Adapter",
-  "remote_file": "ip-adapter.bin",
-  "local": "ip_sd35l_instantx.bin",
-  "dir": "ipadapter"
- }
+  {
+    "repo": "Comfy-Org/flux1-dev",
+    "remote_file": "flux1-dev-fp8.safetensors",
+    "local": "flux1-dev-fp8.safetensors",
+    "dir": "checkpoints"
+  },
+  {
+    "repo": "Comfy-Org/flux1-schnell",
+    "remote_file": "flux1-schnell-fp8.safetensors",
+    "local": "Flux1-Schnell-fp8.safetensors",
+    "dir": "checkpoints"
+  },
+  {
+    "repo": "RunDiffusion/Juggernaut-XL-v9",
+    "remote_file": "Juggernaut-XL_v9_RunDiffusionPhoto_v2.safetensors",
+    "local": "Juggernaut-XL-v9.safetensors",
+    "dir": "checkpoints"
+  },
+  {
+    "repo": "Lykon/dreamshaper-xl-v2-turbo",
+    "remote_file": "DreamShaperXL_Turbo_v2_1.safetensors",
+    "local": "DreamShaperXL-Turbo-v2.1.safetensors",
+    "dir": "checkpoints"
+  },
+  {
+    "repo": "cagliostrolab/animagine-xl-4.0",
+    "remote_file": "animagine-xl-4.0-opt.safetensors",
+    "local": "Animagine-XL-4.0.safetensors",
+    "dir": "checkpoints"
+  },
+  {
+    "repo": "renderartist/retrocomicflux",
+    "remote_file": "Retro_Comic_Flux_v2_renderartist.safetensors",
+    "local": "Flux_RetroComic_v2.safetensors",
+    "dir": "loras"
+  },
+  {
+    "repo": "XLabs-AI/flux-lora-collection",
+    "remote_file": "art_lora_comfy_converted.safetensors",
+    "local": "Flux_ArtStyle_XLabs.safetensors",
+    "dir": "loras"
+  },
+  {
+    "repo": "XLabs-AI/flux-lora-collection",
+    "remote_file": "realism_lora_comfy_converted.safetensors",
+    "local": "Flux_Realism_XLabs.safetensors",
+    "dir": "loras"
+  },
+  {
+    "repo": "blink7630/graphic-novel-illustration",
+    "remote_file": "Graphic_Novel_Illustration-000007.safetensors",
+    "local": "SDXL_GraphicNovel.safetensors",
+    "dir": "loras"
+  },
+  {
+    "repo": "alvdansen/BandW-Manga",
+    "remote_file": "BW-000014.safetensors",
+    "local": "SDXL_BW_Manga.safetensors",
+    "dir": "loras"
+  },
+  {
+    "repo": "artificialguybr/LineAniRedmond-LinearMangaSDXL-V2",
+    "remote_file": "LineAniRedmondV2-Lineart-LineAniAF.safetensors",
+    "local": "SDXL_LineArt_Manga.safetensors",
+    "dir": "loras"
+  },
+  {
+    "repo": "Linaqruf/style-enhancer-xl-lora",
+    "remote_file": "style-enhancer-xl.safetensors",
+    "local": "SDXL_StyleEnhancer_Anime.safetensors",
+    "dir": "loras"
+  },
+  {
+    "repo": "Comfy-Org/flux1-kontext-dev_ComfyUI",
+    "remote_file": "split_files/diffusion_models/flux1-dev-kontext_fp8_scaled.safetensors",
+    "local": "flux1-dev-kontext_fp8_scaled.safetensors",
+    "dir": "diffusion_models"
+  },
+  {
+    "repo": "Comfy-Org/Qwen-Image-Edit_ComfyUI",
+    "remote_file": "split_files/diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors",
+    "local": "qwen_image_edit_2511_fp8mixed.safetensors",
+    "dir": "diffusion_models"
+  },
+  {
+    "repo": "Comfy-Org/Qwen-Image_ComfyUI",
+    "remote_file": "split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors",
+    "local": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+    "dir": "text_encoders"
+  },
+  {
+    "repo": "Comfy-Org/Qwen-Image_ComfyUI",
+    "remote_file": "split_files/vae/qwen_image_vae.safetensors",
+    "local": "qwen_image_vae.safetensors",
+    "dir": "vae"
+  },
+  {
+    "repo": "Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+    "remote_file": "split_files/diffusion_models/wan2.2_ti2v_5B_fp16.safetensors",
+    "local": "wan2.2_ti2v_5B_fp16.safetensors",
+    "dir": "diffusion_models"
+  },
+  {
+    "repo": "Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+    "remote_file": "split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+    "local": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+    "dir": "text_encoders"
+  },
+  {
+    "repo": "Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+    "remote_file": "split_files/vae/wan2.2_vae.safetensors",
+    "local": "wan2.2_vae.safetensors",
+    "dir": "vae"
+  },
+  {
+    "repo": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+    "remote_file": "split_files/diffusion_models/wan2.1_flf2v_720p_14B_fp8_e4m3fn.safetensors",
+    "local": "wan2.1_flf2v_720p_14B_fp8_e4m3fn.safetensors",
+    "dir": "diffusion_models"
+  },
+  {
+    "repo": "Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+    "remote_file": "split_files/clip_vision/clip_vision_h.safetensors",
+    "local": "clip_vision_h.safetensors",
+    "dir": "clip_vision"
+  },
+  {
+    "repo": "Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+    "remote_file": "split_files/vae/wan_2.1_vae.safetensors",
+    "local": "wan_2.1_vae.safetensors",
+    "dir": "vae"
+  },
+  {
+    "repo": "h94/IP-Adapter",
+    "remote_file": "sdxl_models/ip-adapter-plus_sdxl_vit-h.safetensors",
+    "local": "ip-adapter-plus_sdxl_vit-h.safetensors",
+    "dir": "ipadapter"
+  },
+  {
+    "repo": "h94/IP-Adapter",
+    "remote_file": "models/image_encoder/model.safetensors",
+    "local": "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors",
+    "dir": "clip_vision"
+  },
+  {
+    "url": "https://github.com/TheSaltTrader/AI-Image-Generator-Suite/releases/download/v1.10.1/SDXL_BorderFrames_v1.safetensors",
+    "local": "SDXL_BorderFrames_v1.safetensors",
+    "dir": "loras"
+  },
+  {
+    "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
+    "local": "RealESRGAN_x4plus.pth",
+    "dir": "upscale_models"
+  },
+  {
+    "repo": "Comfy-Org/Flux1-Redux-dev",
+    "remote_file": "flux1-redux-dev.safetensors",
+    "local": "flux1-redux-dev.safetensors",
+    "dir": "style_models"
+  },
+  {
+    "repo": "Comfy-Org/sigclip_vision_384",
+    "remote_file": "sigclip_vision_patch14_384.safetensors",
+    "local": "sigclip_vision_patch14_384.safetensors",
+    "dir": "clip_vision"
+  },
+  {
+    "repo": "Comfy-Org/stable-diffusion-3.5-fp8",
+    "remote_file": "sd3.5_large_fp8_scaled.safetensors",
+    "local": "sd3.5_large_fp8_scaled.safetensors",
+    "dir": "checkpoints"
+  },
+  {
+    "repo": "InstantX/SD3.5-Large-IP-Adapter",
+    "remote_file": "ip-adapter.bin",
+    "local": "ip_sd35l_instantx.bin",
+    "dir": "ipadapter"
+  },
+  {
+    "repo": "gsdf/CounterfeitXL",
+    "remote_file": "embeddings/negativeXL_D.safetensors",
+    "local": "negativeXL_D.safetensors",
+    "dir": "embeddings"
+  }
 ]

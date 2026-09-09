@@ -109,6 +109,20 @@ try:
 except Exception as _e:
     check("anatomy guard build_graph works", False, str(_e))
 
+# --- anatomy negative embedding (one-time download, wired into the guard) ---
+check("anatomy embedding constant set",
+      getattr(app, "ANATOMY_EMBED", None) == "negativeXL_D")
+try:
+    import json as _json
+    _man = _json.load(open(app.MANIFEST_FILE, encoding="utf-8"))
+    _emb = [e for e in _man if e.get("local") == "negativeXL_D.safetensors"]
+    check("negative embedding is in the model manifest", len(_emb) == 1)
+    check("embedding manifest entry is well-formed",
+          bool(_emb) and _emb[0].get("dir") == "embeddings"
+          and _emb[0].get("repo") and _emb[0].get("remote_file"))
+except Exception as _e:
+    check("embedding manifest entry present", False, str(_e))
+
 # --- red DELETE ALL danger button ---
 check("Delete-all button is the red Danger style",
       str(ui.delfiles_btn.cget("style")) == "Danger.TButton")
