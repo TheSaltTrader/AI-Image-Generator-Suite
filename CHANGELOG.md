@@ -1,5 +1,18 @@
 # Changelog — AI Image Generator Suite
 
+## v2.7.5 — 2026-09-09
+- **Simpler, cleaner Variations — no pop-ups.** Under the gallery, "More of
+  this person" is now two clear buttons: **💾 Save Variation** (saves the
+  selected person to the database, named automatically from your prompt — no
+  dialog) and **🧬 Create more** (generates more images of that person; the
+  count is the "Make" number).
+- **Clone Tool & Variations are one clean section.** Pick a saved person from
+  an inline **dropdown** (no more pop-up picker), set how many to **Make**, and
+  Create more. Delete / Export / Import are inline buttons too.
+- **Recalling a Variation is now seamless** when its RAG map is already loaded
+  — it no longer re-parses a large map you already have open, so "more of the
+  same person" starts immediately instead of waiting on a reload.
+
 ## v2.7.4 — 2026-09-09
 - **The Generate button is now always on screen.** It moved out of the
   scrolling panel into a pinned bar at the bottom, just above the Batch queue —

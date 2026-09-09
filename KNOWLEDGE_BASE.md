@@ -1003,6 +1003,20 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Variations UI simplified + seamless recall (v2.7.5).** Gallery "More of
+  this person" -> two buttons: `_save_variation` (now NO simpledialog — auto-
+  named via `_auto_variation_name` from the prompt) and `_create_more`
+  (generates `var_count_var` images of the selected person: applies the picked
+  variation, or locks the selected gallery image transiently if none picked;
+  sets batch_var + `_generate()`). The popup picker `_pick_variation` (Toplevel)
+  is DELETED — replaced by an inline `variation_dd` Combobox (`_refresh_variation_dd`
+  builds `_variation_by_label`; `_on_variation_pick` locks/clears). Inline
+  `_delete_variation` (no confirm popup) + Export/Import now status-message (no
+  messagebox). Header renamed "CLONE TOOL & VARIATIONS". SEAMLESS RECALL:
+  `_apply_ui_state` no longer re-parses the RAG map when the config's
+  ragmap_path is already loaded + unchanged (sig match) — recalling a variation
+  whose big map is already open is instant (was a forced `_load_ragmap_async`).
+  Tests: update_ui 202. NB simpledialog import now unused (left in place).
 - **Pinned Generate bar (v2.7.4).** Moved the image Generate (`go_btn`) + `+Q`
   + progress + Cancel out of the scrolling `_page_gen` into a `self._gen_pinned`
   frame at row 0 of `_page_bottom` (the always-visible zone), above the batch

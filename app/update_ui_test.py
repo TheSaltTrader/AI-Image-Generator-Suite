@@ -71,14 +71,16 @@ root.update()
 print("the app window")
 check("app builds with the updater wired in", ui.root.winfo_exists())
 
-# --- Variations feature (save/recall a person) ---
+# --- Variations feature (inline: Save Variation / Create more, no pop-ups) ---
 check("variations store initialised", getattr(ui, "varsdb", None) is not None)
 check("Variations section has its own enable checkbox", hasattr(ui, "var_cb"))
-check("'More of this person' save handler exists",
-      callable(getattr(ui, "_save_variation", None)))
-for _m in ("_pick_variation", "_apply_variation", "_apply_variation_lock",
-           "_clear_variation", "_on_variation_toggle", "_export_variations",
-           "_import_variations"):
+check("Variations dropdown is inline (no picker pop-up)",
+      hasattr(ui, "variation_dd") and not hasattr(ui, "_pick_variation"))
+check("'Make N' count for Create more exists", hasattr(ui, "var_count_var"))
+for _m in ("_save_variation", "_create_more", "_on_variation_pick",
+           "_delete_variation", "_refresh_variation_dd", "_apply_variation",
+           "_apply_variation_lock", "_clear_variation", "_on_variation_toggle",
+           "_export_variations", "_import_variations"):
     check("variations method %s wired" % _m,
           callable(getattr(ui, _m, None)))
 # a locked variation must force face-swap on and grey the model/method

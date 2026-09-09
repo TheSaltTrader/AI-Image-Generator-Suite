@@ -102,7 +102,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.7.4"
+APP_VERSION = "2.7.5"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -217,6 +217,7 @@ SIZE_PRESETS = {
 
 NONE_LORA = "— none —"
 NONE_PRESET = "— none (raw prompt) —"
+VAR_NONE = "— no variation —"   # the Variations dropdown's "none" entry
 
 # colors \u2014 two themes; apply_theme() rebinds the globals below before the
 # UI is built, and again (best-effort) when the user switches in Settings.
@@ -3997,7 +3998,7 @@ class App:
         # image editor — Gemini-style instruction editing
         r = self._rule(left, r)
         # ---------- CLONE A FACE onto the generated image ----------
-        fc_head = ttk.Label(left, text="CLONE TOOL (optional)",
+        fc_head = ttk.Label(left, text="CLONE TOOL & VARIATIONS",
                             style="Head.TLabel")
         fc_head.grid(row=r, sticky=W, pady=(10, 0)); r += 1
         self._tip(fc_head,
@@ -4025,30 +4026,44 @@ class App:
         # page-level so it isn't greyed with the clone body.
         self.var_enable_var = BooleanVar(value=False)
         self.var_cb = ttk.Checkbutton(
-            left, text="🧬 Recall a saved Variation (locks the person)",
+            left, text="🧬 Variations — make more of one saved person",
             variable=self.var_enable_var, command=self._on_variation_toggle)
         self.var_cb.grid(row=r, sticky=W, pady=(0, 2)); r += 1
         self._tip(self.var_cb,
-                  "Reuse a person you saved with the 🧬 More of this person "
-                  "button under the gallery. On: the app restores that "
-                  "generation's settings and locks the face + reference, so "
-                  "each Generate makes MORE of the same person — change the "
-                  "prompt for new scenes and the person stays. It forces the "
-                  "face-swap and a compatible model and greys what would break "
-                  "it. Off: normal generation.")
+                  "On: pick a saved person below and lock them — the app "
+                  "restores that generation's settings + face + reference, so "
+                  "each Generate makes MORE of the same person (change the "
+                  "prompt for new scenes). Save a person with 💾 Save Variation "
+                  "under the gallery. Off: normal generation.")
+        # inline row: [ dropdown of saved people ]  Make [n]  🧬 Create more
         self.var_row = ttk.Frame(left)
         self.var_row.grid(row=r, sticky=NSEW, pady=(0, 2)); r += 1
-        self.var_row.columnconfigure(1, weight=1)
-        ttk.Button(self.var_row, text="📇 Pick…", width=11,
-                   command=self._pick_variation).grid(row=0, column=0)
-        self.variation_desc_var = StringVar(value="no variation selected")
-        ttk.Label(self.var_row, textvariable=self.variation_desc_var,
-                  style="Dim.TLabel", wraplength=170).grid(
-            row=0, column=1, sticky=W, padx=6)
-        self.variation_thumb_lab = ttk.Label(self.var_row)
-        self.variation_thumb_lab.grid(row=0, column=2, padx=(0, 4))
-        ttk.Button(self.var_row, text="✕", width=3,
-                   command=self._clear_variation).grid(row=0, column=3)
+        self.var_row.columnconfigure(0, weight=1)
+        self.variation_var = StringVar(value=VAR_NONE)
+        self.variation_dd = ttk.Combobox(
+            self.var_row, textvariable=self.variation_var, state="readonly",
+            exportselection=False, values=[VAR_NONE])
+        self.variation_dd.grid(row=0, column=0, sticky="ew")
+        self.variation_dd.bind("<<ComboboxSelected>>", self._on_variation_pick)
+        self._tip(self.variation_dd, "Your saved people. Pick one to lock it, "
+                                     "then Generate (or Create more) for more "
+                                     "images of that person.")
+        ttk.Label(self.var_row, text="Make", style="Dim.TLabel").grid(
+            row=0, column=1, padx=(8, 2))
+        self.var_count_var = IntVar(value=4)
+        ttk.Spinbox(self.var_row, from_=1, to=20, width=4,
+                    textvariable=self.var_count_var).grid(row=0, column=2)
+        ttk.Button(self.var_row, text="🧬 Create more",
+                   command=self._create_more).grid(row=0, column=3, padx=(6, 0))
+        # manage row: delete / export / import — all inline, no pop-ups
+        vmrow = ttk.Frame(left); vmrow.grid(row=r, sticky=W, pady=(0, 2)); r += 1
+        ttk.Button(vmrow, text="🗑 Delete", width=9,
+                   command=self._delete_variation).pack(side="left")
+        ttk.Button(vmrow, text="⬆ Export", width=9,
+                   command=self._export_variations).pack(side="left", padx=(6, 0))
+        ttk.Button(vmrow, text="⬇ Import", width=9,
+                   command=self._import_variations).pack(side="left", padx=(6, 0))
+        self._refresh_variation_dd()   # populate from the saved store
 
         self.clone_body = ttk.Frame(left)
         self.clone_body.grid(row=r, sticky=NSEW); r += 1
@@ -4733,15 +4748,23 @@ class App:
         self._tip(addtrain_btn, "Save the selected image + its prompt into a "
                                 "dataset folder, for training your own LoRA "
                                 "later with an external trainer.")
-        morep_btn = ttk.Button(brow, text="🧬 More of this person",
-                               command=self._save_variation)
-        morep_btn.pack(side="left", padx=6)
-        self._tip(morep_btn, "Save the selected person as a Variation — its "
-                             "settings recipe + face + a reference image + your "
-                             "description. Recall it under Clone Tool → 🧬 "
-                             "Recall a saved Variation to generate MORE images "
-                             "of the same person (new scenes, same face). "
-                             "Variations can be exported to another install.")
+        # More of this person → two clean actions (no pop-ups)
+        savevar_btn = ttk.Button(brow, text="💾 Save Variation",
+                                 command=self._save_variation)
+        savevar_btn.pack(side="left", padx=6)
+        self._tip(savevar_btn, "Save the selected person as a Variation — its "
+                               "settings recipe + face + reference image — to "
+                               "the Variations database. No prompts; it's named "
+                               "from your prompt automatically and appears in "
+                               "the Variations dropdown under the Clone Tool.")
+        createmore_btn = ttk.Button(brow, text="🧬 Create more",
+                                    command=self._create_more)
+        createmore_btn.pack(side="left", padx=(0, 6))
+        self._tip(createmore_btn, "Generate more images of the selected person "
+                                  "— the count is the 'Make' number under the "
+                                  "Clone Tool's Variations. Locks the face + "
+                                  "reference so it's the same person in new "
+                                  "scenes.")
         self.info_var = StringVar(value="")
         ttk.Label(brow, textvariable=self.info_var,
                   style="Dim.TLabel").pack(side="right")
@@ -6427,10 +6450,22 @@ class App:
                 pass
             rmp = st.get("ragmap_path")
             if rmp and Path(rmp).exists():
-                # parsed off the UI thread — see _load_ragmap_async; the
-                # path is remembered at once so persistence keeps it
-                self.ragmap_path = rmp
-                self._load_ragmap_async(rmp, self._ragmap_restored)
+                # Skip the (slow, for a big map) reload when this exact map is
+                # already loaded and unchanged — so recalling a Variation whose
+                # RAG map is the one already in memory is seamless. Only parse
+                # (off the UI thread) when the map is different or changed.
+                already = (self.ragmap is not None
+                           and self.ragmap_path == rmp)
+                if already:
+                    try:
+                        st_ = Path(rmp).stat()
+                        already = (st_.st_mtime, st_.st_size) \
+                            == self.ragmap.get("_sig")
+                    except OSError:
+                        already = False
+                self.ragmap_path = rmp   # remembered at once for persistence
+                if not already:
+                    self._load_ragmap_async(rmp, self._ragmap_restored)
             adb = st.get("actordb_path")
             if adb and Path(adb).exists():
                 if self._load_actordb(adb, quiet=True) is not None:
@@ -7688,134 +7723,144 @@ class App:
             self._apply_variation_lock()
 
     # ------------------------------------------- Variations (saved people)
+    @staticmethod
+    def _variation_label(row):
+        return f"{row['description'] or row['name']} ({row['created'][:8]})"
+
+    def _refresh_variation_dd(self, select_id=None):
+        """Repopulate the inline Variations dropdown from the DB."""
+        if self.varsdb is None or not hasattr(self, "variation_dd"):
+            return
+        rows = self.varsdb.list()
+        self._variation_by_label = {self._variation_label(r): r for r in rows}
+        self.variation_dd["values"] = [VAR_NONE] + list(self._variation_by_label)
+        if select_id is not None:
+            for lbl, r in self._variation_by_label.items():
+                if r["id"] == select_id:
+                    self.variation_var.set(lbl)
+                    return
+        if self.variation_var.get() not in self._variation_by_label:
+            self.variation_var.set(VAR_NONE)
+
+    def _selected_variation(self):
+        """The variation row chosen in the dropdown, or None."""
+        return getattr(self, "_variation_by_label", {}).get(
+            self.variation_var.get())
+
+    def _auto_variation_name(self, params):
+        """A tidy name from the prompt — no pop-up asked of the user."""
+        txt = (params or {}).get("user_prompt") \
+            or (params or {}).get("prompt") or ""
+        txt = " ".join(str(txt).split())
+        return txt[:40].rstrip(" ,") or "Variation"
+
     def _save_variation(self):
-        """Save the selected gallery image as a Variation: the current
-        generation recipe (settings) + the image (its face + a whole-person
-        reference) + a description, so the person can be recalled and
-        generated again later — here or on another install."""
+        """Save the selected gallery image as a Variation — recipe + face +
+        reference — with NO pop-up. Named automatically from the prompt; it
+        appears in the Variations dropdown under the Clone Tool."""
         if self.varsdb is None:
-            messagebox.showinfo("Variations",
-                                "The variations store isn't available.")
+            self.status_var.set("Variations store isn't available.")
             return
         if not self.session or self.current is None:
-            messagebox.showinfo("Variations", "Pick an image in the gallery "
-                                "first — that's the person to save.")
+            self.status_var.set("Select an image in the gallery first, then "
+                                "💾 Save Variation.")
             return
         _img, params, path = self.session[self.current]
         if not path or not Path(path).exists():
-            messagebox.showinfo("Variations", "This image has no saved file "
-                                "on disk to save from.")
+            self.status_var.set("That image has no saved file to save from.")
             return
-        desc = simpledialog.askstring(
-            "Save this person",
-            "Describe the person (e.g. 'blonde, poolside'):",
-            parent=self.root)
-        if desc is None:
-            return
-        desc = desc.strip()
         try:
-            config = self._collect_ui_state()
-            seed = (params or {}).get("seed", "")
-            self.varsdb.add(name=(desc[:40] or "Variation"),
-                            description=desc, face_src=path, ref_src=path,
-                            config=config, seed=seed)
-            self.status_var.set(
-                f"Saved '{desc[:40] or 'Variation'}'. Recall it under Clone "
-                "Tool → 🧬 Recall a saved Variation to make more of this "
-                "person.")
+            name = self._auto_variation_name(params)
+            vid = self.varsdb.add(name=name, description=name,
+                                  face_src=path, ref_src=path,
+                                  config=self._collect_ui_state(),
+                                  seed=(params or {}).get("seed", ""))
+            self._refresh_variation_dd(select_id=vid)
+            self.status_var.set(f"Saved variation '{name}'. Pick it under "
+                                "Clone Tool → Variations, or press Create more.")
         except Exception as e:
             applog.exception("save variation failed")
-            messagebox.showerror("Variations", f"Couldn't save: {e}")
+            self.status_var.set(f"Couldn't save variation: {e}")
 
-    def _pick_variation(self):
-        """Modal list of saved variations with a face thumbnail; Use applies
-        it, Delete removes it, and Export/Import move the whole store."""
-        if self.varsdb is None:
-            return
-        rows = self.varsdb.list()
-        win = Toplevel(self.root)
-        win.title("Saved variations")
-        win.transient(self.root)
-        win.configure(bg=BG)
-        if not rows:
-            ttk.Label(win, text="No saved variations yet.\nMake an image you "
-                      "like, select it in the gallery, then press\n🧬 More of "
-                      "this person under the gallery.",
-                      justify="left").grid(row=0, column=0, padx=16, pady=16)
+    def _on_variation_pick(self, _e=None):
+        """Dropdown selection: lock the chosen person, or clear on '— none —'."""
+        row = self._selected_variation()
+        if row is None:
+            self.variation_sel = None
+            self._variation_ref = None
+            self.var_enable_var.set(False)
+            self._apply_variation_lock()
+            self.status_var.set("Variation off — normal generation.")
         else:
-            lb = Listbox(win, width=42, height=min(12, len(rows)), bg=BG3,
-                         fg=FG, relief="flat", highlightthickness=0,
-                         activestyle="none", exportselection=False)
-            for row in rows:
-                lb.insert("end", f"{row['description'] or row['name']}  "
-                                 f"({row['created'][:8]})")
-            lb.grid(row=0, column=0, padx=10, pady=10, sticky=NSEW)
-            prev = ttk.Label(win)
-            prev.grid(row=0, column=1, padx=(0, 10), pady=10)
-            keep = {}
+            self.variation_sel = row
+            self.var_enable_var.set(True)
+            self._apply_variation()
+        self._schedule_persist()
 
-            def show(_e=None):
-                sel = lb.curselection()
-                if not sel:
-                    return
-                try:
-                    im = Image.open(rows[sel[0]]["face_path"])
-                    im.thumbnail((150, 150))
-                    keep["img"] = ImageTk.PhotoImage(im)
-                    prev.configure(image=keep["img"])
-                except Exception:
-                    prev.configure(image="")
-            lb.bind("<<ListboxSelect>>", show)
-            lb.selection_set(0)
-            show()
+    def _create_more(self):
+        """Generate more images of the selected person — the count is the
+        Variations 'Make' number. Uses the picked variation, or (if none is
+        picked) the image selected in the gallery."""
+        row = self._selected_variation()
+        if row is not None:
+            self.variation_sel = row
+            self.var_enable_var.set(True)
+            self._apply_variation()
+        elif self.session and self.current is not None:
+            _img, _p, path = self.session[self.current]
+            if not path or not Path(path).exists():
+                self.status_var.set("That image has no file to make more from.")
+                return
+            # lock the gallery image as the person (transient — not saved)
+            self._variation_ref = path
+            self.face_paths = [path]
+            self.face_source_var.set("file")
+            self._on_face_source()
+            self._set_face_label()
+            self.swap_rag_var.set(True)
+            self.clone_method_var.set(CLONE_METHODS[0][0])
+            self.random_seed_var.set(True)
+            if model_family(self._model_raw() or "") in ("flux", "schnell",
+                                                         "sd3"):
+                best = self._best_sdxl_model()
+                if best:
+                    for disp, name in getattr(self, "_model_display",
+                                              {}).items():
+                        if name == best:
+                            self.model_var.set(disp)
+                            break
+            self._apply_clone_enabled()
+        else:
+            self.status_var.set("Pick a variation, or select an image in the "
+                                "gallery, then Create more.")
+            return
+        try:
+            n = max(1, min(20, int(self.var_count_var.get())))
+        except Exception:
+            n = 4
+        self.batch_var.set(n)
+        self._generate()
 
-            def do_use():
-                sel = lb.curselection()
-                if not sel:
-                    return
-                self.variation_sel = rows[sel[0]]
-                self.var_enable_var.set(True)
-                win.destroy()
-                self._apply_variation()
-
-            def do_delete():
-                sel = lb.curselection()
-                if not sel:
-                    return
-                row = rows[sel[0]]
-                if messagebox.askyesno(
-                        "Delete variation",
-                        f"Delete '{row['description'] or row['name']}'?",
-                        parent=win):
-                    self.varsdb.delete(row["id"])
-                    if self.variation_sel and \
-                            self.variation_sel.get("id") == row["id"]:
-                        self._clear_variation()
-                    win.destroy()
-                    self._pick_variation()
-            brow = ttk.Frame(win)
-            brow.grid(row=1, column=0, columnspan=2, pady=(0, 10))
-            ttk.Button(brow, text="Use this person",
-                       command=do_use).pack(side="left", padx=4)
-            ttk.Button(brow, text="Delete",
-                       command=do_delete).pack(side="left", padx=4)
-
-        # export / import are available whether or not any exist yet
-        io_row = ttk.Frame(win)
-        io_row.grid(row=2, column=0, columnspan=2, pady=(0, 10))
-        ttk.Button(io_row, text="⬆ Export…",
-                   command=self._export_variations).pack(side="left", padx=4)
-        ttk.Button(io_row, text="⬇ Import…",
-                   command=lambda: (win.destroy(),
-                                    self._import_variations())).pack(
-            side="left", padx=4)
-        ttk.Button(io_row, text="Close",
-                   command=win.destroy).pack(side="left", padx=4)
-        win.grab_set()
+    def _delete_variation(self):
+        """Delete the variation chosen in the dropdown — inline, no pop-up."""
+        row = self._selected_variation()
+        if row is None:
+            self.status_var.set("Pick a variation in the dropdown to delete.")
+            return
+        name = row["description"] or row["name"]
+        try:
+            self.varsdb.delete(row["id"])
+        except Exception:
+            applog.exception("delete variation failed")
+        if self.variation_sel and self.variation_sel.get("id") == row["id"]:
+            self._clear_variation()
+        self.variation_var.set(VAR_NONE)
+        self._refresh_variation_dd()
+        self.status_var.set(f"Deleted variation '{name}'.")
 
     def _export_variations(self):
         if self.varsdb is None or not self.varsdb.list():
-            messagebox.showinfo("Variations", "Nothing to export yet.")
+            self.status_var.set("No variations to export yet.")
             return
         dest = filedialog.asksaveasfilename(
             title="Export variations", defaultextension=".zip",
@@ -7830,7 +7875,7 @@ class App:
                                 "same people there.")
         except Exception as e:
             applog.exception("variations export failed")
-            messagebox.showerror("Variations", f"Export failed: {e}")
+            self.status_var.set(f"Variations export failed: {e}")
 
     def _import_variations(self):
         if self.varsdb is None:
@@ -7841,39 +7886,42 @@ class App:
             return
         try:
             n = self.varsdb.import_zip(src)
-            self.status_var.set(f"Imported {n} variation(s). Note: a variation "
-                                "reproduces best where the same model/LoRA it "
-                                "was made with are installed.")
+            self._refresh_variation_dd()
+            self.status_var.set(f"Imported {n} variation(s) — see the Variations "
+                                "dropdown. They reproduce best where the same "
+                                "model/LoRA is installed.")
         except Exception as e:
             applog.exception("variations import failed")
-            messagebox.showerror("Variations", f"Import failed: {e}")
+            self.status_var.set(f"Variations import failed: {e}")
 
     def _clear_variation(self):
         self.variation_sel = None
         self._variation_ref = None
         if hasattr(self, "var_enable_var"):
             self.var_enable_var.set(False)
-        if hasattr(self, "variation_desc_var"):
-            self.variation_desc_var.set("no variation selected")
-        if hasattr(self, "variation_thumb_lab"):
-            self.variation_thumb_lab.configure(image="")
+        if hasattr(self, "variation_var"):
+            self.variation_var.set(VAR_NONE)
         self._variation_thumb = None
         self._apply_variation_lock()
         self._schedule_persist()
 
     def _on_variation_toggle(self):
+        """The Variations checkbox: on + a person picked in the dropdown ->
+        lock them; on + none picked -> ask the user to pick; off -> unlock."""
         if self.var_enable_var.get():
-            if not self.variation_sel:
-                self._pick_variation()
-                if not self.variation_sel:      # user cancelled the picker
-                    self.var_enable_var.set(False)
-                    self._apply_variation_lock()
-                    return
+            row = self._selected_variation()
+            if row is None:
+                self.status_var.set("Pick a saved person in the Variations "
+                                    "dropdown (or 💾 Save Variation first).")
+                self._apply_variation_lock()
             else:
+                self.variation_sel = row
                 self._apply_variation()
         else:
+            self.variation_sel = None
+            self._variation_ref = None
             self._apply_variation_lock()        # off -> ungrey
-            self.status_var.set("Variation lock off — normal generation.")
+            self.status_var.set("Variation off — normal generation.")
         self._schedule_persist()
 
     def _apply_variation(self):
@@ -7904,14 +7952,13 @@ class App:
                     if name == best:
                         self.model_var.set(disp)
                         break
-        self.variation_desc_var.set(row["description"] or row["name"])
-        try:
-            im = Image.open(row["face_path"])
-            im.thumbnail((28, 28))
-            self._variation_thumb = ImageTk.PhotoImage(im)
-            self.variation_thumb_lab.configure(image=self._variation_thumb)
-        except Exception:
-            pass
+        # reflect the selection in the dropdown (without re-triggering apply)
+        if hasattr(self, "variation_var"):
+            lbl = self._variation_label(row)
+            if lbl not in getattr(self, "_variation_by_label", {}):
+                self._refresh_variation_dd(select_id=row["id"])
+            else:
+                self.variation_var.set(lbl)
         self._apply_clone_enabled()
         self._apply_variation_lock()
         self._refresh_editor_state()
