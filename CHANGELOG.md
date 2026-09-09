@@ -1,5 +1,15 @@
 # Changelog — AI Image Generator Suite
 
+## v2.8.1 — 2026-09-09
+- **Resizable panels.** You can now drag to resize the app's panels: a
+  vertical divider between the controls panel and the preview/gallery, and a
+  horizontal divider between the preview and the gallery strip. Grab the sash
+  between them and drag to give whichever panel more room.
+- **Cloning is simpler.** Removed the Cloning section's own "Make" count and
+  its "Create more" button — with a saved clone selected you just press
+  **Generate**, and the generate page's **Variations** count sets how many.
+  (The gallery's "Create more" button is still there as a shortcut.)
+
 ## v2.8.0 — 2026-09-09
 - **Cloning now replays the exact recipe by default** — the same settings the
   AI used to create the person the first time (model, LoRA, prompt, size,

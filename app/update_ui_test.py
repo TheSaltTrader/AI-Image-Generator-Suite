@@ -76,7 +76,10 @@ check("variations store initialised", getattr(ui, "varsdb", None) is not None)
 check("Variations section has its own enable checkbox", hasattr(ui, "var_cb"))
 check("Variations dropdown is inline (no picker pop-up)",
       hasattr(ui, "variation_dd") and not hasattr(ui, "_pick_variation"))
-check("'Make N' count for Create more exists", hasattr(ui, "var_count_var"))
+# Cloning's own "Make" count was removed — Generate and the generate page's
+# "Variations" count handle quantity now (the section "Create more" button is
+# checked below, once _walk is defined)
+check("Cloning no longer has its own 'Make' count", not hasattr(ui, "var_count_var"))
 for _m in ("_save_variation", "_create_more", "_on_variation_pick",
            "_delete_variation", "_refresh_variation_dd", "_apply_variation",
            "_apply_variation_lock", "_clear_variation", "_on_variation_toggle",
@@ -221,6 +224,26 @@ try:
           bool(ui._gen_pinned.grid_info()))
 except Exception as _e:
     check("pinned Generate tab-visibility toggles", False, str(_e))
+# resizable panels: the controls↔image split and the preview↔gallery split are
+# both PanedWindows the user can drag
+def _has_ancestor(w, target):
+    while w is not None:
+        if w is target:
+            return True
+        w = w.master
+    return False
+check("the controls/image split is a draggable PanedWindow",
+      isinstance(getattr(ui, "main_paned", None), app.ttk.PanedWindow))
+check("the preview/gallery split is a draggable PanedWindow",
+      isinstance(getattr(ui, "right_paned", None), app.ttk.PanedWindow))
+check("the controls panel is a pane of the main split",
+      _has_ancestor(ui.left_tabs, ui.main_paned))
+check("the preview is a pane of the vertical split",
+      _has_ancestor(ui.canvas, ui.right_paned))
+check("the gallery is a pane of the vertical split",
+      _has_ancestor(ui._gwrap, ui.right_paned))
+check("both splits expose one draggable sash",
+      len(ui.main_paned.panes()) == 2 and len(ui.right_paned.panes()) == 2)
 check("the LoRA list lives on Image generation", page_of(ui.lora_list) == pages[0])
 check("the animator lives on Animation", page_of(ui.anim_prompt_box) == pages[1])
 check("the border maker lives on Borders", page_of(ui.border_prompt_box) == pages[2])
@@ -532,6 +555,14 @@ try:
           hasattr(ui, "clone_preview_lab") and hasattr(ui, "clone_preview_name"))
     check("the Cloning section has an 'Also lock the exact face' toggle, off",
           hasattr(ui, "clone_lock_face_var") and not ui.clone_lock_face_var.get())
+    _clone_texts = []
+    for _w in _walk(ui.variation_body):
+        try:
+            _clone_texts.append(str(_w.cget("text")))
+        except Exception:
+            pass
+    check("Cloning section has no 'Create more' button (Generate handles it)",
+          not any("Create more" in t for t in _clone_texts), _clone_texts)
     check("selecting a clone does NOT put its face in the Face Swap section",
           ui.face_paths == [], ui.face_paths)
     check("the clone's face is held by the Cloning section, not Face Swap",

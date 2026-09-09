@@ -102,7 +102,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.8.0"
+APP_VERSION = "2.8.1"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -3576,16 +3576,21 @@ class App:
 
     def _build_ui(self):
         root = self.root
-        root.columnconfigure(0, weight=0, minsize=450)
-        root.columnconfigure(1, weight=1)
+        root.columnconfigure(0, weight=1)
         root.rowconfigure(0, weight=1)
+        # A draggable split between the controls panel and the preview/gallery
+        # panel — the user can size each to taste (resize all the panels). The
+        # inner preview↔gallery split is a second (vertical) paned inside the
+        # right pane, built below.
+        self.main_paned = ttk.PanedWindow(root, orient="horizontal")
+        self.main_paned.grid(row=0, column=0, sticky=NSEW)
 
         # ---------- left column: three tabs of controls, each scrollable ----------
         # Image generation / Animation / Borders keep the long panel in
         # three short ones; the batch queue and the version row sit under
         # the tabs and stay visible whichever tab is open.
-        left_wrap = ttk.Frame(root)
-        left_wrap.grid(row=0, column=0, sticky=NSEW)
+        left_wrap = ttk.Frame(self.main_paned)
+        self.main_paned.add(left_wrap, weight=0)
         left_wrap.rowconfigure(0, weight=1)
         left_wrap.columnconfigure(0, weight=1)
         # what is still starting up — engine, RAG map, update check, add-on
@@ -4165,7 +4170,7 @@ class App:
         self.variation_body.grid(row=r, sticky=NSEW); r += 1
         self.variation_body.columnconfigure(0, weight=1)
         vb = self.variation_body
-        vrow = ttk.Frame(vb); vrow.grid(row=0, sticky=NSEW, pady=(2, 2))
+        vrow = ttk.Frame(vb); vrow.grid(row=0, sticky="ew", pady=(2, 2))
         vrow.columnconfigure(0, weight=1)
         self.variation_var = StringVar(value=VAR_NONE)
         self.variation_dd = ttk.Combobox(
@@ -4173,15 +4178,10 @@ class App:
             exportselection=False, values=[VAR_NONE])
         self.variation_dd.grid(row=0, column=0, sticky="ew")
         self.variation_dd.bind("<<ComboboxSelected>>", self._on_variation_pick)
-        self._tip(self.variation_dd, "Your saved people. Pick one to load its "
-                                     "recipe and lock the person.")
-        ttk.Label(vrow, text="Make", style="Dim.TLabel").grid(
-            row=0, column=1, padx=(8, 2))
-        self.var_count_var = IntVar(value=4)
-        ttk.Spinbox(vrow, from_=1, to=20, width=4,
-                    textvariable=self.var_count_var).grid(row=0, column=2)
-        ttk.Button(vrow, text="🧬 Create more",
-                   command=self._create_more).grid(row=0, column=3, padx=(6, 0))
+        self._tip(self.variation_dd,
+                  "Your saved people. Pick one to load its recipe and lock the "
+                  "person — then just press Generate to make more of them. The "
+                  "'Variations' count (above) sets how many.")
         vmrow = ttk.Frame(vb); vmrow.grid(row=1, sticky=W, pady=(0, 2))
         ttk.Button(vmrow, text="🗑 Delete", width=9,
                    command=self._delete_variation).pack(side="left")
@@ -4668,8 +4668,8 @@ class App:
                   "reporting a problem.")
 
         # ---------- right column: preview + gallery ----------
-        right = ttk.Frame(root, padding=(0, 12, 12, 12))
-        right.grid(row=0, column=1, sticky=NSEW)
+        right = ttk.Frame(self.main_paned, padding=(0, 12, 12, 12))
+        self.main_paned.add(right, weight=1)
         right.columnconfigure(0, weight=1)
         right.rowconfigure(1, weight=1)
 
@@ -4728,15 +4728,25 @@ class App:
                                         length=220)
         self.vram_bar.pack(side="left")
 
-        self.canvas = Canvas(right, bg=BG2, highlightthickness=0)
-        self.canvas.grid(row=1, column=0, sticky=NSEW)
+        # a vertical split so the preview and the gallery/history can each be
+        # sized to taste — drag the sash between them
+        self.right_paned = ttk.PanedWindow(right, orient="vertical")
+        self.right_paned.grid(row=1, column=0, sticky=NSEW)
+        preview_wrap = ttk.Frame(self.right_paned)
+        preview_wrap.rowconfigure(0, weight=1)
+        preview_wrap.columnconfigure(0, weight=1)
+        self.right_paned.add(preview_wrap, weight=4)
+
+        self.canvas = Canvas(preview_wrap, bg=BG2, highlightthickness=0)
+        self.canvas.grid(row=0, column=0, sticky=NSEW)
         self.canvas.bind("<Configure>", lambda e: self._show_current())
         # covers the preview area when Incognito is on
         self._incog_cover = ttk.Label(
-            right, anchor="center", justify="center", style="Dim.TLabel",
+            preview_wrap, anchor="center", justify="center",
+            style="Dim.TLabel",
             text="🙈\n\nIncognito — images hidden\n"
                  "Click the eye (top-right) to show")
-        self._incog_cover.grid(row=1, column=0, sticky=NSEW)
+        self._incog_cover.grid(row=0, column=0, sticky=NSEW)
         self._incog_cover.grid_remove()
         # wheel-zoom the preview: scroll to zoom at the cursor, drag to
         # pan while zoomed, double-click to reset to fit
@@ -4751,7 +4761,11 @@ class App:
                   "Scroll to zoom in on the picture (zooms at the cursor), "
                   "drag to pan while zoomed, double-click to fit again.")
 
-        brow = ttk.Frame(right); brow.grid(row=2, column=0, sticky=NSEW, pady=(8, 4))
+        lower = ttk.Frame(self.right_paned)
+        lower.columnconfigure(0, weight=1)
+        lower.rowconfigure(1, weight=1)
+        self.right_paned.add(lower, weight=1)
+        brow = ttk.Frame(lower); brow.grid(row=0, column=0, sticky=NSEW, pady=(8, 4))
         # "More of this person" — two clean actions, kept leftmost so they are
         # always visible (the rest of the row can be wide)
         savevar_btn = ttk.Button(brow, text="💾 Save Clone",
@@ -4764,10 +4778,10 @@ class App:
         createmore_btn = ttk.Button(brow, text="🧬 Create more",
                                     command=self._create_more)
         createmore_btn.pack(side="left", padx=(0, 12))
-        self._tip(createmore_btn, "Generate more images of the selected person "
-                                  "— the count is the 'Make' number under the "
-                                  "Clone Tool's Variations. Same face + look in "
-                                  "new scenes.")
+        self._tip(createmore_btn, "Generate more of the selected clone (or the "
+                                  "selected gallery image) — how many is the "
+                                  "'Variations' count. Same as pressing "
+                                  "Generate with a clone selected.")
         saveas_btn = ttk.Button(brow, text="💾 Save As…", command=self._save_as)
         saveas_btn.pack(side="left")
         self._tip(saveas_btn, "Save the selected image (or GIF) somewhere of "
@@ -4810,8 +4824,8 @@ class App:
                   style="Dim.TLabel").pack(side="right")
 
         # gallery strip — horizontally scrollable, with its own clear button
-        gwrap = ttk.Frame(right)
-        gwrap.grid(row=3, column=0, sticky=NSEW, pady=(4, 0))
+        gwrap = ttk.Frame(lower)
+        gwrap.grid(row=1, column=0, sticky=NSEW, pady=(4, 0))
         gwrap.columnconfigure(0, weight=1)
         self._gwrap = gwrap   # hidden as a whole when Incognito is on
         self.gallery_canvas = Canvas(gwrap, height=96, bg=BG,
@@ -4857,6 +4871,23 @@ class App:
                   "DANGER: permanently deletes EVERY generated image file from "
                   "the output folder — all of them, not just the gallery. Red "
                   "because it can't be undone; it asks for confirmation first.")
+
+        # give the sashes sensible starting positions once the window is sized
+        self.root.after(300, self._init_sashes)
+
+    def _init_sashes(self):
+        """Sensible initial sash positions once the window has a real size;
+        the user drags from there. Clamped so nothing starts collapsed."""
+        try:
+            self.root.update_idletasks()
+            w = self.main_paned.winfo_width()
+            if w > 300:
+                self.main_paned.sashpos(0, min(470, max(320, w - 420)))
+            h = self.right_paned.winfo_height()
+            if h > 300:
+                self.right_paned.sashpos(0, max(220, h - 190))
+        except Exception:
+            applog.exception("init sashes failed")
 
     # -------------------------------------------------- persistence
     def _get(self, box):
@@ -7991,11 +8022,8 @@ class App:
             self.status_var.set("Pick a variation, or select an image in the "
                                 "gallery, then Create more.")
             return
-        try:
-            n = max(1, min(20, int(self.var_count_var.get())))
-        except Exception:
-            n = 4
-        self.batch_var.set(n)
+        # how many is the generate page's own "Variations" count (batch_var);
+        # Cloning no longer has its own count
         self._generate()
 
     def _delete_variation(self):

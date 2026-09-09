@@ -1003,6 +1003,27 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Resizable panels + Cloning UI trim (v2.8.1).** RESIZABLE PANELS: the
+  root layout was a fixed 2-column grid (col0 left_wrap minsize 450, col1
+  right). Now `self.main_paned` = `ttk.PanedWindow(root, orient=horizontal)`
+  holding `left_wrap` (weight 0) + `right` (weight 1); inside `right`,
+  `self.right_paned` = vertical PanedWindow holding `preview_wrap` (canvas +
+  incog_cover, weight 4) + `lower` (brow + gwrap, weight 1). Incognito still
+  works because canvas/incog_cover/gwrap keep their own grid cells inside the
+  new pane frames (grid_remove/grid unchanged). `_init_sashes()` (deferred
+  `after(300)`) sets sane starting positions (left ~470, preview = h-190),
+  clamped; validated at 1400×900 → main sash 470, right sash 684. CLONING
+  TRIM (user: "remove Create more + Make, Generate handles it"): removed the
+  Cloning `vrow`'s "Make" label + `var_count_var` Spinbox + section "Create
+  more" button — the dropdown is now the whole row. `_create_more` no longer
+  reads var_count_var / sets batch_var; it just calls `_generate()` (the
+  generate page's "Variations" = `batch_var` is the count). Gallery `brow`
+  "Create more" kept (rewired to batch_var). GOTCHA: don't screenshot a test
+  window with ImageGrab at fixed coords while the user's app is open — it
+  grabbed THEIR window (overlapping at the same screen coords), showing the
+  old Make/Create-more and a false alarm; the headless update_ui suite (real
+  App, withdrawn window, no mutex/engine — mutex lives in __main__, not
+  App.__init__) is the authority. update_ui 223->229.
 - **Cloning = recipe-replay by default + optional face-lock; full-res swap
   (v2.8.0).** USER INSIGHT: the original person was made by a plain batch (the
   "Variations" count = `batch_var`, new seeds, one recipe) — NOT a face swap —
