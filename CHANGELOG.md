@@ -1,5 +1,13 @@
 # Changelog — AI Image Generator Suite
 
+## v2.7.4 — 2026-09-09
+- **The Generate button is now always on screen.** It moved out of the
+  scrolling panel into a pinned bar at the bottom, just above the Batch queue —
+  so you never have to scroll down to run an image. The progress bar and Cancel
+  come with it, and the status line stays visible on every tab. (It shows on
+  the Image-generation tab; the Animation/Borders/Edit tabs keep their own
+  generate buttons.)
+
 ## v2.7.3 — 2026-09-09
 - **Anatomy guard now also uses a trained negative embedding.** On top of the
   anatomy negative text and the native-resolution base, the guard now pulls in

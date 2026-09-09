@@ -187,8 +187,20 @@ def page_of(widget):
 
 
 pages = list(ui.left_tabs.tabs())
-check("the prompt and Generate live on Image generation",
-      page_of(ui.prompt_box) == pages[0] and page_of(ui.go_btn) == pages[0])
+check("the prompt lives on Image generation", page_of(ui.prompt_box) == pages[0])
+# Generate is pinned in the always-visible bottom bar now (no scrolling to run)
+check("Generate is pinned outside the scrolling tabs",
+      page_of(ui.go_btn) is None
+      and str(ui.go_btn).startswith(str(ui._gen_pinned)))
+try:
+    ui.left_tabs.select(pages[1]); ui._on_left_tab()
+    check("pinned Generate is hidden off the Image tab",
+          ui._gen_pinned.grid_info() == {})
+    ui.left_tabs.select(pages[0]); ui._on_left_tab()
+    check("pinned Generate returns on the Image tab",
+          bool(ui._gen_pinned.grid_info()))
+except Exception as _e:
+    check("pinned Generate tab-visibility toggles", False, str(_e))
 check("the LoRA list lives on Image generation", page_of(ui.lora_list) == pages[0])
 check("the animator lives on Animation", page_of(ui.anim_prompt_box) == pages[1])
 check("the border maker lives on Borders", page_of(ui.border_prompt_box) == pages[2])

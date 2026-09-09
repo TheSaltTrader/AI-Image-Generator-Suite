@@ -1003,6 +1003,16 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Pinned Generate bar (v2.7.4).** Moved the image Generate (`go_btn`) + `+Q`
+  + progress + Cancel out of the scrolling `_page_gen` into a `self._gen_pinned`
+  frame at row 0 of `_page_bottom` (the always-visible zone), above the batch
+  queue — so you never scroll to run. `status_var` label sits at
+  `_page_bottom` row 1 (outside the pinned frame) so status shows on ALL tabs;
+  the batch queue starts at row 2. `_on_left_tab` (bound to
+  `<<NotebookTabChanged>>`, add="+") grid_removes `_gen_pinned` off the
+  Image-generation tab (index 0) — Animation/Borders/Edit keep their own
+  generate buttons. The old `_gen_row` placement is dead (left set, unused).
+  Tests: update_ui 197.
 - **Anatomy negative embedding (v2.7.3).** The deferred piece from v2.7.1.
   `ANATOMY_EMBED = "negativeXL_D"` — a trained SDXL negative TI from
   `gsdf/CounterfeitXL` (VERIFIED: HF resolve URL 200, 128KB, keys clip_g

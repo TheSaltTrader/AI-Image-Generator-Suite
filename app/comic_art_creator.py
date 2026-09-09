@@ -102,7 +102,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.7.3"
+APP_VERSION = "2.7.4"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -4238,33 +4238,9 @@ class App:
         r += 1
         self.editor_canvas_var = BooleanVar(value=True)
 
-        left = self._page_gen      # restore for anything after this block
-        r = self._gen_row          # (set below just before this block)
-
-        # generate — a blue rule sets the action apart from the fields above
-        r = self._rule(left, r)
-        gorow = ttk.Frame(left); gorow.grid(row=r, sticky=NSEW,
-                                            pady=(12, 4)); r += 1
-        gorow.columnconfigure(0, weight=1)
-        self.go_btn = ttk.Button(gorow, text="⚡  GENERATE", style="Go.TButton",
-                                 command=self._generate)
-        self.go_btn.grid(row=0, column=0, sticky=NSEW)
-        ttk.Button(gorow, text="＋Q", width=4,
-                   command=lambda: self._generate(queue=True)).grid(
-            row=0, column=1, padx=(4, 0))
-        pbrow = ttk.Frame(left); pbrow.grid(row=r, sticky=NSEW, pady=2); r += 1
-        pbrow.columnconfigure(0, weight=1)
-        self.progress = ttk.Progressbar(pbrow, mode="determinate")
-        self.progress.grid(row=0, column=0, sticky="ew")
-        self.pct_var = StringVar(value="")
-        ttk.Label(pbrow, textvariable=self.pct_var, width=5,
-                  style="Dim.TLabel").grid(row=0, column=1, padx=(6, 0))
-        ttk.Button(pbrow, text="✕ Cancel", width=9,
-                   command=self._cancel_generation).grid(row=0, column=2,
-                                                         padx=(4, 0))
-        self.status_var = StringVar(value="Starting engine…")
-        ttk.Label(left, textvariable=self.status_var,
-                  style="Dim.TLabel", wraplength=400).grid(row=r, sticky=W); r += 1
+        # The GENERATE button + progress now live in the always-visible bottom
+        # bar (built with _page_bottom below), so you never scroll to run an
+        # image. _gen_row is no longer used to place it here.
 
         # ---------- animator (old-school sprite animation) — its own tab ----------
         left = self._page_anim
@@ -4534,10 +4510,48 @@ class App:
                    command=self._cancel_generation).grid(row=0, column=2,
                                                          padx=(4, 0))
 
-        # ---------- batch queue (under the tabs, always visible) ----------
+        # ---------- pinned GENERATE bar (always on screen, no scrolling) ----
+        # The image Generate + progress live here in the always-visible bottom
+        # zone, above the Batch queue. Shown only on the Image-generation tab
+        # (the other tabs have their own generate buttons); status stays visible
+        # on every tab.
         left = self._page_bottom
-        r = 0
-        r = self._rule(left, r)   # blue rule separates the queue from the tabs
+        self._gen_pinned = ttk.Frame(left)
+        self._gen_pinned.grid(row=0, column=0, sticky=NSEW)
+        self._gen_pinned.columnconfigure(0, weight=1)
+        gp = self._gen_pinned
+        gr = self._rule(gp, 0)
+        gorow = ttk.Frame(gp); gorow.grid(row=gr, sticky=NSEW, pady=(2, 4))
+        gr += 1
+        gorow.columnconfigure(0, weight=1)
+        self.go_btn = ttk.Button(gorow, text="⚡  GENERATE", style="Go.TButton",
+                                 command=self._generate)
+        self.go_btn.grid(row=0, column=0, sticky=NSEW)
+        ttk.Button(gorow, text="＋Q", width=4,
+                   command=lambda: self._generate(queue=True)).grid(
+            row=0, column=1, padx=(4, 0))
+        pbrow = ttk.Frame(gp); pbrow.grid(row=gr, sticky=NSEW, pady=2); gr += 1
+        pbrow.columnconfigure(0, weight=1)
+        self.progress = ttk.Progressbar(pbrow, mode="determinate")
+        self.progress.grid(row=0, column=0, sticky="ew")
+        self.pct_var = StringVar(value="")
+        ttk.Label(pbrow, textvariable=self.pct_var, width=5,
+                  style="Dim.TLabel").grid(row=0, column=1, padx=(6, 0))
+        ttk.Button(pbrow, text="✕ Cancel", width=9,
+                   command=self._cancel_generation).grid(row=0, column=2,
+                                                         padx=(4, 0))
+        # status stays visible on every tab (row 1, outside the pinned frame)
+        self.status_var = StringVar(value="Starting engine…")
+        ttk.Label(left, textvariable=self.status_var, style="Dim.TLabel",
+                  wraplength=400).grid(row=1, column=0, sticky=W, pady=(2, 0))
+        # show the pinned Generate only on the Image-generation tab
+        self.left_tabs.bind("<<NotebookTabChanged>>", self._on_left_tab,
+                            add="+")
+        self._on_left_tab()
+
+        # ---------- batch queue (under the pinned Generate, always visible) --
+        r = 2
+        r = self._rule(left, r)   # blue rule separates the queue from above
         self.queue_count_var = StringVar(value="Batch queue (0)")
         ttk.Label(left, textvariable=self.queue_count_var,
                   style="Head.TLabel").grid(row=r, sticky=W,
@@ -8092,6 +8106,19 @@ class App:
         except (ValueError, AttributeError):
             pass
         return random.Random()
+
+    def _on_left_tab(self, _e=None):
+        """The pinned GENERATE bar belongs to the Image-generation tab (index
+        0) — show it there, hide it on Animation/Borders/Edit, which have their
+        own generate buttons."""
+        try:
+            on_gen = self.left_tabs.index("current") == 0
+            if on_gen:
+                self._gen_pinned.grid()
+            else:
+                self._gen_pinned.grid_remove()
+        except Exception:
+            pass
 
     def _refresh_mode_badges(self):
         """Colour the top-right LoRA/RAG badges: green only when each will
