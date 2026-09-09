@@ -1,5 +1,12 @@
 # Changelog — AI Image Generator Suite
 
+## v2.7.2 — 2026-09-09
+- **New: Incognito toggle (privacy).** An eye button next to the LoRA/RAG
+  badges hides the preview image and the whole gallery/history at a glance —
+  for when someone's looking over your shoulder. The icon is an **open eye**
+  when images are shown and a **closed eyelid** when hidden. Click to toggle;
+  nothing is deleted or changed, and it returns exactly as it was.
+
 ## v2.7.1 — 2026-09-09
 - **New: Anatomy guard (Quality section) — far fewer extra limbs and bad
   hands.** Big image sizes are the main cause of mutant anatomy (SDXL was

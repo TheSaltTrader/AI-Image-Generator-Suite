@@ -1003,6 +1003,16 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Incognito toggle (v2.7.2).** Eye button in the top-right badge row
+  (`incog_btn`, next to lora/rag badges). `_toggle_incognito` grid_removes the
+  preview `self.canvas` + the gallery `self._gwrap` and grids `_incog_cover`
+  (a "🙈 images hidden" label over row 1); toggling back restores + repaints.
+  `_show_current` early-returns while `incognito_var` is on. The icon is drawn
+  with PIL (`_eye_icon`): open = ellipse outline + pupil; closed = a lid crease
+  line + downward arc + 3 lashes (variant chosen by eyeballing renders). Icon
+  colour = FG at build time (a mid-session theme switch keeps the build colour;
+  minor). Session-only (not persisted; defaults OFF/shown each launch).
+  Tests: update_ui +7 (191).
 - **Anatomy guard + red Delete-all (v2.7.1).** `anatomy_var` checkbox in the
   QUALITY section. When on (SDXL only, not editing/border/img2img): `_generate`
   appends `ANATOMY_NEG` to the negative and sets `p["anatomy_guard"]`;

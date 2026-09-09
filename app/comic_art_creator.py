@@ -102,7 +102,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.7.1"
+APP_VERSION = "2.7.2"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -4603,7 +4603,20 @@ class App:
         self.lora_badge = ttk.Label(vrow, text="LoRA", style="BadgeOff.TLabel")
         self.lora_badge.pack(side="left", padx=(0, 5))
         self.rag_badge = ttk.Label(vrow, text="RAG", style="BadgeOff.TLabel")
-        self.rag_badge.pack(side="left", padx=(0, 16))
+        self.rag_badge.pack(side="left", padx=(0, 6))
+        # Incognito: hide the preview + gallery at a glance (privacy). The icon
+        # is an open eye when images show, a closed eyelid when hidden.
+        self._eye_open = self._eye_icon(True)
+        self._eye_closed = self._eye_icon(False)
+        self.incognito_var = BooleanVar(value=False)
+        self.incog_btn = ttk.Button(vrow, image=self._eye_open,
+                                    command=self._toggle_incognito,
+                                    takefocus=False)
+        self.incog_btn.pack(side="left", padx=(0, 16))
+        self._tip(self.incog_btn,
+                  "Incognito — hide the preview image and the gallery/history "
+                  "at a glance (privacy). Open eye = shown; closed eyelid = "
+                  "hidden. Click to toggle. Nothing is deleted or changed.")
         self._tip(self.lora_badge,
                   "LoRA status. Green when at least one LoRA is ticked and it "
                   "will apply to the next generation. Red while you are editing "
@@ -4642,6 +4655,13 @@ class App:
         self.canvas = Canvas(right, bg=BG2, highlightthickness=0)
         self.canvas.grid(row=1, column=0, sticky=NSEW)
         self.canvas.bind("<Configure>", lambda e: self._show_current())
+        # covers the preview area when Incognito is on
+        self._incog_cover = ttk.Label(
+            right, anchor="center", justify="center", style="Dim.TLabel",
+            text="🙈\n\nIncognito — images hidden\n"
+                 "Click the eye (top-right) to show")
+        self._incog_cover.grid(row=1, column=0, sticky=NSEW)
+        self._incog_cover.grid_remove()
         # wheel-zoom the preview: scroll to zoom at the cursor, drag to
         # pan while zoomed, double-click to reset to fit
         self._zoom = 1.0
@@ -4710,6 +4730,7 @@ class App:
         gwrap = ttk.Frame(right)
         gwrap.grid(row=3, column=0, sticky=NSEW, pady=(4, 0))
         gwrap.columnconfigure(0, weight=1)
+        self._gwrap = gwrap   # hidden as a whole when Incognito is on
         self.gallery_canvas = Canvas(gwrap, height=96, bg=BG,
                                      highlightthickness=0)
         self.gallery_canvas.grid(row=0, column=0, sticky="ew")
@@ -8873,7 +8894,53 @@ class App:
         self._gif_idx += 1
         self._gif_job = self.root.after(self._gif_durs[i], self._gif_tick)
 
+    def _eye_icon(self, is_open):
+        """The Incognito button's icon: an open eye when images are shown, a
+        closed eyelid when hidden — drawn to match the theme text colour."""
+        from PIL import Image, ImageDraw
+        w, h = 26, 18
+        im = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        dr = ImageDraw.Draw(im)
+        col = FG or "#000000"
+        if is_open:
+            dr.ellipse((2, 2, 24, 16), outline=col, width=2)   # eye outline
+            dr.ellipse((10, 6, 16, 12), fill=col)               # pupil
+        else:
+            dr.line((3, 7, 23, 7), fill=col, width=1)           # eyelid crease
+            dr.arc((3, 3, 23, 15), start=10, end=170,
+                   fill=col, width=2)                           # closed curve
+            for x in (8, 13, 18):
+                dr.line((x, 12, x, 16), fill=col, width=1)      # lashes
+        return ImageTk.PhotoImage(im)
+
+    def _toggle_incognito(self):
+        """Hide/show the preview image and the gallery/history — a quick
+        privacy screen. Deletes nothing."""
+        on = not self.incognito_var.get()
+        self.incognito_var.set(on)
+        try:
+            if on:
+                self.canvas.grid_remove()
+                self._incog_cover.grid()
+                self._gwrap.grid_remove()
+                self.incog_btn.configure(image=self._eye_closed)
+                self.status_var.set("Incognito on — preview and history "
+                                    "hidden. Nothing was deleted.")
+            else:
+                self._incog_cover.grid_remove()
+                self.canvas.grid()
+                self._gwrap.grid()
+                self.incog_btn.configure(image=self._eye_open)
+                self._show_current()
+                self.status_var.set("Incognito off — images shown.")
+        except Exception:
+            applog.exception("incognito toggle failed")
+
     def _show_current(self):
+        # Incognito: keep the preview blank while hidden
+        if getattr(self, "incognito_var", None) is not None \
+                and self.incognito_var.get():
+            return
         self._stop_gif()
         # switching to a different picture resets the zoom; a mere canvas
         # resize (same picture) keeps it

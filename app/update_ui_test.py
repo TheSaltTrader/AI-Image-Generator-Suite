@@ -113,6 +113,24 @@ except Exception as _e:
 check("Delete-all button is the red Danger style",
       str(ui.delfiles_btn.cget("style")) == "Danger.TButton")
 
+# --- Incognito toggle (hide images + history) ---
+check("incognito eye button exists next to the badges",
+      hasattr(ui, "incog_btn"))
+check("incognito starts off (images shown)", not ui.incognito_var.get())
+try:
+    ui._toggle_incognito()
+    check("incognito ON removes the preview from view",
+          ui.incognito_var.get() and ui.canvas.grid_info() == {})
+    check("incognito ON hides the gallery/history",
+          ui._gwrap.grid_info() == {})
+    check("incognito ON shows the hidden-cover", bool(ui._incog_cover.grid_info()))
+    ui._toggle_incognito()
+    check("incognito OFF restores the preview",
+          (not ui.incognito_var.get()) and bool(ui.canvas.grid_info()))
+    check("incognito OFF restores the gallery", bool(ui._gwrap.grid_info()))
+except Exception as _e:
+    check("incognito toggles cleanly", False, str(_e))
+
 check("Check for updates button exists", hasattr(ui, "upd_btn"))
 check("button is enabled at rest",
       "disabled" not in ui.upd_btn.state())
