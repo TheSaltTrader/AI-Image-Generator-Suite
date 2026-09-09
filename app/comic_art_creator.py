@@ -100,7 +100,7 @@ import engine_files
 import applog
 import tkinter.messagebox as _tk_messagebox
 
-APP_VERSION = "2.3.0"
+APP_VERSION = "2.3.1"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -2679,12 +2679,36 @@ class Generator:
                         if bad:
                             msg += f" (nodes: {bad})"
                     except Exception:
-                        msg = "engine rejected the workflow"
-                    raise RuntimeError(
-                        f"Engine rejected the request: {msg}. If this "
-                        "mentions IPAdapter, use the style/character mode "
-                        "once more — the app will offer to install the "
-                        "missing add-on.")
+                        msg, bad = "engine rejected the workflow", ""
+                    # IP-Adapter graphs can be rejected when the engine's
+                    # IPAdapter node version drifts from what the map's embeds
+                    # expect. Don't fail the whole run: retry ONCE without the
+                    # IP-Adapter guidance (the RAG LoRA + trigger already in the
+                    # prompt still steer it) and repair the add-on in the bg.
+                    if "IPAdapter" in bad and (p.get("style_embed_names")
+                                               or p.get("style_ref_names")):
+                        applog.log("IP-Adapter rejected (%s) — retrying "
+                                   "without it" % bad)
+                        self.q.put(("addon_repair", "ipadapter"))
+                        self.q.put((
+                            "status",
+                            "RAG image guidance was rejected by the engine — "
+                            "drawing with the prompt + LoRA instead, and "
+                            "repairing the IP-Adapter add-on in the "
+                            "background."))
+                        p_fb = dict(p)
+                        p_fb.pop("style_embed_names", None)
+                        p_fb.pop("style_ref_names", None)
+                        r = requests.post(
+                            f"{ENGINE_URL}/prompt",
+                            json={"prompt": build_graph(p_fb),
+                                  "client_id": self.client_id}, timeout=30)
+                    if r.status_code == 400:
+                        raise RuntimeError(
+                            f"Engine rejected the request: {msg}. If this "
+                            "mentions IPAdapter, use the style/character mode "
+                            "once more — the app will offer to install the "
+                            "missing add-on.")
                 r.raise_for_status()
                 prompt_id = r.json()["prompt_id"]
                 images = self._await_images(ws, prompt_id)
@@ -6641,19 +6665,28 @@ class App:
         IPAdapterUnifiedLoader not found'."""
         if getattr(self, "_autoheal_tried", False):
             return
+        self._autoheal_tried = True
         try:
-            if self._style_support_ok():
-                return
-            time.sleep(3)                 # nodes may still be registering
-            if self._style_support_ok():
-                return
-            self._autoheal_tried = True
-            self.ui_queue.put((
-                "status", "Setting up the IP-Adapter add-on (needed for "
-                          "RAG maps and person photos) — one moment…"))
-            self._install_style_support()
+            # 1) IP-Adapter custom node (RAG maps + person photos)
+            if not self._style_support_ok():
+                time.sleep(3)             # nodes may still be registering
+                if not self._style_support_ok():
+                    self.ui_queue.put((
+                        "status", "Setting up the IP-Adapter add-on (needed "
+                                  "for RAG maps and person photos) — one "
+                                  "moment…"))
+                    self._install_style_support()
+            # 2) the local face-swap engine (Clone Tool). Set it up here — at
+            # startup / right after an update — rather than waiting for the
+            # user's first swap. One-time; skipped once it's ready. Runs after
+            # the IP-Adapter install so they don't contend for the add-on lock.
+            if not faceswap_ready():
+                self.ui_queue.put((
+                    "status", "Setting up the face-swap engine for the Clone "
+                              "Tool (one-time ~550 MB) — you can keep working."))
+                self._install_face_swap()
         except Exception:
-            pass
+            applog.exception("autoheal addons failed")
 
     def _boot_engine(self):
         self.ui_queue.put(("pending", "engine", "engine starting"))
@@ -7924,6 +7957,14 @@ class App:
                 elif kind == "engine_ready":
                     self.status_var.set("Engine ready.")
                     self._refresh_models()
+                elif kind == "addon_repair":
+                    # a generation hit a broken IP-Adapter add-on — reinstall
+                    # it in the background, once per session
+                    if msg[1] == "ipadapter" and not getattr(
+                            self, "_ipa_repair_started", False):
+                        self._ipa_repair_started = True
+                        threading.Thread(target=self._install_style_support,
+                                         daemon=True).start()
                 elif kind == "vram":
                     self.vram_gb = msg[1]
                     self._refresh_models()   # recolor with engine's number

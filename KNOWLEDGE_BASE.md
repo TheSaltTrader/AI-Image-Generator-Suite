@@ -969,6 +969,26 @@ the run.
   `actor_excluded` (sets -> sorted lists), restored BEFORE `_set_actor`
   so the view reflects it. `_refresh_actor_view` shows "photo i/N
   (dropped) · K sent"; the Using list lists the kept photos.
+- **IP-Adapter validation rejection + install-at-update (v2.3.1).** User: base
+  generation failed with `Engine rejected the request: Prompt outputs failed
+  validation (nodes: IPAdapterLoadEmbeds …)` — for EVERY Clone method (each
+  draws a RAG base first), on an embeds-only map. Root cause is the engine's
+  IPAdapter_plus node version drifting from what the map's `.ipadpt` embeds
+  expect (the app copies them to `ENGINE_DIR/input` and `IPAdapterLoadEmbeds`
+  reads by name; `_style_support_ok()` sees the node present so autoheal
+  skipped it). FIX (engine-independent, unblocks regardless of cause): in the
+  Generator's 400 handler, if `node_errors` mention IPAdapter AND the params
+  carry `style_embed_names`/`style_ref_names`, retry the POST ONCE with those
+  stripped (`build_graph(p_fb)`) — the RAG LoRA + trigger in the prompt still
+  steer it — and emit `("addon_repair","ipadapter")`. The App handles that by
+  reinstalling the pinned IP-Adapter node via `_install_style_support` (once
+  per session, `_ipa_repair_started`). INSTALL-AT-UPDATE (user: "should
+  install at the update, not when a user first runs it"): `_autoheal_addons`
+  now also runs `_install_face_swap()` at boot when `not faceswap_ready()`
+  (sequentially after the IP-Adapter install so they don't fight the
+  `_addon_lock`), so the face-swap engine downloads once after an update
+  instead of on the first swap. swap_test grew a 400-then-200 fake asserting
+  the retry-without-IP-Adapter path (22 checks).
 - **Quality suite (v2.3.0).** A new QUALITY UI section on the gen tab
   (`hires_var`/`hires_scale_var`/`freeu_var`; the 4x `upscale_var` moved in).
   build_graph additions: **hi-res fix** = `LatentUpscaleBy` (bislerp,

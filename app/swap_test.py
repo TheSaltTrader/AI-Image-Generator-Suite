@@ -137,6 +137,45 @@ check("…and says how many were cloned",
       [m[1] for m in msgs if m[0] == "status"][-2:])
 cac.CANCEL.clear()
 
+print("ip-adapter validation fallback")
+_calls = {"n": 0}
+
+
+class _Resp400:
+    status_code = 400
+
+    def json(self):
+        return {"error": {"message": "Prompt outputs failed validation"},
+                "node_errors": {"52": {"class_type": "IPAdapterLoadEmbeds"}}}
+
+    def raise_for_status(self):
+        pass
+
+
+def _post_seq(*a, **k):
+    _calls["n"] += 1
+    return _Resp400() if _calls["n"] == 1 else _Resp()
+
+
+cac.requests.post = _post_seq
+cac.Generator._swap_face_pass = fake_swap
+_q2 = queue.Queue()
+cac.Generator(_q2).run(dict(prompt="p", batch=1, seed=5, random_seed=False,
+                            width=8, height=8, model="m", loras=[],
+                            negative="", steps=None, cfg=None,
+                            style_embed_names=["a.ipadpt"]))
+_ms = []
+while not _q2.empty():
+    _ms.append(_q2.get())
+check("a rejected IP-Adapter retries WITHOUT it and still makes an image",
+      _calls["n"] == 2 and any(m[0] == "image" for m in _ms),
+      (_calls, [m[0] for m in _ms]))
+check("…and it signals an add-on repair + explains the fallback",
+      any(m[0] == "addon_repair" for m in _ms)
+      and any("rejected by the engine" in str(m[1])
+              for m in _ms if m[0] == "status"))
+cac.requests.post = lambda *a, **k: _Resp()
+
 print("feedback")
 
 

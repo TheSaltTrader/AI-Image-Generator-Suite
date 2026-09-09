@@ -1,5 +1,18 @@
 # Changelog — AI Image Generator Suite
 
+## v2.3.1 — 2026-09-08
+- **Fixed: generation failing with "engine rejected the request … IPAdapter".**
+  When a RAG map's image guidance was rejected by the engine's IP-Adapter
+  version, the whole generation failed (this broke the Clone Tool for every
+  method, since each draws a base first). Now the app retries the picture
+  once without the image guidance — your RAG LoRA and trigger word still
+  steer it — so you always get an image, and it repairs the IP-Adapter
+  add-on in the background.
+- **Add-ons now set themselves up after an update, not on first use.** The
+  face-swap engine for the Clone Tool installs automatically at start-up
+  once (alongside the IP-Adapter add-on), so it's ready when you need it
+  instead of interrupting your first swap.
+
 ## v2.3.0 — 2026-09-08
 - **New QUALITY section** on the Image generation tab, grouping the
   extra-quality passes in one place (all off by default):
