@@ -1003,6 +1003,20 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Qwen/Kontext dropped as face-swap methods (v2.12.0).** USER: Qwen/Flux
+  Kontext swaps gave "a completely different face" + very slow prep; insightface
+  "Face swap" was much closer. ROOT CAUSE (not a bug): Qwen/Kontext are diffusion
+  EDITORS that re-render the head from a prompt+ref (re-imagine, not swap) — poor
+  identity, esp. at fp8; and they load an 11–28 GB model first (minutes off the H:
+  HDD). insightface warps the actual identity (~0.88–0.91 sim), tiny model, fast.
+  FIX: `CLONE_METHODS` reduced to one entry `("Face swap","faceswap")`; the Method
+  dropdown UI (cmrow/`clone_method_dd`) removed (no `clone_method_dd` widget now);
+  `clone_method_var` kept for persistence/recipe (always faceswap). `_clone_method`
+  still returns faceswap. Old saved configs with a Qwen/Kontext label fall back to
+  faceswap (`_apply_ui_state` guards `cm in CLONE_METHODS`). Qwen/Kontext graph
+  builders + `_swap_face_pass` editor branches KEPT (Edit-image tab still uses them;
+  swap_test still exercises the two-step pass via a fake) — just unreachable from
+  the swap tool. update_ui 250.
 - **Optimized delete + tag-safe generation (v2.11.1).** DELETE PERF: `_delete_paths`
   called `_rebuild_gallery` which destroyed EVERY thumbnail button and re-rendered
   all (LANCZOS per image) on each delete — O(N) per delete. Now thumbnail buttons

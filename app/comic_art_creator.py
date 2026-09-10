@@ -102,7 +102,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.11.1"
+APP_VERSION = "2.12.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -872,10 +872,12 @@ EDITOR_VRAM = {"kontext": 16, "qwen": 24, "wan": 16, "wanflf": 20}
 
 # The Clone Tool's selectable methods (label shown in the dropdown -> engine
 # key). "faceswap" is the fast local identity swap; the editors re-render.
+# Face swap uses the fast, faithful local insightface engine. The Qwen/Kontext
+# "re-render" editors were dropped as swap methods (v2.12): they re-imagined the
+# face — a different person — and needed an 11–28 GB model load. They remain
+# available on the Edit image tab, where re-rendering is the point.
 CLONE_METHODS = [
-    ("Face swap — fast, best likeness", "faceswap"),
-    ("Qwen editor — re-render (~28 GB)", "qwen"),
-    ("Flux Kontext — re-render (~11 GB)", "kontext"),
+    ("Face swap", "faceswap"),
 ]
 KONTEXT_FILE = "flux1-dev-kontext_fp8_scaled.safetensors"
 QWEN_EDIT_FILE = "qwen_image_edit_2511_fp8mixed.safetensors"
@@ -4068,25 +4070,12 @@ class App:
         cb = self.clone_body
         cr = 0
 
-        # which engine does the clone — the fast local face swap by default,
-        # or a big editor that re-renders the face
+        # Face swap uses the fast, faithful local insightface engine — the
+        # only method now (the re-render editors gave a worse likeness and
+        # needed a huge model, so they were dropped; they stay on the Edit
+        # image tab). The var is kept for persistence and the clone recipe;
+        # there's no picker since there's nothing to pick.
         self.clone_method_var = StringVar(value=CLONE_METHODS[0][0])
-        cmrow = ttk.Frame(cb); cmrow.grid(row=cr, sticky="ew", pady=(2, 2))
-        cr += 1
-        cmrow.columnconfigure(1, weight=1)
-        ttk.Label(cmrow, text="Method", style="Dim.TLabel").grid(row=0, column=0)
-        self.clone_method_dd = ttk.Combobox(
-            cmrow, textvariable=self.clone_method_var, state="readonly",
-            exportselection=False, values=[m[0] for m in CLONE_METHODS])
-        self.clone_method_dd.grid(row=0, column=1, sticky="ew", padx=(6, 0))
-        self.clone_method_dd.bind("<<ComboboxSelected>>",
-                                  lambda _e: self._schedule_persist())
-        self._tip(self.clone_method_dd,
-                  "How the chosen face is applied. 'Face swap' (recommended) "
-                  "is a fast, local engine (one-time ~550 MB setup) that "
-                  "closely matches the person you picked. 'Qwen' and 'Kontext' "
-                  "re-render the face with the big editor models — slower, and "
-                  "the likeness is looser.")
 
         self.face_source_var = StringVar(value="file")
         srcrow = ttk.Frame(cb); srcrow.grid(row=cr, sticky=W, pady=(2, 0)); cr += 1

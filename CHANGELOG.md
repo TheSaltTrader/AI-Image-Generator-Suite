@@ -1,5 +1,15 @@
 # Changelog — AI Image Generator Suite
 
+## v2.12.0 — 2026-09-09
+- **Face swap is now one reliable method.** The "Qwen editor" and "Flux
+  Kontext" swap options are removed. Those *re-render* the face with a large
+  diffusion model rather than swapping it — so the likeness came out as a
+  different person, and they needed an 11–28 GB model to load first (very slow
+  off a hard drive). The fast, faithful local **Face swap** (insightface) is
+  now the only method, so there's no Method picker to get wrong. Qwen and Flux
+  Kontext are still available on the **Edit image** tab, where re-rendering is
+  the point.
+
 ## v2.11.1 — 2026-09-09
 - **Deleting an image is much faster.** It used to rebuild and re-render the
   entire gallery strip every time you deleted one picture. Now it removes just

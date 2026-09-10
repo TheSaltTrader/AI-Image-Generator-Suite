@@ -735,23 +735,17 @@ check("plain Face Swap draws the base from the prompt, not the face photo",
       not ui._swap_guides_base())
 ui.swap_rag_var.set(False)
 
-check("a Clone method dropdown exists with all three engines",
-      hasattr(ui, "clone_method_dd")
-      and len(ui.clone_method_dd["values"]) == 3)
-check("the default clone method is the fast Face swap",
+# the re-render swap methods (Qwen/Kontext) were dropped — insightface is the
+# only face-swap method now, so there's no Method picker to show
+check("the Qwen/Kontext swap methods were removed (insightface only)",
+      len(app.CLONE_METHODS) == 1 and app.CLONE_METHODS[0][1] == "faceswap")
+check("no face-swap Method dropdown is shown (nothing to pick)",
+      not hasattr(ui, "clone_method_dd"))
+check("the clone method is always the fast local face swap",
       ui._clone_method() == "faceswap")
 check("the face-swap engine helpers are module-level and callable",
       callable(app.faceswap_ready) and callable(app.run_face_swap)
       and isinstance(app.faceswap_ready(), bool))
-# the chosen method round-trips through persistence
-ui.clone_method_var.set(app.CLONE_METHODS[1][0])   # Qwen
-_stc = dict(ui._collect_ui_state())
-ui.clone_method_var.set(app.CLONE_METHODS[0][0])   # back to faceswap
-ui._apply_ui_state(_stc)
-root.update()
-check("the chosen clone method is remembered",
-      ui._clone_method() == "qwen", ui.clone_method_var.get())
-ui.clone_method_var.set(app.CLONE_METHODS[0][0])
 # the face-swap install must not crash on a wrong-class method reference
 # (v2.1/v2.2 shipped App._install_face_swap calling Generator._download_to
 # -> AttributeError -> re-offered every Generate = an install loop)
