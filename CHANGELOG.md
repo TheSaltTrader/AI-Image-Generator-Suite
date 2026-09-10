@@ -1,5 +1,13 @@
 # Changelog — AI Image Generator Suite
 
+## v2.11.0 — 2026-09-09
+- **Removed the "Hi-res fix."** Even at a gentle setting, its latent
+  upscale-and-resample second pass could degrade pictures (changed faces,
+  extra limbs), so it's gone from the QUALITY section. For more detail, the
+  **Anatomy guard** (native size then a clean upscale) and **Upscale 4×** are
+  the kept paths. Older saved recipes that had Hi-res on still load fine — the
+  setting is simply ignored.
+
 ## v2.10.0 — 2026-09-09
 Quality-of-life features:
 - **Your window layout is remembered.** The app reopens at the size and

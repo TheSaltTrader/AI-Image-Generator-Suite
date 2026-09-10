@@ -102,7 +102,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.10.0"
+APP_VERSION = "2.11.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -1761,34 +1761,10 @@ def build_graph(p):
                               "sampler_name": d["sampler"],
                               "scheduler": d["scheduler"], "denoise": 0.45}}
         sampler_out = ["63", 0]
-    # Hi-res fix: a REAL detail pass (not just the 4x model upscaler) —
-    # upscale the latent and run a short second sampling at low denoise, so
-    # detail is added and anatomy firms up. Skipped for img2img and border
-    # jobs, where a second pass would fight the reference/mask.
-    #
-    # DENOISE is the whole game here: 0.45 (the old value) re-generates ~45%
-    # of the picture on the upscaled latent, which changed faces and grew
-    # extra limbs — the "hi-res makes it worse" report. 0.35 adds texture and
-    # sharpness while keeping the composition; and when the anatomy guard has
-    # ALREADY upscaled+resampled the base (nodes 62/63), this would be a THIRD
-    # sampling, so go gentler still (0.30) to avoid compounding artifacts.
-    if p.get("hires") and not p.get("border_assets") \
-            and not p.get("ref_image_name"):
-        scale = float(p.get("hires_scale") or 1.5)
-        hires_den = float(p.get("hires_denoise")
-                          or (0.30 if p.get("anatomy_guard") else 0.35))
-        g["60"] = {"class_type": "LatentUpscaleBy",
-                   "inputs": {"samples": sampler_out,
-                              "upscale_method": "bislerp", "scale_by": scale}}
-        g["61"] = {"class_type": "KSampler",
-                   "inputs": {"model": model_ref, "positive": pos_ref,
-                              "negative": ["3", 0], "latent_image": ["60", 0],
-                              "seed": p["seed"],
-                              "steps": max(10, int(steps * 0.6)), "cfg": cfg,
-                              "sampler_name": d["sampler"],
-                              "scheduler": d["scheduler"],
-                              "denoise": hires_den}}
-        sampler_out = ["61", 0]
+    # (Hi-res fix removed in v2.11: the latent upscale + second sampling
+    #  degraded pictures — changed faces, extra limbs — even at a gentle
+    #  denoise. The Anatomy guard's native-then-upscale is the kept detail
+    #  path; "Upscale 4×" below still enlarges the finished image.)
     g["7"] = {"class_type": "VAEDecode",
               "inputs": {"samples": sampler_out, "vae": ["1", 2]}}
     img_out = ["7", 0]
@@ -4000,30 +3976,19 @@ class App:
         self._tip(q_head, "Optional extra-quality passes — each adds time and "
                           "VRAM, and all are off by default.")
         qrow = ttk.Frame(left); qrow.grid(row=r, sticky=W, pady=(2, 4)); r += 1
-        self.hires_var = BooleanVar(value=False)
-        hires_cb = ttk.Checkbutton(qrow, text="Hi-res fix (add detail)",
-                                   variable=self.hires_var)
-        hires_cb.grid(row=0, column=0, sticky=W)
-        self._tip(hires_cb,
-                  "A real second detail pass: the picture is upscaled in latent "
-                  "space and lightly re-sampled, so texture and detail are "
-                  "ADDED, not just enlarged. The biggest quality lever; it "
-                  "roughly doubles the time.")
-        self.hires_scale_var = StringVar(value="1.5×")
-        ttk.Combobox(qrow, textvariable=self.hires_scale_var, state="readonly",
-                     exportselection=False, width=4,
-                     values=["1.5×", "2×"]).grid(row=0, column=1, padx=(4, 12))
+        # (Hi-res fix removed — its latent-upscale-and-resample pass degraded
+        #  pictures; the Anatomy guard's native-then-upscale is the kept path.)
         self.freeu_var = BooleanVar(value=False)
         freeu_cb = ttk.Checkbutton(qrow, text="Extra detail",
                                    variable=self.freeu_var)
-        freeu_cb.grid(row=0, column=2, padx=(0, 12))
+        freeu_cb.grid(row=0, column=0, padx=(0, 12), sticky=W)
         self._tip(freeu_cb,
                   "FreeU: a near-free contrast and fine-detail boost on SDXL "
                   "models (no effect on Flux). Cheap to leave on.")
         self.upscale_var = BooleanVar(value=False)
         up_cb = ttk.Checkbutton(qrow, text="Upscale 4×",
                                 variable=self.upscale_var)
-        up_cb.grid(row=0, column=3)
+        up_cb.grid(row=0, column=1, sticky=W)
         self._tip(up_cb, "Enlarge the finished image 4× with an upscaler model "
                          "(applied last of all). Slower and uses more VRAM.")
         self.anatomy_var = BooleanVar(value=False)
@@ -6472,8 +6437,6 @@ class App:
             "batch": self.batch_var.get(),
             "transparent": self.transparent_var.get(),
             "upscale": self.upscale_var.get(),
-            "hires": self.hires_var.get(),
-            "hires_scale": self.hires_scale_var.get(),
             "freeu": self.freeu_var.get(),
             "anatomy": self.anatomy_var.get(),
             "tab": (self.left_tabs.index("current")
@@ -6574,9 +6537,7 @@ class App:
             self.batch_var.set(st.get("batch", 1))
             self.transparent_var.set(st.get("transparent", False))
             self.upscale_var.set(st.get("upscale", False))
-            self.hires_var.set(st.get("hires", False))
             self.anatomy_var.set(st.get("anatomy", False))
-            self.hires_scale_var.set(st.get("hires_scale", "1.5×"))
             self.freeu_var.set(st.get("freeu", False))
             self.face_source_var.set(st.get("face_source", "file"))
             self.face_paths = [p for p in (st.get("face_paths") or [])
@@ -6681,8 +6642,7 @@ class App:
         survive any kind of exit — including a killed process."""
         for var in (self.model_var, self.preset_var, self.size_var,
                     self.steps_var, self.seed_var, self.batch_var,
-                    self.transparent_var, self.upscale_var,
-                    self.hires_var, self.hires_scale_var, self.freeu_var,
+                    self.transparent_var, self.upscale_var, self.freeu_var,
                     self.anatomy_var, self.random_seed_var,
                     self.lora_strength, self.change_var, self.editor_var,
                     self.editor_canvas_var,
@@ -8996,9 +8956,6 @@ class App:
                       random_seed=self.random_seed_var.get(),
                       transparent=self.transparent_var.get(),
                       upscale=self.upscale_var.get(),
-                      hires=self.hires_var.get(),
-                      hires_scale=(2.0 if self.hires_scale_var.get()
-                                   .startswith("2") else 1.5),
                       freeu=self.freeu_var.get(),
                       preset=self.preset_var.get(),
                       ref_images=edit_refs,

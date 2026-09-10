@@ -127,24 +127,26 @@ try:
 except Exception as _e:
     check("anatomy guard build_graph works", False, str(_e))
 
-# --- Variations count now goes up to 100; hi-res uses a gentle denoise ---
+# --- Variations count goes up to 100; the Hi-res fix has been removed ---
 check("the Variations count goes up to 100",
       hasattr(ui, "batch_sb")
       and str(ui.batch_sb.cget("to")) in ("100", "100.0"))
+check("the Hi-res fix is gone (no hires toggle)",
+      not hasattr(ui, "hires_var") and not hasattr(ui, "hires_scale_var"))
 try:
     _ph = dict(model="Juggernaut-XL-v9.safetensors", prompt="a woman",
                negative="", style="", loras=[], width=1024, height=1024,
-               seed=1, steps=30, cfg=6.0, hires=True, hires_scale=1.5, batch=1)
-    _gh = app.build_graph(_ph)
-    _den = _gh["61"]["inputs"]["denoise"]
-    check("hi-res second pass uses a gentle denoise (<=0.35, was 0.45)",
-          "61" in _gh and _den <= 0.35, _den)
-    _pha = dict(_ph); _pha["anatomy_guard"] = True
-    _gha = app.build_graph(_pha)
-    check("hi-res is gentler still when stacked on the anatomy guard (<=0.30)",
-          _gha["61"]["inputs"]["denoise"] <= 0.30, _gha["61"]["inputs"]["denoise"])
+               seed=1, steps=30, cfg=6.0, batch=1)
+    _qt = [v["class_type"] for v in app.build_graph(_ph).values()]
+    check("a plain generation has ONE sampling pass (no hi-res second pass)",
+          _qt.count("KSampler") == 1 and "LatentUpscaleBy" not in _qt, _qt)
+    # a stale saved recipe carrying hires=True must NOT resurrect the pass
+    _qt2 = [v["class_type"] for v in
+            app.build_graph(dict(_ph, hires=True, hires_scale=1.5)).values()]
+    check("a stale hires flag is ignored (feature removed)",
+          _qt2.count("KSampler") == 1 and "LatentUpscaleBy" not in _qt2)
 except Exception as _e:
-    check("hi-res denoise build_graph works", False, str(_e))
+    check("hi-res-removed build_graph works", False, str(_e))
 
 # --- preview redraw is debounced (smooth panel-sash dragging) ---
 check("preview resize is coalesced via a debounced handler",
@@ -719,28 +721,27 @@ check("the face-swap install runs to 'ready' with no error (no _download_to cras
       not _errs and (_fs_tmp / ".ready").exists(), _errs)
 (app.INSIGHTFACE_DIR, app.subprocess.run, app.download_stream,
  app._sha256, ui.ui_queue) = _save
-# ---- the QUALITY section: hi-res fix, extra detail (FreeU), 4x upscale ----
-check("a QUALITY section exists with hi-res, FreeU and upscale toggles",
-      hasattr(ui, "hires_var") and hasattr(ui, "hires_scale_var")
-      and hasattr(ui, "freeu_var") and hasattr(ui, "upscale_var")
+# ---- the QUALITY section: extra detail (FreeU), 4x upscale (no hi-res) ----
+check("a QUALITY section exists with FreeU and upscale toggles, no hi-res",
+      hasattr(ui, "freeu_var") and hasattr(ui, "upscale_var")
+      and not hasattr(ui, "hires_var")
       and any(str(getattr(w, "cget", lambda *_: "")("text")) == "QUALITY"
               for w in _walk(ui._page_gen) if w.winfo_class() == "TLabel"))
 _pq = dict(model="Juggernaut-XL.safetensors", prompt="a hero", negative="",
            seed=1, width=1024, height=1024, loras=[], steps=None, cfg=None,
-           hires=True, hires_scale=1.5, freeu=True)
+           freeu=True)
 _qt = [v["class_type"] for v in app.build_graph(_pq).values()]
-check("Hi-res fix adds a latent upscale and a second sampling pass",
-      "LatentUpscaleBy" in _qt and _qt.count("KSampler") == 2, _qt)
+check("no hi-res latent upscale / second sampling pass in the graph",
+      "LatentUpscaleBy" not in _qt and _qt.count("KSampler") == 1, _qt)
 check("Extra detail adds a FreeU node on SDXL", "FreeU_V2" in _qt)
-ui.hires_var.set(True); ui.hires_scale_var.set("2×"); ui.freeu_var.set(True)
+ui.freeu_var.set(True); ui.upscale_var.set(True)
 _sq = dict(ui._collect_ui_state())
-ui.hires_var.set(False); ui.freeu_var.set(False); ui.hires_scale_var.set("1.5×")
+ui.freeu_var.set(False); ui.upscale_var.set(False)
 ui._apply_ui_state(_sq)
 root.update()
 check("the Quality toggles are remembered",
-      ui.hires_var.get() and ui.freeu_var.get()
-      and ui.hires_scale_var.get() == "2×")
-ui.hires_var.set(False); ui.freeu_var.set(False)
+      ui.freeu_var.get() and ui.upscale_var.get())
+ui.freeu_var.set(False); ui.upscale_var.set(False)
 # ---- Flux image-guided RAG goes through Redux, SDXL through IP-Adapter ----
 _sm = Path(app.MODELS) / "style_models"; _cv = Path(app.MODELS) / "clip_vision"
 _sm.mkdir(parents=True, exist_ok=True); _cv.mkdir(parents=True, exist_ok=True)

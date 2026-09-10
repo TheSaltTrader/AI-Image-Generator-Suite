@@ -1003,6 +1003,16 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Hi-res fix REMOVED (v2.11.0).** User: "remove the Hi-res fix" (after the
+  v2.9.0 denoise fix still didn't satisfy). Fully deleted: the build_graph
+  block (nodes 60/61 LatentUpscaleBy+KSampler), `hires_var`/`hires_scale_var`
+  widgets (QUALITY qrow — FreeU re-gridded to col0, Upscale 4× to col1), the
+  `hires`/`hires_scale` keys in `_collect_ui_state`/`_apply_ui_state`, the two
+  vars from `_wire_autosave`, and `hires=`/`hires_scale=` from the `_generate`
+  params. build_graph now ignores a stale `p.get("hires")` (old saved recipes/
+  clones with hires=True load fine — the flag is a no-op; VERIFIED in tests).
+  Kept detail paths: Anatomy guard (native→upscale) + Upscale 4×. update_ui
+  241→242 (removal checks: no toggle, one KSampler, stale flag ignored).
 - **QoL batch: window/sash persistence, batch ETA, keep-resident, threaded
   rebuild (v2.10.0).** WINDOW STATE: `_collect_window_state()` (geometry or
   zoomed + `sash_h`/`sash_v`) saved in `settings["window"]` by `_persist`;
