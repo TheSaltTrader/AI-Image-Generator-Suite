@@ -532,6 +532,62 @@ with tempfile.TemporaryDirectory() as td:
     ui._clear_history()
     root.update()
 
+# ---- optimized delete (prune, not full re-render) + tag-safe generation ----
+print("optimized delete + tag-safe new image")
+with tempfile.TemporaryDirectory() as _td2:
+    _ps = []
+    for i in range(5):
+        _p = Path(_td2) / f"g{i}.png"
+        _Img.new("RGB", (64, 64), (10 + i * 40, 80, 120)).save(_p)
+        _ps.append(_p)
+    ui.session = [(_Img.open(p).convert("RGB"),
+                   {"model": "m.safetensors", "seed": i}, p)
+                  for i, p in enumerate(_ps)]
+    ui.current = 4
+    ui._rebuild_gallery(); root.update()
+    check("gallery has one button per image", len(ui._thumb_btns) == 5)
+    # deleting a MIDDLE image prunes only that thumbnail — no full re-render
+    _adds = [0]
+    _orig_add = ui._add_thumb
+    ui._add_thumb = lambda *a, **k: _adds.__setitem__(0, _adds[0] + 1)
+    try:
+        ui._delete_paths([str(_ps[2])])          # delete the middle one
+    finally:
+        ui._add_thumb = _orig_add
+    root.update()
+    check("delete does NOT rebuild the whole strip (0 _add_thumb calls)",
+          _adds[0] == 0, _adds[0])
+    check("only the deleted thumbnail is removed",
+          len(ui._thumb_btns) == 4 and len(ui.session) == 4)
+    check("surviving thumbnails re-index themselves (g3 now at index 2)",
+          ui._thumb_index(ui._thumb_btns[2]) == 2
+          and str(ui.session[2][2]).endswith("g3.png"))
+    ui._thumb_btns[2].invoke()
+    check("clicking a survivor selects the right image", ui.current == 2)
+    # a freshly generated image must NOT steal the selection while tagging
+    ui.current = 1
+    ui._toggle_tag(0); root.update()             # user is curating
+    _new = Path(_td2) / "gnew.png"
+    _Img.new("RGB", (64, 64), (200, 0, 0)).save(_new)
+    ui._handle_msg(("finished_image", _Img.open(_new).convert("RGB"),
+                    {"model": "m.safetensors", "seed": 99}, _new))
+    root.update()
+    check("a new image while tagging does NOT move the selection",
+          ui.current == 1, ui.current)
+    check("the new image is still added to the gallery",
+          str(ui.session[-1][2]).endswith("gnew.png")
+          and len(ui._thumb_btns) == len(ui.session))
+    # nothing tagged: a new image selects itself (the normal flow)
+    ui.tagged.clear(); ui._refresh_tag_ui()
+    _new2 = Path(_td2) / "gnew2.png"
+    _Img.new("RGB", (64, 64), (0, 200, 0)).save(_new2)
+    ui._handle_msg(("finished_image", _Img.open(_new2).convert("RGB"),
+                    {"model": "m.safetensors", "seed": 100}, _new2))
+    root.update()
+    check("not tagging: a new image selects itself",
+          ui.current == len(ui.session) - 1)
+    ui._clear_history(); root.update()
+
 # ---- the simplified face/character section + the loading sweep ----------
 print("face/character section + loading sweep")
 check("the face-source chooser defaults to file, both source rows exist",

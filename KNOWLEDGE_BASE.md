@@ -1003,6 +1003,22 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Optimized delete + tag-safe generation (v2.11.1).** DELETE PERF: `_delete_paths`
+  called `_rebuild_gallery` which destroyed EVERY thumbnail button and re-rendered
+  all (LANCZOS per image) on each delete — O(N) per delete. Now thumbnail buttons
+  store `btn._path` and resolve their index LIVE via new `_thumb_index(btn)`
+  (`_thumb_btns.index`) instead of capturing idx in the closure, so `_add_thumb`'s
+  command/binds never need rebinding. New `_prune_thumbs(goneset)` destroys ONLY
+  the deleted buttons + filters `_thumb_btns` (no re-render); `_delete_paths` calls
+  it instead of `_rebuild_gallery` (which is now unused but kept). `_select`/
+  `_thumb_to_animator` guard a None index. TAG-SAFE GEN: the `finished_image`
+  handler set `self.current = newest` + `_show_current` on every generation,
+  stealing the selection mid-tagging (risk: a new image slips into a delete). Now
+  it only moves the selection when `not self.tagged`; `_add_thumb` also skips the
+  auto-scroll-to-newest while tagging. VERIFIED: delete of a middle image = 0
+  `_add_thumb` calls, survivors re-index, click selects right image; new image
+  while tagging leaves current unchanged, without tagging it auto-selects.
+  update_ui 242→250.
 - **Hi-res fix REMOVED (v2.11.0).** User: "remove the Hi-res fix" (after the
   v2.9.0 denoise fix still didn't satisfy). Fully deleted: the build_graph
   block (nodes 60/61 LatentUpscaleBy+KSampler), `hires_var`/`hires_scale_var`

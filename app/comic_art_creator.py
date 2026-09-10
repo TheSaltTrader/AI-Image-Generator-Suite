@@ -102,7 +102,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.11.0"
+APP_VERSION = "2.11.1"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -9041,9 +9041,14 @@ class App:
                 elif kind == "finished_image":
                     _, img, params, path = msg
                     self.session.append((img, params, path))
-                    self.current = len(self.session) - 1
-                    self._show_current()
-                    self._add_thumb(self.current)
+                    new_idx = len(self.session) - 1
+                    self._add_thumb(new_idx)
+                    # while the user is curating (tagging images for deletion),
+                    # a freshly generated image must NOT steal the selection —
+                    # a jump there led to deleting the wrong picture
+                    if not self.tagged:
+                        self.current = new_idx
+                        self._show_current()
                     self._update_editor_btn()
                     self.status_var.set(f"Saved  {path.name}")
                 elif kind == "rebuild_add":
@@ -9445,21 +9450,37 @@ class App:
     def _add_thumb(self, idx):
         img, _p, path = self.session[idx]
         tk_th = self._thumb_image(img, str(path) in self.tagged)
-        btn = ttk.Button(self.gallery, image=tk_th,
-                         command=lambda i=idx: self._select(i))
+        btn = ttk.Button(self.gallery, image=tk_th)
         btn.image = tk_th
+        # the closures resolve the index LIVE (via _thumb_index) rather than
+        # capturing it, so deleting an earlier image needs no rebind and no
+        # re-render of the surviving thumbnails
+        btn._path = str(path)
+        btn.configure(command=lambda b=btn: self._select(self._thumb_index(b)))
         btn.pack(side="left", padx=2)
         # double-click sends the image straight to the Animator
         btn.bind("<Double-Button-1>",
-                 lambda _e, i=idx: self._thumb_to_animator(i))
+                 lambda _e, b=btn: self._thumb_to_animator(self._thumb_index(b)))
         # Ctrl+click / right-click tag it for deletion (or untag it)
         btn.bind("<Control-Button-1>",
-                 lambda _e, i=idx: (self._toggle_tag(i), "break")[1])
-        btn.bind("<Button-3>", lambda _e, i=idx: self._toggle_tag(i))
+                 lambda _e, b=btn: (self._toggle_tag(self._thumb_index(b)),
+                                    "break")[1])
+        btn.bind("<Button-3>",
+                 lambda _e, b=btn: self._toggle_tag(self._thumb_index(b)))
         self._thumb_btns.append(btn)
-        # keep the newest thumbnail in view
-        self.gallery.update_idletasks()
-        self.gallery_canvas.xview_moveto(1.0)
+        # keep the newest thumbnail in view — but don't yank the strip while
+        # the user is curating (tagging); it would move what they're working on
+        if not self.tagged:
+            self.gallery.update_idletasks()
+            self.gallery_canvas.xview_moveto(1.0)
+
+    def _thumb_index(self, btn):
+        """The thumbnail button's CURRENT gallery index (positions shift when
+        an earlier image is deleted), or None if it is gone."""
+        try:
+            return self._thumb_btns.index(btn)
+        except ValueError:
+            return None
 
     def _rebuild_gallery(self):
         for child in self.gallery.winfo_children():
@@ -9469,6 +9490,23 @@ class App:
         self.tagged &= live          # a tag on an image no longer here is moot
         for idx in range(len(self.session)):
             self._add_thumb(idx)
+        if not self.session:
+            self.gallery_canvas.xview_moveto(0.0)
+        self._refresh_tag_ui()
+
+    def _prune_thumbs(self, goneset):
+        """Remove ONLY the deleted images' thumbnails, leaving the rest in
+        place — no destroy-and-re-render of the whole strip. Surviving buttons
+        resolve their index live (_thumb_index), so nothing needs rebinding.
+        This is what a delete uses instead of _rebuild_gallery."""
+        goneset = {str(p) for p in goneset}
+        survivors = []
+        for btn in self._thumb_btns:
+            if getattr(btn, "_path", None) in goneset:
+                btn.destroy()
+            else:
+                survivors.append(btn)
+        self._thumb_btns = survivors
         if not self.session:
             self.gallery_canvas.xview_moveto(0.0)
         self._refresh_tag_ui()
@@ -9604,7 +9642,7 @@ class App:
         # swap after that was skipped with a one-line status nobody saw
         dropped = self._forget_deleted_refs(goneset)
         self.current = len(self.session) - 1 if self.session else None
-        self._rebuild_gallery()
+        self._prune_thumbs(goneset)      # remove just the deleted thumbnails
         self._show_current()
         self._update_editor_btn()
         note = (f"Deleted {len(gone)} image{'s' if len(gone) != 1 else ''} — "
@@ -9828,6 +9866,8 @@ class App:
         dlg.grab_set()
 
     def _select(self, idx):
+        if idx is None:
+            return
         self.current = idx
         self._show_current()
 
@@ -10159,7 +10199,7 @@ class App:
             self._schedule_persist()
 
     def _thumb_to_animator(self, idx):
-        if idx >= len(self.session):
+        if idx is None or idx >= len(self.session):
             return
         self.current = idx
         self._show_current()

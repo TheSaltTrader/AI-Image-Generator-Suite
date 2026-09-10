@@ -1,5 +1,16 @@
 # Changelog — AI Image Generator Suite
 
+## v2.11.1 — 2026-09-09
+- **Deleting an image is much faster.** It used to rebuild and re-render the
+  entire gallery strip every time you deleted one picture. Now it removes just
+  that thumbnail and leaves the rest untouched — instant, even with a big
+  history.
+- **New images no longer hijack your selection while you're tagging.** If you're
+  tagging images for deletion and a new one finishes generating, it's added to
+  the gallery but your selected image stays selected (and the strip doesn't jump
+  to it) — so a freshly generated image can't slip into a delete. When you're not
+  tagging, a new image still auto-selects as before.
+
 ## v2.11.0 — 2026-09-09
 - **Removed the "Hi-res fix."** Even at a gentle setting, its latent
   upscale-and-resample second pass could degrade pictures (changed faces,
