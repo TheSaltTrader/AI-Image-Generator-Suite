@@ -451,6 +451,41 @@ try:
           _cleaned[20, 20, 3] == 255)
 except Exception as _e:
     check("clean_matte works", False, repr(_e))
+# solidify black: patchy dark grey -> pure black, greys/colours left alone
+check("Decals has a solidify-black toggle, on by default",
+      hasattr(ui, "decal_solid_var") and ui.decal_solid_var.get())
+try:
+    import numpy as _np5
+    _sb = _np5.array([[[40, 44, 38], [128, 128, 128], [150, 20, 24]]], _np5.uint8)
+    _sr = _np5.asarray(_dec.solidify_black(app.Image.fromarray(_sb, "RGB")))
+    check("solidify snaps patchy near-black to pure black",
+          tuple(int(x) for x in _sr[0, 0]) == (0, 0, 0))
+    check("solidify leaves medium grey and dark colour untouched",
+          tuple(int(x) for x in _sr[0, 1]) == (128, 128, 128)
+          and tuple(int(x) for x in _sr[0, 2]) == (150, 20, 24))
+except Exception as _e:
+    check("solidify_black works", False, repr(_e))
+# smooth colour mottling (edge-preserving)
+check("Decals has a smooth-mottling toggle, off by default",
+      hasattr(ui, "decal_smooth_var") and not ui.decal_smooth_var.get())
+try:
+    import numpy as _np6
+    _rng6 = _np6.random.default_rng(3)
+    _blk = (180 + _rng6.integers(-12, 13, size=(50, 50, 3))).astype(_np6.uint8)
+    _sm = _np6.asarray(_dec.smooth_flats(app.Image.fromarray(_blk, "RGB")))
+    check("smooth_flats reduces mottling inside flat areas",
+          _sm.std() < _blk.std(), (round(float(_sm.std()), 1),
+                                   round(float(_blk.std()), 1)))
+except Exception as _e:
+    check("smooth_flats works", False, repr(_e))
+# text-driven Generate -> SVG (original art from a prompt); do NOT call it here
+# (it would hit a live engine) — just verify it's wired and graceful is coded
+check("Decals has a Generate->SVG prompt box + button + method",
+      hasattr(ui, "decal_prompt_box") and hasattr(ui, "decal_gen_btn")
+      and callable(getattr(ui, "_generate_decal", None)))
+# _generate tags a decal-gen run so _finish_image traces it to SVG
+check("decal-gen flag defaults off (normal generation unaffected)",
+      not getattr(ui, "_decal_gen", False))
 try:
     import numpy as _np2
     _rng = _np2.random.default_rng(1)

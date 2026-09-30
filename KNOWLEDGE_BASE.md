@@ -1003,6 +1003,26 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Decal generator + solidify/smooth restoration tools (v2.14.0).** (User went
+  autonomous, "select the best recommendation".) GENERATE→SVG: a prompt box +
+  "🖊 Generate → SVG" button generates ORIGINAL art from the user's text prompt
+  (NOT reproducing an uploaded copyrighted decal — declined that repeatedly) via
+  the MAIN tab's model/LoRA/RAG, then traces to SVG. Reuses `_generate` through a
+  `_decal_gen` flag set only across the synchronous param build: `_generate`
+  reads `decal_prompt_box`, appends a flat-vector style, forces transparent, and
+  tags `params["decal_svg"]`; `_finish_image` then `decals.vectorize`s the result
+  → SVG+PNG in `output/decals`. Pure txt2img (no image ref → no reproduction).
+  VALIDATED LIVE (dev 8189, Juggernaut, original geometric shield prompt →
+  vectorize → 281KB SVG w/ paths; scratchpad gen_svg_validate.py). RESTORATION
+  TOOLS: `solidify_black` (default ON) snaps patchy near-black+low-sat pixels to
+  #000 (bad scan of black ink = mottled grey) — greys/dark colours untouched;
+  `smooth_flats` (optional) edge-preserving de-mottle: median only where local
+  variance (integral-image `_box_mean`) is low, so flat areas flatten but edges/
+  text stay sharp and colours don't shift. Both wired as tab toggles + process_
+  image params. IP LINE HELD: declined to build an "AI redraw of the copyrighted
+  decal art / LLM-gated reproduction" — restoring the user's own scan + a general
+  vectorize/trace + generating ORIGINAL art from a prompt are all fine. update_ui
+  292.
 - **Decals edge/halo cleanup + Redraw-to-vector button (v2.13.2).** User: final
   sheets have "pixel noise around the images" + residual scan lines. Diagnosed
   (on grey checker) = a faint semi-transparent CARRIER HALO hugging the art +

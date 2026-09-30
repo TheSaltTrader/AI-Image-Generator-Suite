@@ -103,7 +103,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.13.2"
+APP_VERSION = "2.14.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -5020,6 +5020,24 @@ class App:
                        "hugs the art and remove stray background speckles, for a "
                        "clean edge. Only the transparency is affected — your art "
                        "colours stay untouched.")
+        self.decal_smooth_var = BooleanVar(value=False)
+        _smc = ttk.Checkbutton(
+            left, text="Smooth colour mottling (keep edges)",
+            variable=self.decal_smooth_var)
+        _smc.grid(row=r, sticky=W); r += 1
+        self._tip(_smc, "Flatten JPEG blotchiness inside solid-colour areas so "
+                        "they print as clean flat colour — edges, text and fine "
+                        "detail are left sharp, and colours aren't shifted (each "
+                        "flat area keeps its own true colour).")
+        self.decal_solid_var = BooleanVar(value=True)
+        _sc = ttk.Checkbutton(
+            left, text="Solidify black (fix patchy grey)",
+            variable=self.decal_solid_var)
+        _sc.grid(row=r, sticky=W); r += 1
+        self._tip(_sc, "A bad scan turns solid black ink into patchy dark grey. "
+                       "This snaps those near-black, mottled areas to pure black "
+                       "so blacks read clean. Only very dark, un-coloured pixels "
+                       "move — greys and dark colours are left alone.")
         self.decal_trim_var = BooleanVar(value=False)
         ttk.Checkbutton(left, text="Trim to the artwork",
                         variable=self.decal_trim_var).grid(row=r, sticky=W)
@@ -5043,6 +5061,20 @@ class App:
         self._tip(drow, "Output DPI is the print resolution of the result; "
                         "Scan DPI is what the original was scanned at (300 for "
                         "these). Output ≥ scan enlarges it for crisp printing.")
+
+        ttk.Label(left, text="Generate an original decal (AI → SVG)",
+                  style="Head.TLabel").grid(row=r, sticky=W, pady=(8, 0)); r += 1
+        self.decal_prompt_box = self._text(left, 3)
+        self.decal_prompt_box.grid(row=r, sticky="ew", pady=(2, 2)); r += 1
+        self._tip(self.decal_prompt_box,
+                  "Describe an ORIGINAL decal to create (your own design). It "
+                  "generates with the Image-generation tab's model, LoRAs and "
+                  "RAG, then traces the result into a clean SVG. Meant for your "
+                  "own artwork — describe what you want, don't ask it to copy an "
+                  "existing brand's art.")
+        self.decal_gen_btn = ttk.Button(left, text="🖊 Generate → SVG",
+                                        command=self._generate_decal)
+        self.decal_gen_btn.grid(row=r, sticky="ew", pady=(0, 6)); r += 1
 
         ttk.Label(left, text="Convert for figure scale",
                   style="Head.TLabel").grid(row=r, sticky=W, pady=(6, 0)); r += 1
@@ -5138,6 +5170,26 @@ class App:
                 text=f"Resize {f:.2f}× ({'enlarge' if f > 1 else 'shrink'} "
                      "for the target scale).")
 
+    def _generate_decal(self):
+        """Generate an ORIGINAL decal from the prompt using the main tab's
+        model/LoRA/RAG, then trace it to a clean SVG. Reuses _generate via the
+        _decal_gen flag (set only across the synchronous param build)."""
+        if not engine_alive():
+            self.decal_status_var.set("Start the engine first (open the Image "
+                                      "generation tab) — this uses it.")
+            return
+        if not self._get(self.decal_prompt_box):
+            self.decal_status_var.set("Describe the decal to generate first.")
+            return
+        self._decal_gen = True
+        try:
+            self._generate()
+        finally:
+            self._decal_gen = False
+        self.decal_status_var.set("Generating your decal, then tracing to SVG — "
+                                  "it appears in the gallery and the decals "
+                                  "folder.")
+
     def _process_decals(self, force_mode=None):
         if getattr(self, "_decals_busy", False):
             return
@@ -5166,7 +5218,9 @@ class App:
                     remove_lines=self.decal_lines_var.get(),
                     balance=self.decal_wb_var.get(),
                     exact=exact,
-                    tidy_matte=self.decal_tidy_var.get())
+                    tidy_matte=self.decal_tidy_var.get(),
+                    solidify=self.decal_solid_var.get(),
+                    smooth=self.decal_smooth_var.get())
         srcs = list(self.decal_sources)
         vector = opts["mode"] == "vector"
         ai_warn = ai and not engine_alive()
@@ -8939,11 +8993,18 @@ class App:
                               "(\U0001f5bc Load\u2026 or Use selected), "
                               "then Apply edit.")
             return
+        decal_gen = getattr(self, "_decal_gen", False)
         ref_paths = self.ref_paths if editing0 else []
-        prompt = (self._get(self.edit_prompt_box) if editing0
-                  else self._get(self.prompt_box))
+        if decal_gen:
+            prompt = self._get(self.decal_prompt_box)
+        else:
+            prompt = (self._get(self.edit_prompt_box) if editing0
+                      else self._get(self.prompt_box))
         if not prompt:
-            if editing0:
+            if decal_gen:
+                self.decal_status_var.set("Describe the decal to generate first "
+                                          "(type it in the box above).")
+            elif editing0:
                 messagebox.showinfo(
                     "Edit", "On the Edit image tab, say what the AI should "
                             "change — type it or pick from Common edits.")
@@ -8952,6 +9013,11 @@ class App:
                                               "a preset and hit 'Try example'.")
             return
         style = self._get(self.style_box)
+        if decal_gen:
+            # steer toward clean, flat, vector-friendly art that traces well
+            style = ((style + ", ") if style else "") + \
+                "flat vector sticker art, bold solid colors, clean thick " \
+                "outlines, high contrast, minimal shading, plain background"
         # 🔀 Use RAG & LoRA for image swap: two-step run — the styled base
         # generates first, then the face (loaded image, else the chosen
         # person) is applied to it. Qwen is the swap engine when installed
@@ -9288,10 +9354,12 @@ class App:
                       model=model, loras=loras, width=w, height=h, seed=seed,
                       steps=steps, cfg=None, batch=self.batch_var.get(),
                       random_seed=self.random_seed_var.get(),
-                      transparent=self.transparent_var.get(),
+                      transparent=(True if decal_gen
+                                   else self.transparent_var.get()),
                       upscale=self.upscale_var.get(),
                       freeu=self.freeu_var.get(),
                       preset=self.preset_var.get(),
+                      decal_svg=decal_gen,
                       ref_images=edit_refs,
                       rag_ref_paths=rag_refs, rag_embed_paths=rag_embed_paths,
                       style_weight=rag_weight, ipa_end=ipa_end,
@@ -9573,6 +9641,23 @@ class App:
             elif params["transparent"]:
                 self.ui_queue.put(("status", "Removing background…"))
                 img = remove_background(img)
+            if params.get("decal_svg"):
+                # trace the freshly generated ORIGINAL art into clean vector
+                self.ui_queue.put(("status", "Tracing the decal to vector (SVG)…"))
+                try:
+                    svg, vec = decals.vectorize(
+                        img.convert("RGBA"),
+                        target_px=max(1600, img.width * 2))
+                    DECALS_OUT.mkdir(parents=True, exist_ok=True)
+                    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    b = DECALS_OUT / f"decal_{stamp}_seed{params['seed']}"
+                    vec.save(str(b) + ".png")
+                    Path(str(b) + ".svg").write_text(svg, encoding="utf-8")
+                    img = vec
+                except Exception as e:
+                    applog.exception("decal vectorize failed")
+                    self.ui_queue.put(("status",
+                                       f"Vector trace failed ({e}); kept raster."))
             path = self._autosave(img, params)
             self.ui_queue.put(("finished_image", img, params, path))
         except Exception as e:

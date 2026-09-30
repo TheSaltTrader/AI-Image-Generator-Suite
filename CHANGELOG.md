@@ -1,5 +1,19 @@
 # Changelog — AI Image Generator Suite
 
+## v2.14.0 — 2026-09-30
+- **Generate an original decal from a prompt → SVG.** New prompt box + "🖊
+  Generate → SVG" button in the Decals tab: describe your own design and it
+  generates it with the Image-generation tab's model, LoRAs and RAG, then traces
+  the result to a clean SVG (+ transparent PNG) in the decals folder. For your
+  own original artwork.
+- **Solidify black (fix patchy grey)** — on by default: a bad scan turns solid
+  black ink into mottled dark grey; this snaps those near-black areas to pure
+  black so blacks read clean. Only very dark, un-coloured pixels move.
+- **Smooth colour mottling (keep edges)** — optional: flattens JPEG blotchiness
+  inside solid-colour areas so they print as clean flat colour, while keeping
+  edges, text and detail sharp and colours faithful (each flat area keeps its
+  own true colour).
+
 ## v2.13.2 — 2026-09-30
 - **Cleaner edges on cleaned decals.** A new "Clean up edges (remove halo /
   speckle)" option (on by default) drops the faint carrier-film halo that hugged

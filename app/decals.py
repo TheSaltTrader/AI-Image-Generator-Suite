@@ -236,6 +236,51 @@ def remove_background(img, carrier=None, tol=52):
     return Image.fromarray(out, "RGBA")
 
 
+def _box_mean(a, r):
+    """Mean over a (2r+1) box for every pixel of 2D array a (integral image)."""
+    H, W = a.shape
+    ii = np.pad(a.astype(np.float64), ((1, 0), (1, 0))).cumsum(0).cumsum(1)
+    y = np.arange(H); x = np.arange(W)
+    y0 = np.clip(y - r, 0, H); y1 = np.clip(y + r + 1, 0, H)
+    x0 = np.clip(x - r, 0, W); x1 = np.clip(x + r + 1, 0, W)
+    A = ii[y1][:, x1]; B = ii[y0][:, x1]; C = ii[y1][:, x0]; D = ii[y0][:, x0]
+    area = (y1 - y0)[:, None] * (x1 - x0)[None, :]
+    return (A - B - C + D) / np.maximum(area, 1)
+
+
+def smooth_flats(img, r=2, var_thresh=90, kernel=5):
+    """Remove JPEG colour mottling INSIDE flat areas while keeping edges crisp
+    and colours faithful. Median-smooth only LOW-variance (flat) regions; leave
+    high-variance regions (edges, text, fine detail) exactly as scanned. The
+    median of a flat region is its true colour, so nothing shifts — the blotchy
+    patchiness just goes."""
+    rgb = img.convert("RGB")
+    a = np.asarray(rgb)
+    gray = a.mean(2)
+    var = _box_mean(gray * gray, r) - _box_mean(gray, r) ** 2
+    flat = (var < var_thresh)[..., None]
+    k = kernel if kernel % 2 else kernel + 1
+    med = np.asarray(rgb.filter(ImageFilter.MedianFilter(k)))
+    out = np.where(flat, med, a).astype(np.uint8)
+    return Image.fromarray(out, "RGB")
+
+
+def solidify_black(img, thresh=85, sat_max=40):
+    """A bad scan turns solid black ink into patchy dark grey (JPEG mottling).
+    Snap those near-black, near-neutral pixels to pure #000000 so black areas
+    read as clean solid black. Only VERY dark + low-saturation pixels move —
+    medium greys and dark colours (dark red, navy) are left untouched."""
+    rgb = np.asarray(img.convert("RGB"))
+    mx = rgb.max(2).astype(np.int16)
+    mn = rgb.min(2).astype(np.int16)
+    dark = (mx < thresh) & ((mx - mn) < sat_max)
+    if not dark.any():
+        return img.convert("RGB")
+    out = rgb.copy()
+    out[dark] = (0, 0, 0)
+    return Image.fromarray(out, "RGB")
+
+
 def clean_matte(rgba, alpha_floor=70, despeckle=3):
     """Tidy the transparency matte: drop the faint semi-transparent halo of
     carrier pixels hugging the art (the "noise around the images"), remove
@@ -342,7 +387,8 @@ def vectorize(rgba, target_px=2400, filter_speckle=12, color_precision=8,
 def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
                   denoise=2, tol=52, target_dpi=600, native_dpi=300,
                   do_trim=False, size_scale=1.0, remove_lines=True,
-                  balance=True, exact=False, tidy_matte=True):
+                  balance=True, exact=False, tidy_matte=True, solidify=False,
+                  smooth=False):
     """Run one image through the pipeline. Returns a dict with 'rgba' (and
     'svg' for vector mode). size_scale rescales the result for a different
     figure scale (e.g. 1.5 to take a 3.75\" decal to 1/12 Classified).
@@ -360,6 +406,10 @@ def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
     else:
         cleaned = clean(img, denoise=denoise, remove_lines=remove_lines,
                         balance=balance, carrier=carrier)
+    if smooth:
+        cleaned = smooth_flats(cleaned)     # de-mottle flat areas, keep edges
+    if solidify:
+        cleaned = solidify_black(cleaned)   # patchy dark-grey -> solid black
     if remove_bg:
         # the transparency matte is computed from the ORIGINAL tinted image and
         # applied to the (possibly colour-processed) RGB — otherwise white-balance
