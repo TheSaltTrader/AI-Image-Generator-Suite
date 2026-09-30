@@ -1003,6 +1003,46 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **DECALS tab — scan cleanup / vectorize to print-ready transparent art
+  (v2.13.0).** User: digitize imperfect scanned GI Joe waterslide decal sheets
+  (6 PDFs in `Stickers/`, all Fujitsu ScanSnap JPEG-in-PDF at ~300 DPI, flat
+  cartoon art + text on a light-blue carrier film). NEW module `app/decals.py`
+  (importable + CLI): `iter_source_images` (PDF via pymupdf → largest embedded
+  image per page; + PNG/JPG/WEBP/BMP/TIFF), `detect_carrier` (median of a border
+  frame), `_carrier_alpha` (keys the carrier by its TINT DIRECTION so faint WHITE
+  ink — neutral — is kept while the tinted carrier goes transparent; the core
+  trick, since white ink and a light carrier are near-equal in plain distance),
+  `clean` (median denoise + unsharp), `remove_background`, `trim`, `vectorize`
+  (vtracer color trace → magenta-key → pymupdf rasterize → re-key transparent),
+  `process_image`/`process_source`. NEW "Decals" tab (5th left tab,
+  `_build_decals_tab`): Add files/Clear + Listbox, method radio cleanup|vector,
+  remove-bg + sensitivity(tol) slider, trim, output/scan DPI, Process → worker
+  thread → queue msgs `decal_status`/`decal_add`/`decal_done` → gallery preview
+  (composited on white) + transparent PNG(+SVG) saved to `output/decals`. Runs
+  IN-PROCESS; pymupdf+vtracer BUNDLED via spec `collect_all` (VERIFIED in the
+  frozen exe: `AIImageGeneratorSuite.exe --selftest-decals` →
+  {'pymupdf':True,'vtracer':True,'cleanup':True}). LIMITS: faint white-on-light
+  ink can't be separated (data limit — use keep-bg); home printers can't print
+  white (white decal paper + cut). Deps added to venv: PyMuPDF 1.28.2, vtracer
+  (cairosvg/svglib were dead ends — need native cairo on Windows; pymupdf renders
+  SVG fine). PIPELINE ADDITIONS (after user quality feedback): `destripe()`
+  removes vertical scanner streaks by subtracting each column's median offset
+  from a horizontal moving-average baseline (clipped so bold art survives);
+  `white_balance()` neutralises the carrier tint (gain = C.mean()/C per channel)
+  so reds/whites are true (the cleanup was coming out dull/maroon otherwise);
+  both are in `clean()` (flags remove_lines/balance), exposed as tab checkboxes.
+  VECTORIZE upgraded for commercial output: median-smooth + MEDIANCUT quantize
+  to flat colours before tracing, then STRIP the magenta key AND light blue-grey
+  halo paths by parsing each `fill=` (the key traces to a FAMILY of near-magenta
+  shades, not one hex) and render `alpha=True` → clean transparent edges + a
+  transparent SVG. VERDICT (validated on the real sheets): vectorize = commercial
+  grade for an ISOLATED logo (orca showcase), but WHOLE dense sheets trace with
+  colour drift + white-ink halos → use CLEANUP+wb+destripe for whole sheets (true
+  colour, readable text, transparent, de-streaked, 600 DPI) and vectorize
+  per-logo. SCALE CONVERSION: `SCALE_PRESETS`/`scale_factor(src_n,tgt_n)` +
+  From/To pickers + `size_scale` (3.75"/1/18 → Classified/1/12 = 1.5×). Final
+  deliverable folder for the user: `Stickers/_final/` (sheets/ transparent 600dpi
+  + logos/ orca SVG+PNG + README). update_ui 276.
 - **Qwen/Kontext dropped as face-swap methods (v2.12.0).** USER: Qwen/Flux
   Kontext swaps gave "a completely different face" + very slow prep; insightface
   "Face swap" was much closer. ROOT CAUSE (not a bug): Qwen/Kontext are diffusion

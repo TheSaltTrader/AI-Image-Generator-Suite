@@ -267,7 +267,9 @@ check("a reading without utilisation leaves the badge blank, not broken",
 # ---- the left panel is three tabs ---------------------------------------
 print("three tabs")
 tabs = [ui.left_tabs.tab(t, "text") for t in ui.left_tabs.tabs()]
-check("four tabs, in order", tabs == ["Image generation", "Animation", "Borders", "Edit image"], tabs)
+check("five tabs, in order",
+      tabs == ["Image generation", "Animation", "Borders", "Edit image",
+               "Decals"], tabs)
 
 
 def page_of(widget):
@@ -319,7 +321,7 @@ check("the border maker lives on Borders", page_of(ui.border_prompt_box) == page
 check("the batch queue stays under the tabs, on every tab",
       page_of(ui.queue_list) is None and ui.queue_list.winfo_toplevel() is ui.root)
 check("the version row stays under the tabs", page_of(ui.upd_btn) is None)
-check("every page scrolls with the wheel", len(ui._scroll_canvases) == 4)
+check("every page scrolls with the wheel", len(ui._scroll_canvases) == 5)
 check("the edit box and Apply live on the Edit tab",
       page_of(ui.edit_prompt_box) == pages[3] and page_of(ui.editor_use_btn) == pages[3])
 ui.left_tabs.select(2)
@@ -333,6 +335,118 @@ root.update()
 check("…and restored", ui.left_tabs.index("current") == 1)
 ui.left_tabs.select(0)
 root.update()
+
+# ---- Decals tab: clean up scanned stickers into print-ready transparent art ----
+print("decals tab")
+check("the Decals tab exists", hasattr(ui, "_page_decals"))
+for _w in ("decal_list", "decal_mode_var", "decal_removebg_var",
+           "decal_tol_var", "decal_dpi_var", "decal_native_var",
+           "decal_trim_var", "decal_btn"):
+    check("Decals control %s wired" % _w, hasattr(ui, _w))
+check("Decals methods wired",
+      all(callable(getattr(ui, m, None)) for m in
+          ("_add_decal_sources", "_clear_decal_sources", "_process_decals")))
+check("Decals faithful defaults: cleanup, remove-bg on, native 300 DPI, "
+      "auto-colour OFF",
+      ui.decal_mode_var.get() == "cleanup" and ui.decal_removebg_var.get()
+      and ui.decal_dpi_var.get() == "300" and not ui.decal_wb_var.get())
+# the pipeline module itself, headless, on a synthetic tinted-carrier decal
+import importlib
+_dec = importlib.import_module("decals")
+check("decals supports PDF + common image formats",
+      ".pdf" in _dec.SUPPORTED_EXTS and ".png" in _dec.SUPPORTED_EXTS
+      and ".jpg" in _dec.SUPPORTED_EXTS and ".webp" in _dec.SUPPORTED_EXTS)
+try:
+    import numpy as _np
+    # light-blue carrier with a black square and a white square on it
+    _arr = _np.full((80, 120, 3), (214, 240, 242), _np.uint8)
+    _arr[20:60, 10:40] = (0, 0, 0)        # black art
+    _arr[20:60, 80:110] = (255, 255, 255)  # white ink
+    _src = app.Image.fromarray(_arr, "RGB")
+    _res = _dec.process_image(_src, mode="cleanup", remove_bg=True, denoise=0,
+                              tol=52, target_dpi=300, native_dpi=300)
+    _out = _np.asarray(_res["rgba"])
+    _a = _out[..., 3]
+    check("cleanup removes the carrier background (corner transparent)",
+          _a[2, 2] < 40, int(_a[2, 2]))
+    check("cleanup keeps the black art opaque",
+          _a[40, 25] > 200, int(_a[40, 25]))
+    check("cleanup keeps the white ink opaque (not eaten as background)",
+          _a[40, 95] > 200, int(_a[40, 95]))
+    # vector mode returns an SVG + a raster (needs vtracer)
+    try:
+        _rv = _dec.process_image(_src, mode="vector", remove_bg=True, denoise=0,
+                                 tol=52, target_dpi=300, native_dpi=300)
+        check("vector mode returns an SVG and a transparent raster",
+              bool(_rv.get("svg")) and _rv["rgba"].mode == "RGBA")
+    except Exception as _ve:
+        check("vector mode returns an SVG and a transparent raster", False,
+              "vtracer/pymupdf missing: " + str(_ve))
+except Exception as _e:
+    check("decals pipeline runs headless", False, repr(_e))
+# scale conversion (e.g. 3.75" / 1/18 -> 1/12 Classified = 1.5x)
+check("decals scale presets include 1/12 and 1/18",
+      _dec.SCALE_N.get('1/12 — 6" Classified') == 12
+      and _dec.SCALE_N.get('1/18 — 3.75" (ARAH / Retro)') == 18)
+check("3.75\"->Classified enlarges 1.5x", abs(_dec.scale_factor(18, 12) - 1.5) < 1e-6)
+check("Classified->3.75\" shrinks to ~0.667x", abs(_dec.scale_factor(12, 18) - 2/3) < 1e-6)
+check("the Decals tab has From/To scale pickers",
+      hasattr(ui, "decal_src_scale") and hasattr(ui, "decal_tgt_scale"))
+check("scale defaults to no resize (1/12 -> 1/12)",
+      abs(ui._decal_scale_factor() - 1.0) < 1e-6)
+try:
+    ui.decal_src_scale.set('1/18 — 3.75" (ARAH / Retro)')
+    ui.decal_tgt_scale.set('1/12 — 6" Classified')
+    root.update()
+    check("picking 3.75->Classified computes 1.5x in the UI",
+          abs(ui._decal_scale_factor() - 1.5) < 1e-6)
+    _rs = _dec.process_image(_src, mode="cleanup", remove_bg=False, denoise=0,
+                             target_dpi=300, native_dpi=300, size_scale=1.5)
+    check("size_scale enlarges the output 1.5x",
+          abs(_rs["rgba"].width - _src.width * 1.5) <= 2)
+    ui.decal_src_scale.set('1/12 — 6" Classified')
+except Exception as _e:
+    check("decals scale conversion works", False, repr(_e))
+# scanner streak removal (on) + colour cast correction (off = faithful) + AI upscale
+check("Decals: remove-lines ON, auto-colour OFF (faithful), AI-upscale toggle",
+      hasattr(ui, "decal_lines_var") and ui.decal_lines_var.get()
+      and hasattr(ui, "decal_wb_var") and not ui.decal_wb_var.get()
+      and hasattr(ui, "decal_ai_var") and not ui.decal_ai_var.get())
+check("AI-upscale helper is wired", callable(getattr(ui, "_decal_ai_upscale", None)))
+try:
+    import numpy as _np3
+    _c = _np3.full((60, 90, 3), (214, 240, 242), _np3.uint8)   # blue carrier
+    _c[20:50, 10:40] = (206, 22, 30)                            # a red decal
+    _fim = app.Image.fromarray(_c, "RGB")
+    _fr = _dec.process_image(_fim, mode="cleanup", remove_bg=True, balance=False,
+                             remove_lines=False, denoise=0, tol=52,
+                             target_dpi=300, native_dpi=300)
+    _fa = _np3.asarray(_fr["rgba"])
+    _px = _fa[35, 25]                       # centre of the red decal
+    check("faithful mode keeps the exact art colour (no white-balance shift)",
+          tuple(int(x) for x in _px[:3]) == (206, 22, 30) and _px[3] > 200,
+          tuple(int(x) for x in _px))
+except Exception as _e:
+    check("faithful colour fidelity", False, repr(_e))
+try:
+    import numpy as _np2
+    # flat grey with one thin dark full-height vertical streak
+    _g = _np2.full((60, 100, 3), 200, _np2.uint8)
+    _g[:, 50] = 150
+    _before = int(200 - _np2.asarray(_dec.destripe(
+        app.Image.fromarray(_g, "RGB")))[30, 50, 0])   # residual streak depth
+    _clean = _np2.asarray(_dec.destripe(app.Image.fromarray(_g, "RGB")))
+    check("destripe removes a vertical scanner line",
+          abs(int(_clean[30, 50, 0]) - int(_clean[30, 20, 0])) <= 12,
+          (int(_clean[30, 50, 0]), int(_clean[30, 20, 0])))
+    # white balance neutralises a blue-tinted grey
+    _t = app.Image.fromarray(_np2.full((10, 10, 3), (200, 224, 236), _np2.uint8),
+                             "RGB")
+    _wb = _np2.asarray(_dec.white_balance(_t)).astype(int)[5, 5]
+    check("white balance neutralises the film tint",
+          (max(_wb) - min(_wb)) < 14, tuple(int(x) for x in _wb))
+except Exception as _e:
+    check("destripe / white-balance run", False, repr(_e))
 
 # ---- the RAG map section and its loading bar ----------------------------
 print("RAG section + loading bar")

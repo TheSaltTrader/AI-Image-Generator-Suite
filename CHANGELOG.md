@@ -1,5 +1,33 @@
 # Changelog — AI Image Generator Suite
 
+## v2.13.0 — 2026-09-30
+- **New "Decals" tab — clean up scanned stickers into print-ready art.** Drop in
+  a scan (PDF, PNG, JPG, WEBP, BMP, TIFF; multi-page PDFs are handled page by
+  page) and get a clean, high-resolution image with a **transparent background**,
+  ready to print on decal paper. It restores your artwork faithfully — it does
+  **not** redraw it, so text and logos stay exactly as they are.
+  - **Two methods:** *Clean up* (denoise + high-res transparent image — best for
+    a whole mixed sheet, keeps small text readable) and *Vectorize* (traces flat
+    art to crisp, infinitely-scalable shapes — best for a logo or bold graphic;
+    also writes an **SVG**).
+  - **Convert for figure scale:** pick the scale the decals were made for and
+    the scale you want, and they're resized to match — e.g. **3.75" (1/18) →
+    Classified 6" (1/12) enlarges 1.5×**. Presets for 1/6, 1/10, 1/12, 1/16,
+    1/18, 1/24, 1/35, 1/48. (The source scale is usually printed on the sheet,
+    e.g. "1/12 Scale".)
+  - **Removes scanner streak lines** automatically (the thin vertical lines a
+    scanner leaves) without blurring the art.
+  - **Auto colour correction** neutralises the carrier film's tint so reds read
+    as red and whites as white.
+  - **Background/carrier removal** that keeps white ink, with a sensitivity
+    slider; output DPI (300–1200); optional trim-to-artwork.
+  - Results appear in the gallery and are saved (transparent) to an
+    `output\decals` folder.
+  - Note: home printers can't print white, so decals with white elements print
+    best on **white decal paper, cut to shape**. Where white ink is nearly the
+    same colour as the carrier film in the scan, it can't be perfectly separated
+    — untick "Remove background" for those and print the whole sheet.
+
 ## v2.12.0 — 2026-09-09
 - **Face swap is now one reliable method.** The "Qwen editor" and "Flux
   Kontext" swap options are removed. Those *re-render* the face with a large

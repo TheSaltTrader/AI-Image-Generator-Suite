@@ -98,11 +98,12 @@ from PIL.PngImagePlugin import PngInfo
 import self_update
 import engine_files
 import applog
+import decals
 from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.12.0"
+APP_VERSION = "2.13.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -142,6 +143,7 @@ def engine_python():
 
 MODELS = PROJECT / "models"
 OUTPUT = PROJECT / "output"
+DECALS_OUT = OUTPUT / "decals"         # cleaned/vectorized decal exports
 VARIATIONS = PROJECT / "variations"   # the user's saved-person store
 RAW_OUT = OUTPUT / "_raw"
 SETTINGS_FILE = APP_DIR / "settings.json"
@@ -3573,7 +3575,7 @@ class App:
         so the wheel over the panel scrolls the panel before the widget
         under the pointer can react."""
         for page in (self._page_gen, self._page_anim, self._page_border,
-                     self._page_edit):
+                     self._page_edit, self._page_decals):
             self._arm_wheel(page)
 
     def _scroll_page(self, notebook, title):
@@ -3644,6 +3646,7 @@ class App:
         self._page_anim = self._scroll_page(self.left_tabs, "Animation")
         self._page_border = self._scroll_page(self.left_tabs, "Borders")
         self._page_edit = self._scroll_page(self.left_tabs, "Edit image")
+        self._page_decals = self._scroll_page(self.left_tabs, "Decals")
         self.left_canvas = self._scroll_canvases[0]
         self._page_bottom = ttk.Frame(left_wrap, padding=(12, 0, 12, 8))
         self._page_bottom.grid(row=2, column=0, sticky=NSEW)
@@ -4686,6 +4689,8 @@ class App:
                   "error it caught, with the time. Send it along when "
                   "reporting a problem.")
 
+        self._build_decals_tab()
+
         # ---------- right column: preview + gallery ----------
         right = ttk.Frame(self.main_paned, padding=(0, 12, 12, 12))
         self.main_paned.add(right, weight=1)
@@ -4915,6 +4920,322 @@ class App:
                 self.right_paned.sashpos(0, pos)
         except Exception:
             applog.exception("init sashes failed")
+
+    # -------------------------------------------------- Decals tab
+    def _build_decals_tab(self):
+        """Clean up scanned stickers/decals into print-ready transparent art."""
+        self.decal_sources = []
+        left = self._page_decals
+        r = 0
+        head = ttk.Label(left, text="DECALS — clean up scanned stickers",
+                         style="Head.TLabel")
+        head.grid(row=r, sticky=W); r += 1
+        ttk.Label(left, text="Turn imperfect scans (PDF or image) into clean, "
+                  "print-ready decals with transparent backgrounds — ready for "
+                  "decal paper. It restores your artwork faithfully; it does "
+                  "not redraw it.", style="Dim.TLabel", wraplength=410,
+                  justify="left").grid(row=r, sticky=W, pady=(2, 8)); r += 1
+
+        srow = ttk.Frame(left); srow.grid(row=r, sticky="ew", pady=(0, 2)); r += 1
+        ttk.Button(srow, text="➕ Add files…",
+                   command=self._add_decal_sources).pack(side="left")
+        ttk.Button(srow, text="🗑 Clear",
+                   command=self._clear_decal_sources).pack(side="left", padx=(6, 0))
+        self.decal_count_var = StringVar(value="no files added")
+        ttk.Label(srow, textvariable=self.decal_count_var,
+                  style="Dim.TLabel").pack(side="left", padx=(8, 0))
+        self.decal_list = Listbox(left, height=4, exportselection=False,
+                                  activestyle="none")
+        self.decal_list.grid(row=r, sticky="ew", pady=(0, 8)); r += 1
+        self._tip(self.decal_list, "The scans queued for processing. PDF, PNG, "
+                                   "JPG, WEBP, BMP and TIFF are all supported; a "
+                                   "multi-page PDF is processed page by page.")
+
+        ttk.Label(left, text="Method", style="Head.TLabel").grid(row=r, sticky=W)
+        r += 1
+        self.decal_mode_var = StringVar(value="cleanup")
+        mrow = ttk.Frame(left); mrow.grid(row=r, sticky=W, pady=(2, 4)); r += 1
+        ttk.Radiobutton(mrow, text="Clean up (faithful, whole sheet)",
+                        variable=self.decal_mode_var,
+                        value="cleanup").pack(side="left")
+        ttk.Radiobutton(mrow, text="Vectorize (crisp — logos/flat art)",
+                        variable=self.decal_mode_var,
+                        value="vector").pack(side="left", padx=(10, 0))
+        self._tip(mrow, "Clean up: denoise + high-res transparent image — best "
+                        "for a whole mixed sheet (keeps small text readable). "
+                        "Vectorize: trace flat art to crisp, infinitely-"
+                        "scalable shapes — best for a logo or bold graphic; "
+                        "also writes an SVG.")
+
+        self.decal_removebg_var = BooleanVar(value=True)
+        ttk.Checkbutton(
+            left, text="Remove background / carrier film (keep white ink)",
+            variable=self.decal_removebg_var).grid(row=r, sticky=W); r += 1
+        trow = ttk.Frame(left); trow.grid(row=r, sticky="ew", pady=(2, 4)); r += 1
+        ttk.Label(trow, text="Background sensitivity",
+                  style="Dim.TLabel").pack(side="left")
+        self.decal_tol_var = IntVar(value=52)
+        self.decal_tol_lab = ttk.Label(trow, text="52", width=4,
+                                       style="Dim.TLabel")
+        ttk.Scale(trow, from_=20, to=110, variable=self.decal_tol_var,
+                  orient="horizontal", length=150,
+                  command=lambda _v: self.decal_tol_lab.configure(
+                      text=str(int(float(_v))))).pack(side="left", padx=6)
+        self.decal_tol_lab.pack(side="left")
+        self._tip(trow, "How aggressively the background colour is removed. "
+                        "Higher removes more of the carrier film but risks "
+                        "eating faint edges; lower is safer. If white parts go "
+                        "see-through, lower it or untick Remove background.")
+
+        self.decal_lines_var = BooleanVar(value=True)
+        _lc = ttk.Checkbutton(left, text="Remove scanner streak lines",
+                              variable=self.decal_lines_var)
+        _lc.grid(row=r, sticky=W); r += 1
+        self._tip(_lc, "Automatically remove the thin vertical lines/streaks a "
+                       "scanner leaves down the page, without blurring the art.")
+        self.decal_wb_var = BooleanVar(value=False)
+        _wc = ttk.Checkbutton(
+            left, text="Auto-correct colour (changes the colours — off = faithful)",
+            variable=self.decal_wb_var)
+        _wc.grid(row=r, sticky=W); r += 1
+        self._tip(_wc, "OFF (default) keeps your original colours EXACTLY — only "
+                       "the background is removed. ON neutralises the carrier "
+                       "film's tint, which shifts every colour, so leave it off "
+                       "for faithful reproduction.")
+        self.decal_ai_var = BooleanVar(value=False)
+        _ac = ttk.Checkbutton(
+            left, text="AI upscale for crisp enlargement (uses the engine)",
+            variable=self.decal_ai_var)
+        _ac.grid(row=r, sticky=W); r += 1
+        self._tip(_ac, "Enlarge crisply with the RealESRGAN model instead of a "
+                       "soft interpolation — it reconstructs detail and removes "
+                       "JPEG mush WITHOUT changing colours. Needs the engine "
+                       "running; best when scaling up (e.g. 3.75\" → Classified).")
+        self.decal_trim_var = BooleanVar(value=False)
+        ttk.Checkbutton(left, text="Trim to the artwork",
+                        variable=self.decal_trim_var).grid(row=r, sticky=W)
+        r += 1
+
+        drow = ttk.Frame(left); drow.grid(row=r, sticky=W, pady=(4, 4)); r += 1
+        ttk.Label(drow, text="Output DPI", style="Dim.TLabel").grid(row=0,
+                                                                    column=0)
+        self.decal_dpi_var = StringVar(value="300")
+        ttk.Combobox(drow, textvariable=self.decal_dpi_var, state="readonly",
+                     exportselection=False, width=6,
+                     values=["300", "600", "1200"]).grid(row=0, column=1,
+                                                         padx=(4, 12))
+        ttk.Label(drow, text="Scan DPI", style="Dim.TLabel").grid(row=0,
+                                                                  column=2)
+        self.decal_native_var = StringVar(value="300")
+        ttk.Combobox(drow, textvariable=self.decal_native_var, state="readonly",
+                     exportselection=False, width=6,
+                     values=["150", "200", "300", "600"]).grid(row=0, column=3,
+                                                              padx=(4, 0))
+        self._tip(drow, "Output DPI is the print resolution of the result; "
+                        "Scan DPI is what the original was scanned at (300 for "
+                        "these). Output ≥ scan enlarges it for crisp printing.")
+
+        ttk.Label(left, text="Convert for figure scale",
+                  style="Head.TLabel").grid(row=r, sticky=W, pady=(6, 0)); r += 1
+        _slabels = [p[0] for p in decals.SCALE_PRESETS]
+        f1 = ttk.Frame(left); f1.grid(row=r, sticky="ew", pady=(2, 2)); r += 1
+        f1.columnconfigure(1, weight=1)
+        ttk.Label(f1, text="From", style="Dim.TLabel").grid(row=0, column=0)
+        self.decal_src_scale = StringVar(value=_slabels[0])
+        ttk.Combobox(f1, textvariable=self.decal_src_scale, state="readonly",
+                     exportselection=False, values=_slabels).grid(
+            row=0, column=1, sticky="ew", padx=(6, 0))
+        f2 = ttk.Frame(left); f2.grid(row=r, sticky="ew", pady=(0, 2)); r += 1
+        f2.columnconfigure(1, weight=1)
+        ttk.Label(f2, text="To", style="Dim.TLabel").grid(row=0, column=0)
+        self.decal_tgt_scale = StringVar(value=_slabels[0])
+        ttk.Combobox(f2, textvariable=self.decal_tgt_scale, state="readonly",
+                     exportselection=False, values=_slabels).grid(
+            row=0, column=1, sticky="ew", padx=(6, 0))
+        self.decal_scale_lab = ttk.Label(left, text="", style="Dim.TLabel")
+        self.decal_scale_lab.grid(row=r, sticky=W, pady=(0, 2)); r += 1
+        self.decal_src_scale.trace_add(
+            "write", lambda *_a: self._update_decal_scale_lab())
+        self.decal_tgt_scale.trace_add(
+            "write", lambda *_a: self._update_decal_scale_lab())
+        self._update_decal_scale_lab()
+        self._tip(f1, "Resize the decals from the scale they were made for to "
+                      "the scale you want. GI Joe: 3.75\" figures are 1/18, "
+                      "Classified 6\" are 1/12 — so 3.75\" → Classified enlarges "
+                      "1.5×. The source scale is usually printed on the sheet "
+                      "(e.g. \"1/12 Scale\").")
+
+        self.decal_btn = ttk.Button(left, text="✨ Process decals",
+                                    command=self._process_decals)
+        self.decal_btn.grid(row=r, sticky="ew", pady=(8, 4)); r += 1
+        ttk.Button(left, text="📁 Open decals output folder",
+                   command=lambda: os.startfile(DECALS_OUT)
+                   if DECALS_OUT.exists() else
+                   self.decal_status_var.set("Nothing processed yet.")).grid(
+            row=r, sticky=W); r += 1
+        self.decal_status_var = StringVar(
+            value="Add scans, pick a method, then Process. Results appear in "
+                  "the gallery and are saved (transparent) to the decals folder.")
+        ttk.Label(left, textvariable=self.decal_status_var, style="Dim.TLabel",
+                  wraplength=410, justify="left").grid(row=r, sticky=W,
+                                                       pady=(6, 0)); r += 1
+
+    def _add_decal_sources(self):
+        paths = filedialog.askopenfilenames(
+            title="Add decal scans",
+            filetypes=[("Decals (PDF, images)",
+                        "*.pdf;*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff"),
+                       ("All files", "*.*")])
+        added = 0
+        for p in paths:
+            if p not in self.decal_sources:
+                self.decal_sources.append(p)
+                self.decal_list.insert("end", Path(p).name)
+                added += 1
+        self._update_decal_count()
+        if added:
+            self.decal_status_var.set(f"Added {added} file(s). Pick a method "
+                                      "and press Process decals.")
+
+    def _clear_decal_sources(self):
+        self.decal_sources = []
+        self.decal_list.delete(0, "end")
+        self._update_decal_count()
+
+    def _update_decal_count(self):
+        n = len(self.decal_sources)
+        self.decal_count_var.set(f"{n} file(s)" if n else "no files added")
+
+    def _decal_scale_factor(self):
+        s = decals.SCALE_N.get(self.decal_src_scale.get(), 12)
+        t = decals.SCALE_N.get(self.decal_tgt_scale.get(), 12)
+        return decals.scale_factor(s, t)
+
+    def _update_decal_scale_lab(self):
+        f = self._decal_scale_factor()
+        if abs(f - 1.0) < 1e-3:
+            self.decal_scale_lab.configure(text="No resize — same scale.")
+        else:
+            self.decal_scale_lab.configure(
+                text=f"Resize {f:.2f}× ({'enlarge' if f > 1 else 'shrink'} "
+                     "for the target scale).")
+
+    def _process_decals(self):
+        if getattr(self, "_decals_busy", False):
+            return
+        if not self.decal_sources:
+            self.decal_status_var.set("Add one or more scans first "
+                                      "(➕ Add files…).")
+            return
+        native = int(self.decal_native_var.get())
+        tgt_dpi = int(self.decal_dpi_var.get())
+        size_scale = self._decal_scale_factor()
+        ai = bool(self.decal_ai_var.get())
+        # AI upscale wants the FAITHFUL native-res image, then enlarges it with
+        # the ESRGAN model; without AI, the pipeline does its own LANCZOS resize
+        final_factor = size_scale * max(1.0, tgt_dpi / native)
+        opts = dict(mode=self.decal_mode_var.get(),
+                    remove_bg=self.decal_removebg_var.get(),
+                    denoise=2, tol=int(self.decal_tol_var.get()),
+                    target_dpi=(native if ai else tgt_dpi),
+                    native_dpi=native,
+                    do_trim=self.decal_trim_var.get(),
+                    size_scale=(1.0 if ai else size_scale),
+                    remove_lines=self.decal_lines_var.get(),
+                    balance=self.decal_wb_var.get())
+        srcs = list(self.decal_sources)
+        vector = opts["mode"] == "vector"
+        ai_warn = ai and not engine_alive()
+        self._decals_busy = True
+        self.decal_btn.state(["disabled"])
+        self.decal_status_var.set("Processing…"
+                                  + (" (first vectorize can take a moment)"
+                                     if vector else ""))
+        DECALS_OUT.mkdir(parents=True, exist_ok=True)
+
+        def work():
+            done, err = 0, None
+            try:
+                for i, src in enumerate(srcs):
+                    self.ui_queue.put(("decal_status",
+                                       f"Processing {i + 1}/{len(srcs)}: "
+                                       f"{Path(src).name}…"))
+                    for label, img in decals.iter_source_images(src):
+                        res = decals.process_image(img, **opts)
+                        rgba = res["rgba"]
+                        if ai and not res.get("svg"):
+                            self.ui_queue.put((
+                                "decal_status", f"AI-upscaling {label}…"))
+                            rgba = self._decal_ai_upscale(rgba, final_factor)
+                        out_png = DECALS_OUT / f"{label}.png"
+                        rgba.save(out_png)
+                        if res.get("svg"):
+                            (DECALS_OUT / f"{label}.svg").write_text(
+                                res["svg"], encoding="utf-8")
+                        # a white-backed preview for the gallery (the file on
+                        # disk keeps its transparency)
+                        prev = Image.alpha_composite(
+                            Image.new("RGBA", rgba.size, (255, 255, 255, 255)),
+                            rgba).convert("RGB")
+                        self.ui_queue.put((
+                            "decal_add", prev,
+                            {"model": "decal", "seed": label,
+                             "user_prompt": label}, str(out_png)))
+                        done += 1
+            except Exception as e:
+                applog.exception("decal processing failed")
+                err = str(e)
+            self.ui_queue.put(("decal_done", done, err, ai_warn))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _decal_ai_upscale(self, rgba, factor=1.0):
+        """Enlarge a decal crisply with the RealESRGAN model via the engine,
+        colours preserved (alpha upscaled alongside). ESRGAN gives 4×, then a
+        LANCZOS step trims to the requested factor. Returns the input unchanged
+        if the engine or the model isn't available."""
+        if not engine_alive() or not (MODELS / "upscale_models"
+                                       / UPSCALE_MODEL).exists():
+            return rgba
+        try:
+            name = self._upload_pil(rgba.convert("RGB"), "cbac_decal_up.png")
+            graph = {
+                "10": {"class_type": "LoadImage", "inputs": {"image": name}},
+                "11": {"class_type": "UpscaleModelLoader",
+                       "inputs": {"model_name": UPSCALE_MODEL}},
+                "12": {"class_type": "ImageUpscaleWithModel",
+                       "inputs": {"upscale_model": ["11", 0],
+                                  "image": ["10", 0]}},
+                "13": {"class_type": "SaveImage",
+                       "inputs": {"images": ["12", 0]}},
+            }
+            ws = websocket.WebSocket()
+            ws.connect(f"ws://{ENGINE_HOST}:{ENGINE_PORT}/ws"
+                       f"?clientId={self.client_id}", timeout=30)
+            try:
+                r = requests.post(f"{ENGINE_URL}/prompt",
+                                  json={"prompt": graph,
+                                        "client_id": self.client_id},
+                                  timeout=30)
+                r.raise_for_status()
+                imgs = self._await_images(ws, r.json()["prompt_id"], timeout=900)
+            finally:
+                ws.close()
+            if not imgs:
+                return rgba
+            up_rgb = self._fetch_image(imgs[0]).convert("RGB")
+            up_alpha = rgba.split()[3].resize(up_rgb.size, Image.LANCZOS)
+            up = up_rgb.convert("RGBA")
+            up.putalpha(up_alpha)
+            target_w = max(1, int(round(rgba.width * factor)))
+            if up.width != target_w:
+                up = up.resize((target_w,
+                                max(1, int(up.height * target_w / up.width))),
+                               Image.LANCZOS)
+            return up
+        except Exception:
+            applog.exception("decal AI upscale failed")
+            return rgba
 
     # -------------------------------------------------- persistence
     def _get(self, box):
@@ -9060,6 +9381,40 @@ class App:
                     else:
                         self.status_var.set("Gallery already shows all the "
                                             "output images.")
+                elif kind == "decal_status":
+                    self.decal_status_var.set(msg[1])
+                elif kind == "decal_add":
+                    # a finished decal — preview (on white) into the gallery;
+                    # the transparent file is already saved to the decals folder
+                    _, img, params, path = msg
+                    self.session.append((img, params, path))
+                    if not self.tagged:
+                        self.current = len(self.session) - 1
+                        self._show_current()
+                    self._add_thumb(len(self.session) - 1)
+                    self._update_editor_btn()
+                elif kind == "decal_done":
+                    _, n, err, ai_warn = msg
+                    self._decals_busy = False
+                    try:
+                        self.decal_btn.state(["!disabled"])
+                    except Exception:
+                        pass
+                    if err:
+                        self.decal_status_var.set(
+                            f"Finished {n}, then hit an error: {err}. If it "
+                            "mentions PyMuPDF or vtracer, that add-on isn't "
+                            "available in this build.")
+                    else:
+                        svg = " + SVG" if self.decal_mode_var.get() == "vector" \
+                            else ""
+                        note = (" (AI upscale was skipped — the engine wasn't "
+                                "running; start it and re-run for crisp "
+                                "enlargement)" if ai_warn else "")
+                        self.decal_status_var.set(
+                            f"Done — {n} decal image(s) saved (transparent PNG"
+                            f"{svg}) to the decals output folder, and shown in "
+                            f"the gallery.{note}")
                 elif kind == "done":
                     self.busy = False
                     self.go_btn.state(["!disabled"])
@@ -10533,6 +10888,26 @@ def _app_icon_path():
 
 
 def main():
+    # headless check that the Decals pipeline + its bundled deps are present
+    # in this build (used to verify the frozen exe; exits without a GUI)
+    if "--selftest-decals" in sys.argv:
+        import numpy as _np
+        ok = {}
+        for _m in ("pymupdf", "vtracer"):
+            try:
+                __import__(_m); ok[_m] = True
+            except Exception as _e:
+                ok[_m] = f"MISSING: {_e}"
+        try:
+            _im = Image.fromarray(
+                _np.full((40, 60, 3), (214, 240, 242), _np.uint8), "RGB")
+            _r = decals.process_image(_im, mode="cleanup", denoise=0)
+            ok["cleanup"] = bool(_r["rgba"].mode == "RGBA")
+        except Exception as _e:
+            ok["cleanup"] = f"FAILED: {_e}"
+        print("DECALS-SELFTEST", ok)
+        sys.exit(0 if ok.get("pymupdf") is True and ok.get("cleanup") is True
+                 else 1)
     # a stable AppUserModelID so Windows groups and pins the app under its
     # own icon (separate from the exe icon and the window icon — all three
     # must be set for the icon to be consistent everywhere)
