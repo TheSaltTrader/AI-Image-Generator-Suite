@@ -132,14 +132,16 @@ def _carrier_alpha(a_rgb, carrier, tol=52, soft=18):
     return alpha.astype(np.uint8)
 
 
-def destripe(img, strength=1.0, clip=38, window=25):
-    """Remove thin, full-height vertical scanner lines/streaks.
+def destripe(img, window=25, z_thresh=6.0):
+    """Remove thin, full-height vertical scanner streak lines SURGICALLY:
+    only the few columns that are genuine streaks are touched; every other
+    column is left BYTE-IDENTICAL.
 
-    Each column of a stripe carries a roughly-constant offset from a
-    horizontally-smoothed baseline; we estimate that per-column offset as the
-    MEDIAN down the column and subtract it. A real, localised vertical edge is
-    NOT consistent down the whole column, so its median offset is ~0 and it is
-    preserved; the offset is clipped so only subtle streaks (not bold art) move."""
+    A streak column differs consistently from a horizontally-smoothed baseline
+    all the way down (high median offset), and stands out from its neighbours.
+    We flag those by a robust z-score of the per-column offset magnitude, then
+    replace each flagged column by interpolating its two nearest CLEAN columns —
+    so the defect is filled from the real art around it, nothing else changes."""
     a = np.asarray(img.convert("RGB")).astype(np.float32)
     h, w, _ = a.shape
     k = window if window % 2 else window + 1
@@ -147,10 +149,44 @@ def destripe(img, strength=1.0, clip=38, window=25):
     ap = np.pad(a, ((0, 0), (pad, pad), (0, 0)), mode="edge")
     cs = np.cumsum(ap, axis=1)
     cs = np.pad(cs, ((0, 0), (1, 0), (0, 0)))
-    smooth = (cs[:, k:, :] - cs[:, :-k, :]) / k      # horizontal moving average
-    bias = np.median(a - smooth[:, :w, :], axis=0, keepdims=True)  # per column
-    bias = np.clip(bias, -clip, clip) * strength
-    return Image.fromarray(np.clip(a - bias, 0, 255).astype(np.uint8), "RGB")
+    smooth = (cs[:, k:, :] - cs[:, :-k, :]) / k
+    bias = np.median(a - smooth[:, :w, :], axis=0)          # (w, 3)
+    mag = np.abs(bias).sum(axis=1)                          # (w,) streak strength
+    med = np.median(mag)
+    mad = np.median(np.abs(mag - med)) + 1e-3
+    z = (mag - med) / (1.4826 * mad)
+    streak = z > z_thresh                                   # strong anomalies
+    # keep only THIN runs (<=3px) — a real scanner line is 1-3px; wider runs
+    # are art edges (a bar/letter) and must be left alone
+    x = 0
+    while x < w:
+        if streak[x]:
+            run = x
+            while run < w and streak[run]:
+                run += 1
+            if run - x > 3:
+                streak[x:run] = False
+            x = run
+        else:
+            x += 1
+    idx = np.where(streak)[0]
+    if len(idx) == 0 or len(idx) > w // 8:                  # none, or not streaky
+        return img.convert("RGB")
+    out = a.copy()
+    for x in idx:
+        l = x - 1
+        while l >= 0 and streak[l]:
+            l -= 1
+        r = x + 1
+        while r < w and streak[r]:
+            r += 1
+        if l >= 0 and r < w:
+            out[:, x] = (a[:, l] + a[:, r]) / 2
+        elif l >= 0:
+            out[:, x] = a[:, l]
+        elif r < w:
+            out[:, x] = a[:, r]
+    return Image.fromarray(np.clip(out, 0, 255).astype(np.uint8), "RGB")
 
 
 def white_balance(img, carrier=None, amount=1.0):
@@ -286,14 +322,31 @@ def vectorize(rgba, target_px=2400, filter_speckle=12, color_precision=8,
 def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
                   denoise=2, tol=52, target_dpi=600, native_dpi=300,
                   do_trim=False, size_scale=1.0, remove_lines=True,
-                  balance=True):
+                  balance=True, exact=False):
     """Run one image through the pipeline. Returns a dict with 'rgba' (and
     'svg' for vector mode). size_scale rescales the result for a different
-    figure scale (e.g. 1.5 to take a 3.75\" decal to 1/12 Classified)."""
-    cleaned = clean(img, denoise=denoise, remove_lines=remove_lines,
-                    balance=balance, carrier=carrier)
+    figure scale (e.g. 1.5 to take a 3.75\" decal to 1/12 Classified).
+
+    exact=True is the pixel-faithful path: the art's RGB is left BYTE-IDENTICAL
+    to the scan (no denoise, no sharpen, no colour change) — only the alpha
+    (background) is computed, and the only RGB change allowed is removing the
+    scanner streak lines when remove_lines is on. Use it when fidelity must be
+    perfect."""
+    orig = _auto_orient(img).convert("RGB")
+    if carrier is None:
+        carrier = detect_carrier(orig)
+    if exact:
+        cleaned = destripe(orig) if remove_lines else orig
+    else:
+        cleaned = clean(img, denoise=denoise, remove_lines=remove_lines,
+                        balance=balance, carrier=carrier)
     if remove_bg:
-        rgba = remove_background(cleaned, carrier=carrier, tol=tol)
+        # the transparency matte is computed from the ORIGINAL tinted image and
+        # applied to the (possibly colour-processed) RGB — otherwise white-balance
+        # erases the very tint the keyer uses to find the carrier film
+        alpha = _carrier_alpha(np.asarray(orig), carrier, tol=tol)
+        rgba = Image.fromarray(
+            np.dstack([np.asarray(cleaned.convert("RGB")), alpha]), "RGBA")
     else:
         rgba = cleaned.convert("RGBA")
     if do_trim:

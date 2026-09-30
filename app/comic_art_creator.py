@@ -103,7 +103,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.13.0"
+APP_VERSION = "2.13.1"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -5134,15 +5134,20 @@ class App:
         # AI upscale wants the FAITHFUL native-res image, then enlarges it with
         # the ESRGAN model; without AI, the pipeline does its own LANCZOS resize
         final_factor = size_scale * max(1.0, tgt_dpi / native)
-        opts = dict(mode=self.decal_mode_var.get(),
+        # cleanup with auto-colour OFF = EXACT pixel-faithful (art RGB untouched,
+        # only background + thin streak lines change); auto-colour ON transforms
+        mode = self.decal_mode_var.get()
+        exact = (mode == "cleanup" and not self.decal_wb_var.get())
+        opts = dict(mode=mode,
                     remove_bg=self.decal_removebg_var.get(),
-                    denoise=2, tol=int(self.decal_tol_var.get()),
+                    denoise=(0 if exact else 2), tol=int(self.decal_tol_var.get()),
                     target_dpi=(native if ai else tgt_dpi),
                     native_dpi=native,
                     do_trim=self.decal_trim_var.get(),
                     size_scale=(1.0 if ai else size_scale),
                     remove_lines=self.decal_lines_var.get(),
-                    balance=self.decal_wb_var.get())
+                    balance=self.decal_wb_var.get(),
+                    exact=exact)
         srcs = list(self.decal_sources)
         vector = opts["mode"] == "vector"
         ai_warn = ai and not engine_alive()

@@ -1,5 +1,17 @@
 # Changelog — AI Image Generator Suite
 
+## v2.13.1 — 2026-09-30
+- **Decals cleanup is now pixel-faithful.** With auto-colour off (the default),
+  your artwork's colours are left **byte-for-byte identical** to the scan — only
+  the background is made transparent and the thin scanner streak-lines removed.
+  (Verified: 100% of the art pixels match the original.)
+- **Fixed:** turning auto-colour on used to stop the background from being
+  removed. The transparency now comes from the original scan, so it works with
+  auto-colour either way.
+- **Scanner streak removal is now surgical** — it only touches the actual thin
+  streak columns (filling them from the real art beside them) and never alters a
+  clean scan, so nothing else in the image changes.
+
 ## v2.13.0 — 2026-09-30
 - **New "Decals" tab — clean up scanned stickers into print-ready art.** Drop in
   a scan (PDF, PNG, JPG, WEBP, BMP, TIFF; multi-page PDFs are handled page by

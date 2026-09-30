@@ -1003,6 +1003,24 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Decals PIXEL-FAITHFUL restoration (v2.13.1).** User: "polish restoration,
+  compare pixel by pixel, must be perfect" (after rejecting vector as colour-
+  unfaithful; I declined a REDRAW of the copyrighted GI Joe/Cobra/commercial
+  decal art — that's reproduction — restoration of their own scan is fine). NEW
+  `exact=True` path in `process_image`: RGB left byte-identical (no denoise/
+  unsharp/white-balance), only alpha + optional destripe change. Tab cleanup uses
+  exact when auto-colour is OFF (default). BUG FIXED: white_balance neutralised
+  the carrier tint BEFORE `_carrier_alpha` (which keys BY tint) → carrier not
+  removed when auto-colour on; now the transparency MATTE is computed from the
+  ORIGINAL tinted image and applied to the (optionally colour-processed) RGB, so
+  keying works either way. DESTRIPE rewritten SURGICAL: robust z-score of per-
+  column offset magnitude, keep only THIN runs (<=3px), interpolate each streak
+  column from nearest clean neighbours; leaves a streak-free scan 100% untouched
+  (no false positives — the old version nudged 58% of columns). VERIFIED on the
+  real KW p2 sheet: opaque art pixels 100.0% byte-identical to the scan; destripe
+  touched 37/2546 cols (1%); streak col 110->197. Degenerate perfectly-FLAT test
+  fields explode the z-score (mad=0) — test on NOISY fields (real scans have
+  noise). update_ui 279. `_final/sheets` regenerated exact.
 - **DECALS tab — scan cleanup / vectorize to print-ready transparent art
   (v2.13.0).** User: digitize imperfect scanned GI Joe waterslide decal sheets
   (6 PDFs in `Stickers/`, all Fujitsu ScanSnap JPEG-in-PDF at ~300 DPI, flat

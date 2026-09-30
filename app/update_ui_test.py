@@ -430,15 +430,20 @@ except Exception as _e:
     check("faithful colour fidelity", False, repr(_e))
 try:
     import numpy as _np2
-    # flat grey with one thin dark full-height vertical streak
-    _g = _np2.full((60, 100, 3), 200, _np2.uint8)
-    _g[:, 50] = 150
-    _before = int(200 - _np2.asarray(_dec.destripe(
-        app.Image.fromarray(_g, "RGB")))[30, 50, 0])   # residual streak depth
-    _clean = _np2.asarray(_dec.destripe(app.Image.fromarray(_g, "RGB")))
-    check("destripe removes a vertical scanner line",
-          abs(int(_clean[30, 50, 0]) - int(_clean[30, 20, 0])) <= 12,
-          (int(_clean[30, 50, 0]), int(_clean[30, 20, 0])))
+    _rng = _np2.random.default_rng(1)
+    _bg = (200 + _rng.integers(-8, 9, size=(80, 120, 1))).astype(_np2.uint8) \
+        .repeat(3, 2)
+    # surgical: a streak-free scan must be left completely untouched
+    _nd = _np2.asarray(_dec.destripe(app.Image.fromarray(_bg, "RGB")))
+    check("destripe never touches a streak-free scan (no false positives)",
+          bool((_nd == _bg).all()))
+    # a real 1px vertical streak is removed, and ONLY that column changes
+    _st = _bg.copy(); _st[:, 60] = 110
+    _sd = _np2.asarray(_dec.destripe(app.Image.fromarray(_st, "RGB")))
+    _cols = _np2.where(_np2.any(_sd != _st, axis=(0, 2)))[0]
+    check("destripe removes a vertical scanner line (only that column changes)",
+          list(_cols) == [60] and abs(int(_sd[40, 60, 0]) - 200) <= 15,
+          (list(_cols), int(_sd[40, 60, 0])))
     # white balance neutralises a blue-tinted grey
     _t = app.Image.fromarray(_np2.full((10, 10, 3), (200, 224, 236), _np2.uint8),
                              "RGB")
