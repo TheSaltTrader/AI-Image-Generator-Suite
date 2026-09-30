@@ -1,5 +1,17 @@
 # Changelog — AI Image Generator Suite
 
+## v2.13.2 — 2026-09-30
+- **Cleaner edges on cleaned decals.** A new "Clean up edges (remove halo /
+  speckle)" option (on by default) drops the faint carrier-film halo that hugged
+  the artwork and removes stray background speckles — only the transparency is
+  affected, so your art colours stay untouched.
+- **More scan lines caught.** The scanner streak-line removal is a bit more
+  sensitive now, while still surgical — it only fills genuine thin streak
+  columns and never alters a clean scan.
+- **New "🎨 Redraw to vector (SVG)" button** in the Decals tab — one click to
+  trace the loaded image(s) into clean, scalable SVG (best on your own clean,
+  flat artwork).
+
 ## v2.13.1 — 2026-09-30
 - **Decals cleanup is now pixel-faithful.** With auto-colour off (the default),
   your artwork's colours are left **byte-for-byte identical** to the scan — only

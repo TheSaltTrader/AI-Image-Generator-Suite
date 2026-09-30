@@ -428,6 +428,29 @@ try:
           tuple(int(x) for x in _px))
 except Exception as _e:
     check("faithful colour fidelity", False, repr(_e))
+# dedicated "Redraw to vector" button + forced mode
+check("Decals has a Redraw-to-vector button",
+      hasattr(ui, "decal_vec_btn"))
+ui.decal_sources = []
+ui._process_decals("vector")   # force_mode accepted; graceful with no sources
+check("redraw-to-vector force_mode is accepted (no-op with no files)",
+      "add" in ui.decal_status_var.get().lower())
+# edge/halo cleanup toggle + clean_matte
+check("Decals has an edge/halo cleanup toggle, on by default",
+      hasattr(ui, "decal_tidy_var") and ui.decal_tidy_var.get())
+try:
+    import numpy as _np4
+    _ca = _np4.zeros((40, 40, 4), _np4.uint8)
+    _ca[10:30, 10:30] = (0, 0, 0, 255)      # solid opaque art block
+    _ca[2, 2] = (0, 0, 0, 255)              # a stray 1px speckle in the bg
+    _ca[20, 35, 3] = 40                     # a faint halo pixel
+    _cleaned = _np4.asarray(_dec.clean_matte(app.Image.fromarray(_ca, "RGBA")))
+    check("clean_matte removes stray background speckle", _cleaned[2, 2, 3] == 0)
+    check("clean_matte drops the faint halo pixel", _cleaned[20, 35, 3] == 0)
+    check("clean_matte keeps the solid art interior opaque",
+          _cleaned[20, 20, 3] == 255)
+except Exception as _e:
+    check("clean_matte works", False, repr(_e))
 try:
     import numpy as _np2
     _rng = _np2.random.default_rng(1)

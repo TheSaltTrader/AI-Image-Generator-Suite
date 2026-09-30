@@ -1003,6 +1003,21 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Decals edge/halo cleanup + Redraw-to-vector button (v2.13.2).** User: final
+  sheets have "pixel noise around the images" + residual scan lines. Diagnosed
+  (on grey checker) = a faint semi-transparent CARRIER HALO hugging the art +
+  bg speckle (the soft-alpha keying fringe), NOT interior noise. NEW
+  `clean_matte(rgba, alpha_floor=70, despeckle=3)`: alpha<floor→0 (drop the
+  halo), morphological open (kill speckle) + close (fill pinholes) on the ALPHA
+  only — RGB/opaque-interior untouched, so pixel-faithful holds. Wired via
+  `tidy_matte` (process_image, default True) + tab toggle "Clean up edges". Also
+  destripe `z_thresh` 6→5 (catches fainter lines, still surgical + thin-run≤3;
+  across sheets touches 0.2–4.5% of cols, streak-free untouched). NEW "🎨 Redraw
+  to vector (SVG)" button = `_process_decals(force_mode="vector")` (mechanical
+  vtracer trace of the user's OWN image — dual-use utility). IP: DECLINED an
+  "AI redraw of the copyrighted decal art / LLM-gated reproduction" feature (the
+  GI Joe/Cobra/commercial designs) — building a reproduction tool is off-limits;
+  restoring the user's own scan + a general trace button are fine. update_ui 285.
 - **Decals PIXEL-FAITHFUL restoration (v2.13.1).** User: "polish restoration,
   compare pixel by pixel, must be perfect" (after rejecting vector as colour-
   unfaithful; I declined a REDRAW of the copyrighted GI Joe/Cobra/commercial

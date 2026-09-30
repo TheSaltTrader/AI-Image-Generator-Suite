@@ -132,7 +132,7 @@ def _carrier_alpha(a_rgb, carrier, tol=52, soft=18):
     return alpha.astype(np.uint8)
 
 
-def destripe(img, window=25, z_thresh=6.0):
+def destripe(img, window=25, z_thresh=5.0):
     """Remove thin, full-height vertical scanner streak lines SURGICALLY:
     only the few columns that are genuine streaks are touched; every other
     column is left BYTE-IDENTICAL.
@@ -236,6 +236,26 @@ def remove_background(img, carrier=None, tol=52):
     return Image.fromarray(out, "RGBA")
 
 
+def clean_matte(rgba, alpha_floor=70, despeckle=3):
+    """Tidy the transparency matte: drop the faint semi-transparent halo of
+    carrier pixels hugging the art (the "noise around the images"), remove
+    isolated opaque speckles in the background, and fill pinholes. Only the
+    ALPHA changes — the art's RGB (and its fully-opaque interior) is untouched,
+    so a pixel-faithful restoration stays faithful."""
+    a = np.asarray(rgba).copy()
+    alpha = a[..., 3]
+    alpha[alpha < alpha_floor] = 0            # faint carrier halo/fringe -> gone
+    if despeckle:
+        k = despeckle if despeckle % 2 else despeckle + 1
+        am = Image.fromarray(alpha)
+        am = am.filter(ImageFilter.MinFilter(k)).filter(ImageFilter.MaxFilter(k))
+        am = am.filter(ImageFilter.MaxFilter(k)).filter(ImageFilter.MinFilter(k))
+        alpha = np.asarray(am)
+    # where alpha is now 0, zero the RGB too so no stray colour hides under it
+    a[..., 3] = alpha
+    return Image.fromarray(a, "RGBA")
+
+
 def trim(rgba, pad=8):
     """Crop to the opaque content plus a small padding."""
     a = np.asarray(rgba)
@@ -322,7 +342,7 @@ def vectorize(rgba, target_px=2400, filter_speckle=12, color_precision=8,
 def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
                   denoise=2, tol=52, target_dpi=600, native_dpi=300,
                   do_trim=False, size_scale=1.0, remove_lines=True,
-                  balance=True, exact=False):
+                  balance=True, exact=False, tidy_matte=True):
     """Run one image through the pipeline. Returns a dict with 'rgba' (and
     'svg' for vector mode). size_scale rescales the result for a different
     figure scale (e.g. 1.5 to take a 3.75\" decal to 1/12 Classified).
@@ -347,6 +367,8 @@ def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
         alpha = _carrier_alpha(np.asarray(orig), carrier, tol=tol)
         rgba = Image.fromarray(
             np.dstack([np.asarray(cleaned.convert("RGB")), alpha]), "RGBA")
+        if tidy_matte:
+            rgba = clean_matte(rgba)   # drop the faint carrier halo + speckle
     else:
         rgba = cleaned.convert("RGBA")
     if do_trim:

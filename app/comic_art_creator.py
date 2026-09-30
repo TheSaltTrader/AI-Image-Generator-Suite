@@ -103,7 +103,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.13.1"
+APP_VERSION = "2.13.2"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -5011,6 +5011,15 @@ class App:
                        "soft interpolation — it reconstructs detail and removes "
                        "JPEG mush WITHOUT changing colours. Needs the engine "
                        "running; best when scaling up (e.g. 3.75\" → Classified).")
+        self.decal_tidy_var = BooleanVar(value=True)
+        _tc = ttk.Checkbutton(
+            left, text="Clean up edges (remove halo / speckle)",
+            variable=self.decal_tidy_var)
+        _tc.grid(row=r, sticky=W); r += 1
+        self._tip(_tc, "Tidy the cut-out: drop the faint carrier-film halo that "
+                       "hugs the art and remove stray background speckles, for a "
+                       "clean edge. Only the transparency is affected — your art "
+                       "colours stay untouched.")
         self.decal_trim_var = BooleanVar(value=False)
         ttk.Checkbutton(left, text="Trim to the artwork",
                         variable=self.decal_trim_var).grid(row=r, sticky=W)
@@ -5068,6 +5077,15 @@ class App:
         self.decal_btn = ttk.Button(left, text="✨ Process decals",
                                     command=self._process_decals)
         self.decal_btn.grid(row=r, sticky="ew", pady=(8, 4)); r += 1
+        self.decal_vec_btn = ttk.Button(
+            left, text="🎨 Redraw to vector (SVG)",
+            command=lambda: self._process_decals("vector"))
+        self.decal_vec_btn.grid(row=r, sticky="ew", pady=(0, 4)); r += 1
+        self._tip(self.decal_vec_btn,
+                  "Trace the loaded image(s) into clean, infinitely-scalable "
+                  "vector shapes and save an SVG (plus a transparent PNG). Best "
+                  "on your own clean, flat artwork; a noisy or low-contrast scan "
+                  "traces less cleanly. Same as choosing the Vectorize method.")
         ttk.Button(left, text="📁 Open decals output folder",
                    command=lambda: os.startfile(DECALS_OUT)
                    if DECALS_OUT.exists() else
@@ -5120,11 +5138,11 @@ class App:
                 text=f"Resize {f:.2f}× ({'enlarge' if f > 1 else 'shrink'} "
                      "for the target scale).")
 
-    def _process_decals(self):
+    def _process_decals(self, force_mode=None):
         if getattr(self, "_decals_busy", False):
             return
         if not self.decal_sources:
-            self.decal_status_var.set("Add one or more scans first "
+            self.decal_status_var.set("Add one or more images first "
                                       "(➕ Add files…).")
             return
         native = int(self.decal_native_var.get())
@@ -5136,7 +5154,7 @@ class App:
         final_factor = size_scale * max(1.0, tgt_dpi / native)
         # cleanup with auto-colour OFF = EXACT pixel-faithful (art RGB untouched,
         # only background + thin streak lines change); auto-colour ON transforms
-        mode = self.decal_mode_var.get()
+        mode = force_mode or self.decal_mode_var.get()
         exact = (mode == "cleanup" and not self.decal_wb_var.get())
         opts = dict(mode=mode,
                     remove_bg=self.decal_removebg_var.get(),
@@ -5147,7 +5165,8 @@ class App:
                     size_scale=(1.0 if ai else size_scale),
                     remove_lines=self.decal_lines_var.get(),
                     balance=self.decal_wb_var.get(),
-                    exact=exact)
+                    exact=exact,
+                    tidy_matte=self.decal_tidy_var.get())
         srcs = list(self.decal_sources)
         vector = opts["mode"] == "vector"
         ai_warn = ai and not engine_alive()
