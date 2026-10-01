@@ -1,5 +1,41 @@
 # Changelog — AI Image Generator Suite
 
+## v2.15.0 — 2026-10-01
+- **AI redraw for low-quality decal scans → clean SVG at the printed size.**
+  The Decals tab's "🖊 Redraw to vector (AI → SVG)" button now does what its
+  name says: every decal on the scan is cut out, redrawn by the image model
+  (the Image-generation tab's model + LoRAs, image-to-image on the scan so the
+  art stays yours), traced to vector and put back on the sheet at the correct
+  physical size for the chosen figure scale. The scan fixes each decal's
+  outline and, by default, its **exact colours** ("Keep the scan's exact
+  colours" snaps the redraw to the scan's own palette; film-tinted white ink
+  becomes pure white, which printers leave bare). A **Redraw strength** slider
+  sets how much the AI may change (0.35 default: clean + sharpen; higher
+  re-imagines more). Output per sheet: `<name>_redraw.svg/.png` (every decal in
+  place, width/height in inches) plus a `<name>_redraw/` folder with each decal
+  as its own SVG + PNG. Cancel on the Image tab stops it. The plain trace is
+  still there as the *Vectorize* method of "✨ Process decals".
+- **Tabs: all the same width, with ◀ ▶ arrows.** The left panel's tabs are now
+  drawn equal-width across the panel; when more tabs are added than fit (or
+  the panel is narrowed) the arrows scroll the row and the selected tab is
+  kept in view. The mouse wheel over the tabs scrolls them too.
+- **Red action buttons on the Decals tab.** Process decals, Redraw to vector
+  and Generate → SVG now use the same red style as the other tabs' generate
+  buttons.
+- **Vector files state their printed size.** Every SVG the Decals tab writes
+  (Vectorize, AI redraw) now carries its width/height in inches with the
+  figure-scale conversion applied, and the PNGs carry their DPI — so they open
+  and print at size instead of at "whatever the app assumes".
+- **Fixed:** the Decals "AI upscale" option silently did nothing (it called
+  helpers that live on the generator, and swallowed the error); it now
+  enlarges with RealESRGAN as described.
+- **Fixed:** with "AI upscale" ticked, the Vectorize method lost the figure-
+  scale conversion. The AI enlargement now applies to raster output only
+  (vector output is already scalable) and the scale is always applied.
+- **Fixed:** a decal that filled most of its picture could trace as a solid
+  rectangle (the tracer paints the dominant colour as a base layer). The
+  tracer now works on a transparent margin, so the background stays empty.
+
 ## v2.14.1 — 2026-10-01
 - **"Redraw to vector" is now "🖊 Trace to vector (SVG)".** The button name and
   tooltip now make clear it *traces* (reproduces) the image you loaded into clean

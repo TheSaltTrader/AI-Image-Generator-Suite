@@ -68,7 +68,13 @@ models/  (checkpoints, loras, vae, ipadapter, clip_vision, text_encoders,
 2. **Animation** — SVD-style motion from an image.
 3. **Borders** — ornate frame generation + center cut-out.
 4. **Edit image** — Qwen Image Edit / Flux Kontext on a loaded image.
-5. **Decals** — scan → print-ready (see §3).
+5. **Decals** — scan → print-ready, plus the AI redraw to SVG (see §3).
+
+The left tabs are a `ttk.Notebook` whose own headers are hidden
+(`Left.TNotebook` style, empty `.Tab` layout); `TabStrip` draws them above it
+at ONE shared width with ◀ ▶ arrows that scroll the row when the tabs no
+longer fit (the selected tab is kept in view). Add a page with `_scroll_page`
+and the strip picks it up — never wider headers, never a wrapped row.
 
 Cross-cutting: Incognito toggle, resizable panels (ttk.PanedWindow), window/sash
 persistence, batch ETA, "keep model in VRAM" (`--highvram`) pref, self-updater
@@ -95,18 +101,45 @@ exe** via the spec (`collect_all`). Verify in a frozen build with
 - **Vectorize (trace):** `vectorize()` — median+quantize → vtracer → strip
   magenta/halo paths → pymupdf alpha render → transparent SVG+PNG. Good for a
   single clean logo; whole dense sheets drift in colour (it's a trace, not a
-  redraw).
+  redraw). The input is traced on a 25%-a-side key-coloured margin (undone
+  with a `<g transform>`): vtracer's stacked mode paints the DOMINANT colour as
+  a full-canvas base layer, so a tightly cropped decal used to come back as a
+  solid rectangle once the key paths were dropped.
+- **AI redraw (v2.15):** `_redraw_decals()` (App) → `decals.redraw_sheet(rgba,
+  refine)`. The faithful cleanup supplies the alpha; `segment_decals` (run-based
+  connected components, no scipy) cuts the sheet into decals in reading order;
+  each crop goes to `refine(rgb, (w, h))` = `build_decal_refine_graph` on the
+  engine (LoadImage → RealESRGAN 4× → ImageScale → VAEEncode → KSampler at
+  denoise = *Redraw strength* → decode), with the Image tab's model + LoRAs.
+  Back from the AI: optional `snap_palette` to `palette_of(crop)` (the scan's
+  own colours, sampled 2 px inside the silhouette, <1% entries dropped,
+  near-white → pure white), alpha = the scan's silhouette minus LIGHT pixels in
+  a band along its edge (the AI draws its shape a little inside the outline;
+  the gap held its white background / a faint contour = a traced fringe), then
+  `vectorize(..., quantize_colors=0, presmooth=False, drop_halo=False)` and
+  `svg_set_physical_size`. The sheet SVG nests every decal's paths in a
+  `<g transform="translate scale">` at its scan position with width/height in
+  inches (figure scale applied); the sheet PNG is composited at the target DPI.
+  Output: `<label>_redraw.svg/.png` + `<label>_redraw/decal_NN.svg/.png`.
+  Validated live on the user's Cobra sheet: 12 decals, ~50 s on a 5090 with
+  DreamShaperXL-Turbo + the Decals LoRA.
 - **Generate → SVG:** `_generate_decal()` sets `_decal_gen`, reuses `_generate`
   (main-tab model/LoRA/RAG) on the Decals prompt box, `_finish_image` vectorizes
-  the result. **Generates ORIGINAL art from a text prompt** (no image reference).
+  the result. **Generates art from a text prompt** (no image reference). The
+  same prompt box, when filled, is prepended to the AI redraw's prompt.
 - **Scale conversion:** `SCALE_PRESETS` / `scale_factor` (3.75"/1/18 ↔
   Classified/1/12 = 1.5×). **AI upscale:** `_decal_ai_upscale` via engine
-  RealESRGAN (colour-preserving).
-- Output → gallery + `output/decals/` (transparent PNG, + SVG for vector).
+  RealESRGAN (colour-preserving) — raster output only; it borrows a
+  `Generator` for the upload/await/fetch helpers (calling them on the App
+  raised, and the except swallowed it, so the option silently did nothing
+  before v2.15).
+- Output → gallery + `output/decals/` (transparent PNG with DPI, + SVG with
+  width/height in inches for vector).
 
 **Honest limits:** white ink ≈ the film colour can't be separated (keep bg, print
-on white paper); home printers can't print white; true colour-exact *vector*
-needs a manual redraw.
+on white paper); home printers can't print white; the AI redraw depends on the
+chosen model/LoRA and strength — text and fine detail survive best at low
+strength; decals closer than ~16 px on the sheet are cut out as one.
 
 ---
 
@@ -131,7 +164,7 @@ global across installs, and both share the one engine/GPU. `tasklist` for
 ### Run tests (use the **venv python** — system python lacks pymupdf/vtracer)
 ```
 venv\Scripts\python.exe app\update_ui_test.py     # MAIN gate — builds the real
-                                                  # App (engine/net stubbed), 292 checks
+                                                  # App (engine/net stubbed), 331 checks
 venv\Scripts\python.exe app\swap_test.py          # face-swap two-step (22)
 venv\Scripts\python.exe app\variations_test.py    # clones store (18)
 # others: self_update_test, ragmap_test, engine_files_test, startup_test, applog_test, …
@@ -230,17 +263,17 @@ on GitHub).
   HDD can look like "engine stopped while starting" — it recovers;
   `_boot_engine` auto-retries.
 - **Content/IP policy:** the app generates the user's own content (incl. adult) —
-  don't judge/refuse that. BUT do **not** build or run features that reproduce
-  copyrighted/trademarked artwork (e.g. AI-redrawing scanned branded decals).
-  Restoring the user's own scan, a general raster→vector trace, and generating
-  **original** art from a prompt are all fine; "AI re-create this copyrighted
-  image" is not.
+  don't judge/refuse that. The Decals tools work on the USER'S OWN FILES: faithful
+  restoration of a scan, a raster→vector trace, an AI image-to-image redraw of
+  that same scan (v2.15), and generating art from a prompt. What is printed and
+  how it is used is the user's responsibility, as with any image editor; the
+  app does not fetch or reproduce artwork it was not given.
 
 ---
 
 ## 10. State at handoff
 
-- All test suites green (update_ui 292). Frozen build self-test passes.
+- All test suites green (update_ui 331). Frozen build self-test passes.
 - Latest release published to GitHub; dev tree clean (only gitignored build
   artifacts untracked). `Stickers/_final/` holds the user's cleaned sample
   output; `Stickers/` holds their source PDFs (user data, not committed).

@@ -1003,6 +1003,50 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **AI redraw of decal scans → SVG at the printed size; equal-width scrolling
+  tabs; red Decals buttons (v2.15.0).** User: "wire the redraw to vector so AI
+  is used to redraw the provided pdf image decals if they are low quality and
+  re-create them in svg in the correct size", "make sure the tabs are all the
+  same size and there is an arrow to move left and right if there are more
+  tabs later", and the three Decals action buttons "in red like the generate
+  buttons from the other tabs". DESIGN (`decals.redraw_sheet`): the scan is
+  the authority for what the AI must not invent — each decal's SILHOUETTE
+  (alpha cut from the faithful cleanup) and its COLOURS (`palette_of` the
+  crop, `snap_palette` the redraw onto it); the AI (image-to-image on the
+  crop, `build_decal_refine_graph`: LoadImage → RealESRGAN → ImageScale →
+  VAEEncode → KSampler at the Redraw-strength denoise, main tab's model +
+  LoRAs) supplies clean edges and detail. `segment_decals` = run-based
+  union-find connected components on a 4× reduced, 16 px-bridged mask (no
+  scipy, so nothing new in the exe). Sheet SVG nests each decal's paths in
+  `<g transform="translate(x0 y0) scale(cw/wr ch/hr)">` with the page in
+  scan px and width/height in INCHES (`svg_set_physical_size`), so it prints
+  at size; per-decal SVG/PNG too; PNGs carry DPI. THREE LESSONS FROM THE LIVE
+  RUNS (user's Cobra.pdf, DreamShaperXL-Turbo + Decals LoRA, 12 decals, ~50 s):
+  (1) a pink/grey FRINGE traced around every decal — the scan's silhouette is
+  ~2 px wider than the shape the AI draws, the gap held the AI's white
+  background, and the palette had pink edge-blend entries from the
+  anti-aliased scan edge → palette now sampled 2 px INSIDE the silhouette with
+  <1% entries dropped, and LIGHT pixels in a 1.2%-wide band along the outline
+  are made transparent (white ink deeper inside stays); (2) "bold clean
+  outlines" in the style prompt made the model draw a grey contour around
+  each decal → removed, "outline/border/drop shadow" in the negative; (3)
+  vtracer STACKED mode paints the DOMINANT colour as a full-canvas base layer
+  — a decal filling >50% of its crop traced as a solid rectangle once the key
+  paths were dropped → `vectorize` now traces on a 25%-a-side key margin
+  undone with `<g transform="translate(-pad -pad)">` (this also fixes the
+  plain Vectorize/Generate→SVG paths for tight crops). Scan "white" ink reads
+  as film-tinted (230,235,234): snapped to pure white (printers leave white
+  bare; a faint grey fill would print). TABS: `TabStrip` (canvas-drawn, one
+  shared width = max(MIN 80, longest word, avail//n), arrows enabled only when
+  n×width > strip, selected kept in view, wheel scrolls) above a
+  `Left.TNotebook` whose `.Tab` layout is disabled — note `Style.layout(name,
+  [])` sets the layout to the word "null" (reads back as [("null", {})]).
+  At the default 470 px pane the five tabs are 82 px each, no scrolling;
+  narrowed to 300 px they scroll 3-at-a-time. FIXED ALONG THE WAY: Decals
+  "AI upscale" called `self._upload_pil/_await_images/_fetch_image/client_id`
+  on the App (they're Generator's) inside a bare except → silently returned
+  the input; now borrows a `Generator(self.ui_queue)`. Vector mode + AI
+  upscale ticked used to drop the figure-scale conversion. update_ui 331.
 - **Decal generator + solidify/smooth restoration tools (v2.14.0).** (User went
   autonomous, "select the best recommendation".) GENERATE→SVG: a prompt box +
   "🖊 Generate → SVG" button generates ORIGINAL art from the user's text prompt

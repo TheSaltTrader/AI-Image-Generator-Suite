@@ -90,6 +90,7 @@ from tkinter import (Tk, Text, Canvas, Listbox, StringVar, IntVar, BooleanVar,
                      DoubleVar, filedialog, messagebox, Toplevel, END, WORD,
                      NSEW, W, E)
 from tkinter import ttk
+from tkinter import font as tkfont
 
 import requests
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageTk
@@ -103,7 +104,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.14.1"
+APP_VERSION = "2.15.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -144,6 +145,17 @@ def engine_python():
 MODELS = PROJECT / "models"
 OUTPUT = PROJECT / "output"
 DECALS_OUT = OUTPUT / "decals"         # cleaned/vectorized decal exports
+# the AI redraw of a scanned decal: image-to-image on the scan crop, steered
+# toward flat, crisp, traceable art (the user's own description is prepended)
+DECAL_REDRAW_STYLE = ("clean flat vector sticker decal art, crisp sharp edges, "
+                      "solid flat colours, no gradients, no noise, no texture, "
+                      "plain white background")
+# "outline" is in the negative on purpose: asked for "bold outlines" the model
+# drew a grey contour around every decal, which became a fringe in the trace
+DECAL_REDRAW_NEGATIVE = ("blurry, noisy, jpeg artifacts, pixelated, grainy, "
+                         "photo, photograph, realistic, 3d render, gradient, "
+                         "soft, smudged, watermark, extra elements, outline, "
+                         "border, drop shadow, bevel, emboss")
 VARIATIONS = PROJECT / "variations"   # the user's saved-person store
 RAW_OUT = OUTPUT / "_raw"
 SETTINGS_FILE = APP_DIR / "settings.json"
@@ -1784,6 +1796,71 @@ def build_graph(p):
     return g
 
 
+def build_decal_refine_graph(p):
+    """One decal, image-to-image: LoadImage → (RealESRGAN 4× when p["esrgan"])
+    → scale to the work canvas → VAEEncode → KSampler at denoise = redraw
+    strength → VAEDecode → SaveImage. The scan crop is the latent the model
+    starts from, so at a low strength it sharpens and cleans what is there;
+    a higher strength re-draws more freely. Same checkpoint + LoRA chain as
+    build_graph (the Image-generation tab's choices)."""
+    fam = model_family(p["model"])
+    d = FAMILY_DEFAULTS.get(fam, FAMILY_DEFAULTS["sdxl"])
+    steps = p.get("steps") or d["steps"]
+    cfg = p.get("cfg") if p.get("cfg") is not None else d["cfg"]
+    g = {"1": {"class_type": "CheckpointLoaderSimple",
+               "inputs": {"ckpt_name": p["model"]}}}
+    model_ref, clip_ref = ["1", 0], ["1", 1]
+    nid = 20
+    for lora_name, strength in p.get("loras", []):
+        g[str(nid)] = {"class_type": "LoraLoader",
+                       "inputs": {"lora_name": lora_name,
+                                  "strength_model": strength,
+                                  "strength_clip": strength,
+                                  "model": model_ref, "clip": clip_ref}}
+        model_ref, clip_ref = [str(nid), 0], [str(nid), 1]
+        nid += 1
+    if fam == "anime":
+        g["19"] = {"class_type": "CLIPSetLastLayer",
+                   "inputs": {"clip": clip_ref, "stop_at_clip_layer": -2}}
+        clip_ref = ["19", 0]
+    g["2"] = {"class_type": "CLIPTextEncode",
+              "inputs": {"text": p["prompt"], "clip": clip_ref}}
+    g["3"] = {"class_type": "CLIPTextEncode",
+              "inputs": {"text": p.get("negative", ""), "clip": clip_ref}}
+    pos_ref = ["2", 0]
+    if fam in ("flux", "schnell"):
+        g["4"] = {"class_type": "FluxGuidance",
+                  "inputs": {"guidance": 3.5, "conditioning": pos_ref}}
+        pos_ref = ["4", 0]
+    g["10"] = {"class_type": "LoadImage",
+               "inputs": {"image": p["ref_image_name"]}}
+    img_ref = ["10", 0]
+    if p.get("esrgan"):
+        g["11"] = {"class_type": "UpscaleModelLoader",
+                   "inputs": {"model_name": UPSCALE_MODEL}}
+        g["12"] = {"class_type": "ImageUpscaleWithModel",
+                   "inputs": {"upscale_model": ["11", 0], "image": img_ref}}
+        img_ref = ["12", 0]
+    g["13"] = {"class_type": "ImageScale",
+               "inputs": {"image": img_ref, "width": p["width"],
+                          "height": p["height"], "upscale_method": "lanczos",
+                          "crop": "disabled"}}
+    g["5"] = {"class_type": "VAEEncode",
+              "inputs": {"pixels": ["13", 0], "vae": ["1", 2]}}
+    g["6"] = {"class_type": "KSampler",
+              "inputs": {"model": model_ref, "positive": pos_ref,
+                         "negative": ["3", 0], "latent_image": ["5", 0],
+                         "seed": p["seed"], "steps": steps, "cfg": cfg,
+                         "sampler_name": d["sampler"],
+                         "scheduler": d["scheduler"],
+                         "denoise": float(p.get("denoise", 0.35))}}
+    g["7"] = {"class_type": "VAEDecode",
+              "inputs": {"samples": ["6", 0], "vae": ["1", 2]}}
+    g["8"] = {"class_type": "SaveImage",
+              "inputs": {"filename_prefix": "cbac_decal", "images": ["7", 0]}}
+    return g
+
+
 # --------------------------------------------------------------------------
 # background removal (transparency) — runs in the engine venv so the
 # packaged exe stays small and rembg's heavy deps never enter this process.
@@ -3305,6 +3382,126 @@ class Tooltip:
             self.tip = None
 
 
+class TabStrip(ttk.Frame):
+    """The left panel's tab headers: every tab the SAME width, drawn on a
+    canvas above the notebook (whose own headers are hidden), with ◀ ▶
+    arrows that scroll the row when the tabs no longer fit — so tabs can be
+    added later without the headers squeezing, wrapping or disappearing.
+
+    The width is shared out evenly (never below MIN_W or the longest word of
+    a label, which wraps onto two lines); when n × width exceeds the strip,
+    the arrows come alive and the selected tab is kept in view."""
+    MIN_W = 80
+    PAD_X = 6
+    HEIGHT = 44
+
+    def __init__(self, master, notebook):
+        super().__init__(master)
+        self.nb = notebook
+        self.font = tkfont.Font(family=UI_FONT, size=9, weight="bold")
+        self.offset = 0            # index of the first visible tab
+        self.tab_w = self.MIN_W
+        self.visible = 1
+        self.left_btn = ttk.Button(self, text="◀", width=2,
+                                   style="Arrow.TButton",
+                                   command=lambda: self.scroll(-1))
+        self.right_btn = ttk.Button(self, text="▶", width=2,
+                                    style="Arrow.TButton",
+                                    command=lambda: self.scroll(1))
+        self.canvas = Canvas(self, bg=BG, highlightthickness=0,
+                             height=self.HEIGHT)
+        self.left_btn.grid(row=0, column=0, sticky="ns", padx=(0, 2))
+        self.canvas.grid(row=0, column=1, sticky="ew")
+        self.right_btn.grid(row=0, column=2, sticky="ns", padx=(2, 0))
+        self.columnconfigure(1, weight=1)
+        self.canvas.bind("<Configure>", lambda _e: self.refresh())
+        self.canvas.bind("<Button-1>", self._click)
+        self.canvas.bind("<MouseWheel>",
+                         lambda e: self.scroll(-1 if e.delta > 0 else 1))
+        notebook.bind("<<NotebookTabChanged>>",
+                      lambda _e: self.refresh(ensure=True), add="+")
+        self.refresh(ensure=True)
+
+    def labels(self):
+        return [self.nb.tab(t, "text") for t in self.nb.tabs()]
+
+    def _min_label_w(self):
+        # labels wrap at spaces, so the longest single word sets the floor
+        words = [w for lab in self.labels() for w in lab.split()]
+        return max([self.font.measure(w) for w in words] + [0]) \
+            + 2 * self.PAD_X + 4
+
+    def layout(self, avail=None):
+        """The equal tab width and how many tabs fit in `avail` px (the
+        canvas width when None). Returns (tab_w, visible)."""
+        n = max(1, len(self.nb.tabs()))
+        if avail is None:
+            avail = self.canvas.winfo_width()
+        if avail < 20:               # not mapped yet: assume the default pane
+            avail = 420
+        tab_w = max(self.MIN_W, self._min_label_w(), avail // n)
+        visible = max(1, min(n, avail // tab_w))
+        return tab_w, visible
+
+    def can_scroll(self, avail=None):
+        """True when the tabs no longer all fit (the arrows have work)."""
+        _tw, visible = self.layout(avail)
+        return visible < len(self.nb.tabs())
+
+    def refresh(self, avail=None, ensure=False):
+        """Lay out and redraw. ensure=True scrolls the selected tab into
+        view (on a tab change); otherwise the user's scroll position is
+        kept, merely clamped."""
+        n = len(self.nb.tabs())
+        if n == 0:
+            return
+        self.tab_w, self.visible = self.layout(avail)
+        try:
+            sel = self.nb.index("current")
+        except Exception:
+            sel = 0
+        max_off = max(0, n - self.visible)
+        self.offset = min(max(0, self.offset), max_off)
+        if ensure:
+            if sel < self.offset:
+                self.offset = sel
+            elif sel >= self.offset + self.visible:
+                self.offset = sel - self.visible + 1
+        scrollable = n > self.visible
+        self.left_btn.state(["!disabled"] if scrollable and self.offset > 0
+                            else ["disabled"])
+        self.right_btn.state(["!disabled"] if scrollable
+                             and self.offset < max_off else ["disabled"])
+        c = self.canvas
+        c.delete("all")
+        h = self.HEIGHT
+        for i, lab in enumerate(self.labels()):
+            x = (i - self.offset) * self.tab_w
+            on = (i == sel)
+            c.create_rectangle(x, 0 if on else 4, x + self.tab_w - 2, h,
+                               fill=BG2 if on else BG3, outline="")
+            c.create_text(x + self.tab_w // 2, h // 2, text=lab,
+                          font=self.font, fill=ACCENT2 if on else FG_DIM,
+                          width=self.tab_w - 2 * self.PAD_X,
+                          justify="center", anchor="center")
+            if on:
+                c.create_rectangle(x, h - 3, x + self.tab_w - 2, h,
+                                   fill=ACCENT2, outline="")
+
+    def scroll(self, step, avail=None):
+        n = len(self.nb.tabs())
+        max_off = max(0, n - self.visible)
+        new = min(max_off, max(0, self.offset + int(step)))
+        if new != self.offset:
+            self.offset = new
+            self.refresh(avail)
+
+    def _click(self, e):
+        i = self.offset + int(e.x // max(1, self.tab_w))
+        if 0 <= i < len(self.nb.tabs()):
+            self.nb.select(i)        # <<NotebookTabChanged>> redraws
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -3478,6 +3675,13 @@ class App:
                     padding=(16, 7), font=(UI_FONT, 10, "bold"))
         s.map("TNotebook.Tab", background=[("selected", BG2)],
               foreground=[("selected", ACCENT2)])
+        # the left panel's notebook: its own tab headers are hidden (empty
+        # layout) — TabStrip draws equal-width tabs with ◀ ▶ arrows above it
+        s.configure("Left.TNotebook", background=BG, borderwidth=0,
+                    tabmargins=(0, 0, 0, 0))
+        s.layout("Left.TNotebook.Tab", [])
+        s.configure("Arrow.TButton", background=BG3, padding=(4, 2),
+                    font=(UI_FONT, 9))
         s.map("Go.TButton", background=[("active", GO_ACTIVE),
                                         ("disabled", BG3)])
         # a loud red button for destructive "delete everything" actions
@@ -3638,9 +3842,13 @@ class App:
                   justify="left").grid(row=1, column=0, sticky=W, pady=(2, 0))
         self.ready_frame.grid_remove()
         left_wrap.rowconfigure(0, weight=0)
-        left_wrap.rowconfigure(1, weight=1)
-        self.left_tabs = ttk.Notebook(left_wrap)
-        self.left_tabs.grid(row=1, column=0, sticky=NSEW)
+        left_wrap.rowconfigure(1, weight=0)
+        left_wrap.rowconfigure(2, weight=1)
+        # the notebook holds the pages; its native headers are hidden and the
+        # TabStrip above it draws every tab the same width, with ◀ ▶ arrows
+        # that scroll the row once there are more tabs than fit
+        self.left_tabs = ttk.Notebook(left_wrap, style="Left.TNotebook")
+        self.left_tabs.grid(row=2, column=0, sticky=NSEW)
         self._scroll_canvases = []
         self._page_gen = self._scroll_page(self.left_tabs, "Image generation")
         self._page_anim = self._scroll_page(self.left_tabs, "Animation")
@@ -3648,8 +3856,10 @@ class App:
         self._page_edit = self._scroll_page(self.left_tabs, "Edit image")
         self._page_decals = self._scroll_page(self.left_tabs, "Decals")
         self.left_canvas = self._scroll_canvases[0]
+        self.tab_strip = TabStrip(left_wrap, self.left_tabs)
+        self.tab_strip.grid(row=1, column=0, sticky="ew", pady=(2, 0))
         self._page_bottom = ttk.Frame(left_wrap, padding=(12, 0, 12, 8))
-        self._page_bottom.grid(row=2, column=0, sticky=NSEW)
+        self._page_bottom.grid(row=3, column=0, sticky=NSEW)
         self._page_bottom.columnconfigure(0, weight=1)
 
         def _wheel_router(e):
@@ -4932,8 +5142,9 @@ class App:
         head.grid(row=r, sticky=W); r += 1
         ttk.Label(left, text="Turn imperfect scans (PDF or image) into clean, "
                   "print-ready decals with transparent backgrounds — ready for "
-                  "decal paper. It restores your artwork faithfully; it does "
-                  "not redraw it.", style="Dim.TLabel", wraplength=410,
+                  "decal paper. Process keeps your artwork faithful; Redraw "
+                  "lets the AI rebuild low-quality scans as clean SVG at the "
+                  "right printed size.", style="Dim.TLabel", wraplength=410,
                   justify="left").grid(row=r, sticky=W, pady=(2, 8)); r += 1
 
         srow = ttk.Frame(left); srow.grid(row=r, sticky="ew", pady=(0, 2)); r += 1
@@ -5062,20 +5273,6 @@ class App:
                         "Scan DPI is what the original was scanned at (300 for "
                         "these). Output ≥ scan enlarges it for crisp printing.")
 
-        ttk.Label(left, text="Generate an original decal (AI → SVG)",
-                  style="Head.TLabel").grid(row=r, sticky=W, pady=(8, 0)); r += 1
-        self.decal_prompt_box = self._text(left, 3)
-        self.decal_prompt_box.grid(row=r, sticky="ew", pady=(2, 2)); r += 1
-        self._tip(self.decal_prompt_box,
-                  "Describe an ORIGINAL decal to create (your own design). It "
-                  "generates with the Image-generation tab's model, LoRAs and "
-                  "RAG, then traces the result into a clean SVG. Meant for your "
-                  "own artwork — describe what you want, don't ask it to copy an "
-                  "existing brand's art.")
-        self.decal_gen_btn = ttk.Button(left, text="🖊 Generate → SVG",
-                                        command=self._generate_decal)
-        self.decal_gen_btn.grid(row=r, sticky="ew", pady=(0, 6)); r += 1
-
         ttk.Label(left, text="Convert for figure scale",
                   style="Head.TLabel").grid(row=r, sticky=W, pady=(6, 0)); r += 1
         _slabels = [p[0] for p in decals.SCALE_PRESETS]
@@ -5107,18 +5304,71 @@ class App:
                       "(e.g. \"1/12 Scale\").")
 
         self.decal_btn = ttk.Button(left, text="✨ Process decals",
+                                    style="Go.TButton",
                                     command=self._process_decals)
         self.decal_btn.grid(row=r, sticky="ew", pady=(8, 4)); r += 1
+        self._tip(self.decal_btn,
+                  "Run the method chosen above on the queued scans: Clean up "
+                  "(faithful transparent raster) or Vectorize (a plain trace "
+                  "into SVG — no AI, colours re-quantised).")
+
+        ttk.Label(left, text="AI redraw (low-quality scans → clean SVG)",
+                  style="Head.TLabel").grid(row=r, sticky=W, pady=(8, 0)); r += 1
+        ttk.Label(left, text="Each decal is cut out of the scan, redrawn by the "
+                  "image model (the Image-generation tab's model + LoRAs), "
+                  "traced to SVG and put back on the sheet at its printed "
+                  "size. The scan fixes each decal's outline and, by default, "
+                  "its exact colours.", style="Dim.TLabel", wraplength=410,
+                  justify="left").grid(row=r, sticky=W, pady=(2, 2)); r += 1
+        rrow = ttk.Frame(left); rrow.grid(row=r, sticky="ew", pady=(2, 2)); r += 1
+        ttk.Label(rrow, text="Redraw strength",
+                  style="Dim.TLabel").pack(side="left")
+        self.decal_redraw_var = DoubleVar(value=0.35)
+        self.decal_redraw_lab = ttk.Label(rrow, text="0.35", width=5,
+                                          style="Dim.TLabel")
+        ttk.Scale(rrow, from_=0.15, to=0.70, variable=self.decal_redraw_var,
+                  orient="horizontal", length=150,
+                  command=lambda _v: self.decal_redraw_lab.configure(
+                      text=f"{float(_v):.2f}")).pack(side="left", padx=6)
+        self.decal_redraw_lab.pack(side="left")
+        self._tip(rrow, "How much the AI may change. Low (0.20–0.35) cleans "
+                        "and sharpens what is there — best for text and logos; "
+                        "high (0.50+) re-imagines the art more freely and can "
+                        "alter details.")
+        self.decal_palette_var = BooleanVar(value=True)
+        _pc = ttk.Checkbutton(
+            left, text="Keep the scan's exact colours (snap to its palette)",
+            variable=self.decal_palette_var)
+        _pc.grid(row=r, sticky=W); r += 1
+        self._tip(_pc, "ON: every redrawn pixel is snapped to the colours found "
+                       "in your scan, so the SVG uses the original colours "
+                       "exactly and traces as clean flat fills. OFF: keeps "
+                       "whatever colours the AI painted.")
         self.decal_vec_btn = ttk.Button(
-            left, text="🖊 Trace to vector (SVG)",
-            command=lambda: self._process_decals("vector"))
-        self.decal_vec_btn.grid(row=r, sticky="ew", pady=(0, 4)); r += 1
+            left, text="🖊 Redraw to vector (AI → SVG)", style="Go.TButton",
+            command=self._redraw_decals)
+        self.decal_vec_btn.grid(row=r, sticky="ew", pady=(4, 4)); r += 1
         self._tip(self.decal_vec_btn,
-                  "TRACES the loaded image(s) into vector shapes and saves an "
-                  "SVG (+ transparent PNG) — it reproduces the loaded picture as "
-                  "vector, it does NOT re-draw or re-invent it. Best on your own "
-                  "clean, flat artwork. To CREATE new art from a description, "
-                  "use '🖊 Generate → SVG' above instead.")
+                  "AI-redraws the queued scan(s) decal by decal. For each sheet "
+                  "it writes one SVG + PNG of the whole sheet (every decal in "
+                  "place) plus a folder with each decal as its own SVG + PNG — "
+                  "all at the correct printed size for the chosen figure "
+                  "scale. Uses the engine; Cancel on the Image tab stops it. "
+                  "A description in the box below (optional) guides the redraw.")
+
+        ttk.Label(left, text="Generate an original decal (AI → SVG)",
+                  style="Head.TLabel").grid(row=r, sticky=W, pady=(8, 0)); r += 1
+        self.decal_prompt_box = self._text(left, 3)
+        self.decal_prompt_box.grid(row=r, sticky="ew", pady=(2, 2)); r += 1
+        self._tip(self.decal_prompt_box,
+                  "Describe a decal to create from scratch (your own design). "
+                  "It generates with the Image-generation tab's model, LoRAs "
+                  "and RAG, then traces the result into a clean SVG. When "
+                  "filled in, the same text also guides the AI redraw above.")
+        self.decal_gen_btn = ttk.Button(left, text="🖊 Generate → SVG",
+                                        style="Go.TButton",
+                                        command=self._generate_decal)
+        self.decal_gen_btn.grid(row=r, sticky="ew", pady=(0, 6)); r += 1
         ttk.Button(left, text="📁 Open decals output folder",
                    command=lambda: os.startfile(DECALS_OUT)
                    if DECALS_OUT.exists() else
@@ -5201,13 +5451,16 @@ class App:
         native = int(self.decal_native_var.get())
         tgt_dpi = int(self.decal_dpi_var.get())
         size_scale = self._decal_scale_factor()
-        ai = bool(self.decal_ai_var.get())
+        mode = force_mode or self.decal_mode_var.get()
+        # the ESRGAN enlargement is for RASTER output; a vector result is
+        # already scalable (it used to switch vector mode to native DPI with
+        # no scale conversion at all)
+        ai = bool(self.decal_ai_var.get()) and mode != "vector"
         # AI upscale wants the FAITHFUL native-res image, then enlarges it with
         # the ESRGAN model; without AI, the pipeline does its own LANCZOS resize
         final_factor = size_scale * max(1.0, tgt_dpi / native)
         # cleanup with auto-colour OFF = EXACT pixel-faithful (art RGB untouched,
         # only background + thin streak lines change); auto-colour ON transforms
-        mode = force_mode or self.decal_mode_var.get()
         exact = (mode == "cleanup" and not self.decal_wb_var.get())
         opts = dict(mode=mode,
                     remove_bg=self.decal_removebg_var.get(),
@@ -5226,7 +5479,7 @@ class App:
         vector = opts["mode"] == "vector"
         ai_warn = ai and not engine_alive()
         self._decals_busy = True
-        self.decal_btn.state(["disabled"])
+        self._set_decal_buttons(False)
         self.decal_status_var.set("Processing…"
                                   + (" (first vectorize can take a moment)"
                                      if vector else ""))
@@ -5242,12 +5495,18 @@ class App:
                     for label, img in decals.iter_source_images(src):
                         res = decals.process_image(img, **opts)
                         rgba = res["rgba"]
+                        dpi_out = tgt_dpi
                         if ai and not res.get("svg"):
                             self.ui_queue.put((
                                 "decal_status", f"AI-upscaling {label}…"))
-                            rgba = self._decal_ai_upscale(rgba, final_factor)
+                            up = self._decal_ai_upscale(rgba, final_factor)
+                            if up is rgba:
+                                dpi_out = native   # the AI step was skipped
+                            rgba = up
                         out_png = DECALS_OUT / f"{label}.png"
-                        rgba.save(out_png)
+                        # the PNG carries its print resolution, so it opens
+                        # and prints at the right physical size
+                        rgba.save(out_png, dpi=(dpi_out, dpi_out))
                         if res.get("svg"):
                             (DECALS_OUT / f"{label}.svg").write_text(
                                 res["svg"], encoding="utf-8")
@@ -5268,6 +5527,156 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _set_decal_buttons(self, enabled):
+        """Grey the Decals action buttons while a job runs (one at a time:
+        they share the engine and the status line)."""
+        for name in ("decal_btn", "decal_vec_btn", "decal_gen_btn"):
+            b = getattr(self, name, None)
+            if b is not None:
+                try:
+                    b.state(["!disabled"] if enabled else ["disabled"])
+                except Exception:
+                    pass
+
+    def _redraw_decals(self):
+        """AI redraw: every decal on the queued scan(s) is cut out, enlarged,
+        redrawn by the image model (image-to-image on the scan crop — the
+        silhouette and, by default, the exact colours come from the scan),
+        traced to SVG and put back on a sheet at its correct printed size.
+        Draws with the Image-generation tab's model + LoRAs; runs on a
+        worker thread and reports through the Decals status line."""
+        if getattr(self, "_decals_busy", False):
+            return
+        if not self.decal_sources:
+            self.decal_status_var.set("Add one or more scans first "
+                                      "(➕ Add files…).")
+            return
+        if not engine_alive():
+            self.decal_status_var.set("Start the engine first (open the Image "
+                                      "generation tab) — the AI redraw uses it.")
+            return
+        model = self._model_raw()
+        if not model:
+            self.decal_status_var.set("Pick a model on the Image generation tab "
+                                      "first — the redraw draws with it.")
+            return
+        strength = round(float(self.decal_redraw_var.get()), 2)
+        loras = [(n, round(self.lora_strength.get(), 2))
+                 for n in self._selected_loras()]
+        hint = self._get(self.decal_prompt_box)
+        prompt = ((hint + ", ") if hint else "") + DECAL_REDRAW_STYLE
+        native = int(self.decal_native_var.get())
+        tgt_dpi = int(self.decal_dpi_var.get())
+        size_scale = self._decal_scale_factor()
+        keep_pal = bool(self.decal_palette_var.get())
+        esrgan = (MODELS / "upscale_models" / UPSCALE_MODEL).exists()
+        # the faithful cleanup supplies the alpha (silhouettes) and the
+        # palette; the background MUST be removed for the cut-out to work
+        opts = dict(mode="cleanup", remove_bg=True, denoise=0,
+                    tol=int(self.decal_tol_var.get()), target_dpi=native,
+                    native_dpi=native, do_trim=False, size_scale=1.0,
+                    remove_lines=self.decal_lines_var.get(), balance=False,
+                    exact=True, tidy_matte=self.decal_tidy_var.get(),
+                    solidify=self.decal_solid_var.get(),
+                    smooth=self.decal_smooth_var.get())
+        srcs = list(self.decal_sources)
+        self._decals_busy = True
+        self._set_decal_buttons(False)
+        CANCEL.clear()
+        self.decal_status_var.set("AI redraw — cleaning the scan and cutting "
+                                  "the decals out…")
+        DECALS_OUT.mkdir(parents=True, exist_ok=True)
+        ui_q = self.ui_queue
+
+        def work():
+            import websocket  # websocket-client
+            gen = Generator(ui_q)       # the engine I/O helpers live there
+            done, err = 0, None
+
+            def refine(rgb, size):
+                p = {"model": model, "loras": loras, "prompt": prompt,
+                     "negative": DECAL_REDRAW_NEGATIVE,
+                     "width": size[0], "height": size[1],
+                     "seed": random.randrange(2 ** 32), "denoise": strength,
+                     "esrgan": esrgan,
+                     "ref_image_name": gen._upload_pil(rgb, "cbac_decal_in.png")}
+                graph = build_decal_refine_graph(p)
+                ws = websocket.WebSocket()
+                ws.connect(f"ws://{ENGINE_HOST}:{ENGINE_PORT}/ws"
+                           f"?clientId={gen.client_id}", timeout=30)
+                try:
+                    r = requests.post(f"{ENGINE_URL}/prompt",
+                                      json={"prompt": graph,
+                                            "client_id": gen.client_id},
+                                      timeout=30)
+                    if r.status_code == 400:
+                        raise RuntimeError("the engine rejected the redraw "
+                                           "request (model/LoRA mismatch?): "
+                                           + r.text[:300])
+                    r.raise_for_status()
+                    imgs = gen._await_images(ws, r.json()["prompt_id"],
+                                             timeout=900)
+                finally:
+                    ws.close()
+                if not imgs:
+                    return None             # cancelled
+                return gen._fetch_image(imgs[0]).convert("RGB")
+
+            try:
+                for src in srcs:
+                    for label, img in decals.iter_source_images(src):
+                        ui_q.put(("decal_status", f"{label}: cleaning the scan…"))
+                        res = decals.process_image(img, **opts)
+
+                        def prog(i, n, _lab=label):
+                            ui_q.put(("decal_status",
+                                      f"{_lab}: AI-redrawing decal {i + 1} "
+                                      f"of {n}…"))
+
+                        out = decals.redraw_sheet(
+                            res["rgba"], refine, native_dpi=native,
+                            size_scale=size_scale, target_dpi=tgt_dpi,
+                            keep_palette=keep_pal, progress=prog,
+                            cancelled=CANCEL.is_set)
+                        if out is None:
+                            err = "cancelled"
+                            break
+                        if not out["items"]:
+                            ui_q.put(("decal_status",
+                                      f"{label}: no decals found on the sheet "
+                                      "(nothing opaque after background "
+                                      "removal — try a lower sensitivity)."))
+                            continue
+                        base = DECALS_OUT / f"{label}_redraw"
+                        out["rgba"].save(str(base) + ".png",
+                                         dpi=(tgt_dpi, tgt_dpi))
+                        Path(str(base) + ".svg").write_text(
+                            out["svg"], encoding="utf-8")
+                        base.mkdir(parents=True, exist_ok=True)
+                        for j, it in enumerate(out["items"], start=1):
+                            it["rgba"].save(base / f"decal_{j:02d}.png",
+                                            dpi=(tgt_dpi, tgt_dpi))
+                            (base / f"decal_{j:02d}.svg").write_text(
+                                it["svg"], encoding="utf-8")
+                        prev = Image.alpha_composite(
+                            Image.new("RGBA", out["rgba"].size,
+                                      (255, 255, 255, 255)),
+                            out["rgba"]).convert("RGB")
+                        ui_q.put(("decal_add", prev,
+                                  {"model": "decal", "seed": label + "_redraw",
+                                   "user_prompt": f"{label} (AI redraw, "
+                                                  f"{len(out['items'])} decals)"},
+                                  str(base) + ".png"))
+                        done += 1
+                    if err:
+                        break
+            except Exception as e:
+                applog.exception("decal AI redraw failed")
+                err = str(e)
+            ui_q.put(("decal_done", done, err, False, "redraw"))
+
+        threading.Thread(target=work, daemon=True).start()
+
     def _decal_ai_upscale(self, rgba, factor=1.0):
         """Enlarge a decal crisply with the RealESRGAN model via the engine,
         colours preserved (alpha upscaled alongside). ESRGAN gives 4×, then a
@@ -5277,7 +5686,12 @@ class App:
                                        / UPSCALE_MODEL).exists():
             return rgba
         try:
-            name = self._upload_pil(rgba.convert("RGB"), "cbac_decal_up.png")
+            import websocket  # websocket-client
+            # the upload / wait / fetch helpers belong to Generator — calling
+            # them on the App raised AttributeError, which the except below
+            # swallowed: the AI upscale silently returned the input unchanged
+            gen = Generator(self.ui_queue)
+            name = gen._upload_pil(rgba.convert("RGB"), "cbac_decal_up.png")
             graph = {
                 "10": {"class_type": "LoadImage", "inputs": {"image": name}},
                 "11": {"class_type": "UpscaleModelLoader",
@@ -5290,19 +5704,19 @@ class App:
             }
             ws = websocket.WebSocket()
             ws.connect(f"ws://{ENGINE_HOST}:{ENGINE_PORT}/ws"
-                       f"?clientId={self.client_id}", timeout=30)
+                       f"?clientId={gen.client_id}", timeout=30)
             try:
                 r = requests.post(f"{ENGINE_URL}/prompt",
                                   json={"prompt": graph,
-                                        "client_id": self.client_id},
+                                        "client_id": gen.client_id},
                                   timeout=30)
                 r.raise_for_status()
-                imgs = self._await_images(ws, r.json()["prompt_id"], timeout=900)
+                imgs = gen._await_images(ws, r.json()["prompt_id"], timeout=900)
             finally:
                 ws.close()
             if not imgs:
                 return rgba
-            up_rgb = self._fetch_image(imgs[0]).convert("RGB")
+            up_rgb = gen._fetch_image(imgs[0]).convert("RGB")
             up_alpha = rgba.split()[3].resize(up_rgb.size, Image.LANCZOS)
             up = up_rgb.convert("RGBA")
             up.putalpha(up_alpha)
@@ -9487,17 +9901,26 @@ class App:
                     self._add_thumb(len(self.session) - 1)
                     self._update_editor_btn()
                 elif kind == "decal_done":
-                    _, n, err, ai_warn = msg
+                    n, err, ai_warn = msg[1], msg[2], msg[3]
+                    what = msg[4] if len(msg) > 4 else "process"
                     self._decals_busy = False
-                    try:
-                        self.decal_btn.state(["!disabled"])
-                    except Exception:
-                        pass
-                    if err:
+                    self._set_decal_buttons(True)
+                    if err == "cancelled":
+                        self.decal_status_var.set(
+                            f"Cancelled — {n} sheet(s) were finished before "
+                            "the stop (saved to the decals folder).")
+                    elif err:
                         self.decal_status_var.set(
                             f"Finished {n}, then hit an error: {err}. If it "
                             "mentions PyMuPDF or vtracer, that add-on isn't "
                             "available in this build.")
+                    elif what == "redraw":
+                        self.decal_status_var.set(
+                            f"Done — {n} sheet(s) AI-redrawn. Each sheet is "
+                            "saved as SVG + PNG (every decal in place) and "
+                            "each decal as its own SVG + PNG in a <name>_redraw "
+                            "folder, all at the printed size; the sheets are "
+                            "in the gallery.")
                     else:
                         svg = " + SVG" if self.decal_mode_var.get() == "vector" \
                             else ""

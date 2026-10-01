@@ -314,14 +314,19 @@ def trim(rgba, pad=8):
 
 # ---------------------------------------------------------------- vector
 def vectorize(rgba, target_px=2400, filter_speckle=12, color_precision=8,
-              quantize_colors=16, presmooth=True):
+              quantize_colors=16, presmooth=True, drop_halo=True):
     """Trace flat art to vectors and rasterise back to a crisp transparent PNG.
     Returns (svg_text, rgba_result). Needs vtracer + PyMuPDF.
 
     Quality for commercial flat art comes from feeding the tracer CLEAN, FLAT
     colours: a scan has JPEG mush and thousands of near-duplicate colours that
     trace into speckle. So we median-smooth, then quantise the opaque art to a
-    small palette (solid fills), before tracing with a high speckle filter."""
+    small palette (solid fills), before tracing with a high speckle filter.
+
+    quantize_colors=0 / presmooth=False trace the pixels EXACTLY as given (for
+    art that is already flat, e.g. a palette-snapped AI redraw). drop_halo=False
+    keeps light bluish fills — only right when the input has no carrier halo
+    left (a hard alpha), since a pale blue decal colour looks like a halo."""
     import vtracer
     import pymupdf
     import tempfile
@@ -338,6 +343,18 @@ def vectorize(rgba, target_px=2400, filter_speckle=12, color_precision=8,
                            ).convert("RGB")
     rgb = np.asarray(art).astype(np.uint8).copy()
     rgb[transparent] = KEY              # re-mark transparent after quantise
+    # vtracer's stacked mode paints the dominant colour as a full-canvas BASE
+    # layer and the rest on top. On a tightly cropped decal the ink can be
+    # the majority, so the base would be ink and dropping the key paths
+    # would leave a solid rectangle. A key-coloured margin of 25% a side
+    # (area >= 2x) makes the key the base every time; the margin is undone
+    # below with a translate, so coordinates stay those of the input.
+    H0, W0 = rgb.shape[:2]
+    pad = int(round(0.25 * max(H0, W0))) + 4
+    padded = np.empty((H0 + 2 * pad, W0 + 2 * pad, 3), np.uint8)
+    padded[...] = KEY
+    padded[pad:pad + H0, pad:pad + W0] = rgb
+    rgb = padded
     with tempfile.TemporaryDirectory() as td:
         src = Path(td) / "in.png"
         svg = Path(td) / "out.svg"
@@ -366,13 +383,25 @@ def vectorize(rgba, target_px=2400, filter_speckle=12, color_precision=8,
             bright = (r + g + b) / 3
             halo = bright > 196 and (b - r) >= 6 and (g - r) >= -4 \
                 and (max(r, g, b) - min(r, g, b)) < 42   # light, bluish, low-sat
-            return magenta or halo
+            return magenta or (halo and drop_halo)
 
         def _clean_path(m):
             fill = re.search(r'fill="(#[0-9A-Fa-f]{6})"', m.group(0))
             return "" if (fill and _drop(fill.group(1))) else m.group(0)
 
         svg_clean = re.sub(r"<path\b[^>]*?/>", _clean_path, svg_text)
+        # undo the margin: the page is the input's size again and the paths
+        # are shifted back, so every coordinate matches the input pixels
+        root = re.search(r"<svg\b[^>]*>", svg_clean)
+        if root:
+            tag = root.group(0)
+            tag2 = re.sub(r'\swidth="[^"]*"', f' width="{W0}"', tag, count=1)
+            tag2 = re.sub(r'\sheight="[^"]*"', f' height="{H0}"', tag2, count=1)
+            body_end = svg_clean.rfind("</svg>")
+            svg_clean = (svg_clean[:root.start()] + tag2
+                         + f'<g transform="translate(-{pad} -{pad})">'
+                         + svg_clean[root.end():body_end] + "</g>"
+                         + svg_clean[body_end:])
         csvg = Path(td) / "clean.svg"
         csvg.write_text(svg_clean, encoding="utf-8")
         doc = pymupdf.open(str(csvg))
@@ -381,6 +410,321 @@ def vectorize(rgba, target_px=2400, filter_speckle=12, color_precision=8,
         pm = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=True)
         r = Image.frombytes("RGBA", (pm.width, pm.height), pm.samples)
     return svg_clean, r
+
+
+# ---------------------------------------------------------------- SVG sizing
+def svg_set_physical_size(svg_text, w_in, h_in):
+    """Give an SVG a real-world size: width/height in inches (what printers
+    and cutters read), keeping its pixel geometry as the viewBox. vtracer
+    writes plain pixel width/height with no viewBox, so one is added."""
+    import re
+    m = re.search(r"<svg\b[^>]*>", svg_text)
+    if not m:
+        return svg_text
+    tag = m.group(0)
+    wm = re.search(r'\swidth="([0-9.]+)(?:px)?"', tag)
+    hm = re.search(r'\sheight="([0-9.]+)(?:px)?"', tag)
+    new = tag
+    if "viewBox" not in tag and wm and hm:
+        new = new[:-1] + f' viewBox="0 0 {wm.group(1)} {hm.group(1)}">'
+    size = f' width="{w_in:.4f}in" height="{h_in:.4f}in"'
+    if wm:
+        new = re.sub(r'\swidth="[^"]*"', "", new, count=1)
+    if hm:
+        new = re.sub(r'\sheight="[^"]*"', "", new, count=1)
+    new = new[:-1] + size + ">"
+    return svg_text[:m.start()] + new + svg_text[m.end():]
+
+
+def svg_inner(svg_text):
+    """The drawing elements between <svg …> and </svg> (for nesting)."""
+    import re
+    m = re.search(r"<svg\b[^>]*>(.*)</svg>", svg_text, re.S)
+    return m.group(1).strip() if m else ""
+
+
+# ---------------------------------------------------------------- segmentation
+def _components(mask):
+    """Bounding boxes (x0, y0, x1, y1 inclusive) of the 8-connected regions
+    of a boolean 2-D mask. Run-based union-find in plain numpy/Python: a
+    decal sheet has thousands of runs, not millions, so this is fast and
+    needs no scipy."""
+    H, W = mask.shape
+    parent = []
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    runs = []
+    prev = []
+    for y in range(H):
+        row = mask[y]
+        if not row.any():
+            prev = []
+            continue
+        d = np.diff(np.concatenate(([0], row.astype(np.int8), [0])))
+        starts = np.where(d == 1)[0]
+        ends = np.where(d == -1)[0]
+        cur = []
+        for x0, x1 in zip(starts, ends):
+            rid = len(parent)
+            parent.append(rid)
+            for px0, px1, pid in prev:
+                if px0 <= x1 and x0 <= px1:        # touching incl. diagonals
+                    union(pid, rid)
+            cur.append((int(x0), int(x1), rid))
+            runs.append((y, int(x0), int(x1), rid))
+        prev = cur
+    boxes = {}
+    for y, x0, x1, rid in runs:
+        r = find(rid)
+        b = boxes.get(r)
+        if b is None:
+            boxes[r] = [x0, y, x1 - 1, y]
+        else:
+            b[0] = min(b[0], x0)
+            b[2] = max(b[2], x1 - 1)
+            b[3] = max(b[3], y)
+    return [tuple(b) for b in boxes.values()]
+
+
+def segment_decals(rgba, gap=16, min_side=24, pad=6, down=4):
+    """Split a cleaned sheet (RGBA, transparent background) into the boxes of
+    its individual decals, in reading order (rows top→bottom, left→right).
+
+    Opaque pixels are grouped into connected regions after bridging gaps of
+    up to `gap` px (so a logo and the text under it stay one decal); specks
+    smaller than `min_side` px are dropped; each box gets `pad` px around it.
+    Segmentation runs on a `down`× reduced mask for speed, then the boxes are
+    tightened on the full-resolution alpha."""
+    a = np.asarray(rgba)
+    if a.ndim != 3 or a.shape[2] != 4:
+        return [(0, 0, rgba.width, rgba.height)]
+    opaque = a[..., 3] > 96
+    H, W = opaque.shape
+    down = max(1, int(down))
+    hh, ww = max(1, H // down), max(1, W // down)
+    m = opaque[:hh * down, :ww * down].reshape(hh, down, ww, down).any(axis=(1, 3))
+    r = max(1, int(round(gap / down)))
+    md = np.asarray(Image.fromarray(m.astype(np.uint8) * 255)
+                    .filter(ImageFilter.MaxFilter(2 * r + 1))) > 0
+    out = []
+    for x0, y0, x1, y1 in _components(md):
+        X0, Y0 = x0 * down, y0 * down
+        X1, Y1 = min(W, (x1 + 1) * down), min(H, (y1 + 1) * down)
+        sub = opaque[Y0:Y1, X0:X1]
+        if not sub.any():
+            continue
+        ys, xs = np.where(sub)
+        bx0, bx1 = X0 + int(xs.min()), X0 + int(xs.max()) + 1
+        by0, by1 = Y0 + int(ys.min()), Y0 + int(ys.max()) + 1
+        if (bx1 - bx0) < min_side or (by1 - by0) < min_side:
+            continue
+        out.append((max(0, bx0 - pad), max(0, by0 - pad),
+                    min(W, bx1 + pad), min(H, by1 + pad)))
+    if not out:
+        return []
+    # reading order: group into rows by vertical overlap, then left→right
+    out.sort(key=lambda b: (b[1], b[0]))
+    rows, cur = [], [out[0]]
+    for b in out[1:]:
+        y0s = [c[1] for c in cur]
+        y1s = [c[3] for c in cur]
+        band_y0, band_y1 = min(y0s), max(y1s)
+        overlap = min(band_y1, b[3]) - max(band_y0, b[1])
+        if overlap > 0.4 * min(b[3] - b[1], band_y1 - band_y0):
+            cur.append(b)
+        else:
+            rows.append(cur)
+            cur = [b]
+    rows.append(cur)
+    ordered = []
+    for row in rows:
+        ordered.extend(sorted(row, key=lambda b: b[0]))
+    return ordered
+
+
+# ---------------------------------------------------------------- palette
+def palette_of(rgba, colors=16, merge=40, sample=200000, min_share=0.01,
+               erode=2):
+    """The decal's own flat colours: the opaque pixels of the SCAN, reduced
+    to at most `colors` entries and near-duplicates (JPEG noise shades)
+    merged. Returns an (N, 3) uint8 array, or None when nothing is opaque.
+
+    The sample is taken `erode` px INSIDE the silhouette (when enough is
+    left) and entries under `min_share` of the pixels are dropped: the
+    blends where art meets carrier film at the edge are not decal colours,
+    and letting them in gave the redraw a pink/grey fringe."""
+    a = np.asarray(rgba)
+    if a.ndim != 3 or a.shape[2] != 4:
+        a = np.dstack([np.asarray(rgba.convert("RGB")),
+                       np.full(rgba.size[::-1], 255, np.uint8)])
+    opaque = a[..., 3] >= 250
+    if erode:
+        er = np.asarray(Image.fromarray(opaque.astype(np.uint8) * 255)
+                        .filter(ImageFilter.MinFilter(2 * int(erode) + 1))) > 0
+        if er.sum() >= 400:
+            opaque = er
+    px = a[opaque][:, :3]
+    if len(px) == 0:
+        return None
+    if len(px) > sample:
+        idx = np.linspace(0, len(px) - 1, sample).astype(np.int64)
+        px = px[idx]
+    strip = Image.fromarray(px.reshape(1, -1, 3).astype(np.uint8), "RGB")
+    q = strip.quantize(colors=int(colors), method=Image.MEDIANCUT,
+                       dither=Image.NONE)
+    pal = np.array(q.getpalette()[:int(colors) * 3], np.int32).reshape(-1, 3)
+    counts = np.bincount(np.asarray(q).ravel(), minlength=len(pal))
+    total = max(1, int(counts.sum()))
+    kept = []
+    for i in np.argsort(-counts):
+        if counts[i] == 0:
+            continue
+        if counts[i] < min_share * total and len(kept) >= 2:
+            continue                      # an edge blend, not a decal colour
+        c = pal[i]
+        if int(c.min()) >= 215 and int(c.max() - c.min()) <= 20:
+            # white ink reads as film-tinted light grey in a scan; printed,
+            # that would be a faint grey where the paper should stay bare
+            c = np.array([255, 255, 255], np.int32)
+        if all(int(np.abs(c - k).sum()) > merge for k in kept):
+            kept.append(c)
+    return np.array(kept, np.uint8) if kept else None
+
+
+def snap_palette(rgb_img, palette):
+    """Replace every pixel by the nearest colour of `palette` — the redrawn
+    art then uses EXACTLY the scan's colours (and traces as flat fills)."""
+    a = np.asarray(rgb_img.convert("RGB")).astype(np.int32)
+    H, W, _ = a.shape
+    flat = a.reshape(-1, 3)
+    P = np.asarray(palette, np.int32)
+    out = np.empty_like(flat)
+    step = 262144
+    for s in range(0, len(flat), step):
+        blk = flat[s:s + step]
+        d = ((blk[:, None, :] - P[None, :, :]) ** 2).sum(2)
+        out[s:s + step] = P[d.argmin(1)]
+    return Image.fromarray(out.reshape(H, W, 3).astype(np.uint8), "RGB")
+
+
+# ---------------------------------------------------------------- AI redraw
+def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
+                 keep_palette=True, palette_colors=16, work_px=1024,
+                 min_work_px=640, progress=None, cancelled=None, gap=16,
+                 min_side=24):
+    """AI-redraw every decal on a cleaned sheet and rebuild the sheet as
+    vector art at its correct physical size.
+
+    rgba       the faithful cleanup of the scan (transparent background), at
+               the scan's native resolution
+    refine     refine(rgb_image, (w, h)) -> rgb_image | None — the AI step. It
+               gets one decal as an RGB picture on white at scan size plus the
+               work-canvas size to draw at, and returns the redrawn picture
+               (None = cancelled; any size is resized to the canvas).
+    The scan supplies what the AI must not invent: each decal's SILHOUETTE
+    (its alpha is cut from the scan) and, with keep_palette, its exact
+    COLOURS (the redraw is snapped to the scan's own palette).
+
+    Returns None when cancelled, else a dict:
+      svg    the whole sheet as one SVG — every decal in its place, width/
+             height in inches (size_scale applied), so it prints at size
+      rgba   the sheet rasterised at target_dpi (transparent)
+      items  one dict per decal: box (in scan px), svg, rgba, size_in"""
+    boxes = segment_decals(rgba, gap=gap, min_side=min_side)
+    if not boxes:
+        return {"svg": None, "rgba": None, "items": []}
+    W, H = rgba.size
+    k = float(size_scale) * float(target_dpi) / float(native_dpi)  # scan px -> out px
+    sheet_w_in = W / float(native_dpi) * size_scale
+    sheet_h_in = H / float(native_dpi) * size_scale
+    sheet = Image.new("RGBA", (max(1, int(round(W * k))),
+                               max(1, int(round(H * k)))), (0, 0, 0, 0))
+    parts, items = [], []
+    for i, (x0, y0, x1, y1) in enumerate(boxes):
+        if cancelled and cancelled():
+            return None
+        if progress:
+            progress(i, len(boxes))
+        crop = rgba.crop((x0, y0, x1, y1))
+        cw, ch = crop.size
+        # the work canvas: about 4× the scan crop, clamped to [min_work_px,
+        # work_px] on the long edge (diffusion models draw badly on tiny
+        # canvases and invent on huge ones), both sides multiples of 8,
+        # aspect kept. The enlargement itself happens in refine (engine-side
+        # RealESRGAN when available), so the crop goes over at native size.
+        long = float(max(cw, ch))
+        s = min(float(work_px), max(float(min_work_px), long * 4.0)) / long
+        wr = max(64, int(round(cw * s / 8)) * 8)
+        hr = max(64, int(round(ch * s / 8)) * 8)
+        on_white = Image.alpha_composite(
+            Image.new("RGBA", crop.size, (255, 255, 255, 255)), crop).convert("RGB")
+        out = refine(on_white, (wr, hr))
+        if out is None:
+            return None
+        out = out.convert("RGB")
+        if out.size != (wr, hr):
+            out = out.resize((wr, hr), Image.LANCZOS)
+        # the silhouette comes from the SCAN (hard alpha). Where the AI drew
+        # its shape a little inside that outline, the gap holds the AI's
+        # white background: in a band along the outline, drop pixels that
+        # are background-coloured (far from any ink) so no fringe is traced.
+        # White INK deeper inside the decal is untouched.
+        sil = crop.split()[3].resize((wr, hr), Image.BILINEAR)
+        sil = np.asarray(sil.point(lambda v: 255 if v >= 128 else 0)) > 0
+        band_r = max(3, int(round(0.012 * max(wr, hr))))
+        inner = np.asarray(Image.fromarray(sil.astype(np.uint8) * 255)
+                           .filter(ImageFilter.MinFilter(2 * band_r + 1))) > 0
+        # "light" = white-ish / light grey, i.e. the background or the faint
+        # contour some models draw around a shape (a sticker-border look)
+        def _light(arr):
+            return (arr.mean(2) >= 200) & ((arr.max(2) - arr.min(2)) < 40)
+
+        ai = np.asarray(out).astype(np.int32)
+        light = _light(ai)
+        pal = palette_of(crop, colors=palette_colors)
+        if keep_palette and pal is not None:
+            out = snap_palette(out, pal)
+            light |= _light(np.asarray(out).astype(np.int32))
+        keep = sil.copy()
+        keep[(sil & ~inner) & light] = False
+        redrawn = out.convert("RGBA")
+        redrawn.putalpha(Image.fromarray((keep * 255).astype(np.uint8)))
+        w_in = cw / float(native_dpi) * size_scale
+        h_in = ch / float(native_dpi) * size_scale
+        px_w = max(1, int(round(w_in * target_dpi)))
+        px_h = max(1, int(round(h_in * target_dpi)))
+        svg, ras = vectorize(redrawn, target_px=px_w, quantize_colors=0,
+                             presmooth=False, drop_halo=False)
+        svg = svg_set_physical_size(svg, w_in, h_in)
+        if ras.size != (px_w, px_h):
+            ras = ras.resize((px_w, px_h), Image.LANCZOS)
+        items.append(dict(box=(x0, y0, x1, y1), svg=svg, rgba=ras,
+                          size_in=(w_in, h_in)))
+        px, py = int(round(x0 * k)), int(round(y0 * k))
+        part = ras
+        if px + part.width > sheet.width or py + part.height > sheet.height:
+            part = part.crop((0, 0, max(1, min(part.width, sheet.width - px)),
+                              max(1, min(part.height, sheet.height - py))))
+        if px < sheet.width and py < sheet.height:
+            sheet.alpha_composite(part, (px, py))
+        parts.append(f'<g transform="translate({x0} {y0}) '
+                     f'scale({cw / wr:.6f} {ch / hr:.6f})">'
+                     f'{svg_inner(svg)}</g>')
+    sheet_svg = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+                 '<svg xmlns="http://www.w3.org/2000/svg" version="1.1" '
+                 f'width="{sheet_w_in:.4f}in" height="{sheet_h_in:.4f}in" '
+                 f'viewBox="0 0 {W} {H}">\n' + "\n".join(parts) + "\n</svg>\n")
+    return {"svg": sheet_svg, "rgba": sheet, "items": items}
 
 
 # ---------------------------------------------------------------- pipeline
@@ -428,7 +772,14 @@ def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
         # target pixels from the requested print DPI vs the scan's native DPI
         scale = max(1.0, float(target_dpi) / max(72, native_dpi))
         target_px = int(rgba.width * scale)
+        pw, ph = rgba.size
         out["svg"], rgba = vectorize(rgba, target_px=target_px)
+        # the SVG states its printed size (scan pixels / scan DPI, times the
+        # figure-scale conversion), so it opens and prints at size
+        ss = size_scale if size_scale and size_scale > 0 else 1.0
+        out["svg"] = svg_set_physical_size(
+            out["svg"], pw / float(max(72, native_dpi)) * ss,
+            ph / float(max(72, native_dpi)) * ss)
     else:  # cleanup — upscale the raster to the target DPI if asked
         if target_dpi and target_dpi > native_dpi:
             f = target_dpi / native_dpi

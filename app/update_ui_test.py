@@ -270,6 +270,54 @@ tabs = [ui.left_tabs.tab(t, "text") for t in ui.left_tabs.tabs()]
 check("five tabs, in order",
       tabs == ["Image generation", "Animation", "Borders", "Edit image",
                "Decals"], tabs)
+# ---- equal-width tab strip with ◀ ▶ arrows (v2.15) ------------------------
+print("tab strip")
+check("the left tabs have a TabStrip", hasattr(ui, "tab_strip"))
+_ts = ui.tab_strip
+# Style.layout(name, []) disables a layout by setting it to the word "null"
+# (tkinter's documented way to hide notebook tabs) — so it reads back as
+# [("null", {})], not as an empty list
+_lay = app.ttk.Style().layout("Left.TNotebook.Tab")
+check("the notebook's own headers are hidden (disabled tab layout)",
+      ui.left_tabs.cget("style") == "Left.TNotebook"
+      and (not _lay or [e[0] for e in _lay] == ["null"]), _lay)
+check("the strip has left/right arrow buttons",
+      hasattr(_ts, "left_btn") and hasattr(_ts, "right_btn"))
+_tw, _vis = _ts.layout(avail=600)
+check("every tab gets the SAME width (the strip shared out evenly)",
+      _tw == 600 // 5 and _vis == 5, (_tw, _vis))
+check("wide enough: all five fit, nothing to scroll", not _ts.can_scroll(avail=600))
+_ts.refresh(avail=600, ensure=True)
+check("arrows disabled when everything fits",
+      "disabled" in _ts.left_btn.state() and "disabled" in _ts.right_btn.state())
+check("too narrow: tabs keep their minimum width and the strip scrolls",
+      _ts.can_scroll(avail=200) and _ts.layout(avail=200)[0] >= _ts.MIN_W,
+      _ts.layout(avail=200))
+_ts.refresh(avail=200, ensure=True)
+check("narrow: the right arrow comes alive (more tabs to the right)",
+      "disabled" not in _ts.right_btn.state()
+      and "disabled" in _ts.left_btn.state())
+_ts.scroll(1, avail=200)
+check("the arrow scrolls the window of visible tabs",
+      _ts.offset == 1 and "disabled" not in _ts.left_btn.state(), _ts.offset)
+ui.left_tabs.select(4); root.update()
+_ts.refresh(avail=200, ensure=True)
+check("selecting a tab keeps it in view", _ts.offset + _ts.visible > 4,
+      (_ts.offset, _ts.visible))
+ui.left_tabs.select(0); root.update()
+_ts.refresh(avail=600, ensure=True)
+check("back to wide: the strip snaps to the start", _ts.offset == 0)
+
+
+class _Click:
+    x = _tw * 2 + 5          # inside the third tab
+
+
+_ts._click(_Click())
+root.update()
+check("clicking the strip selects the tab under the pointer",
+      ui.left_tabs.index("current") == 2, ui.left_tabs.index("current"))
+ui.left_tabs.select(0); root.update()
 
 
 def page_of(widget):
@@ -429,8 +477,9 @@ try:
 except Exception as _e:
     check("faithful colour fidelity", False, repr(_e))
 # dedicated "Redraw to vector" button + forced mode
-check("Decals has a Trace-to-vector button",
-      hasattr(ui, "decal_vec_btn"))
+check("Decals has a Redraw-to-vector (AI) button",
+      hasattr(ui, "decal_vec_btn")
+      and "Redraw" in ui.decal_vec_btn.cget("text"))
 ui.decal_sources = []
 ui._process_decals("vector")   # force_mode accepted; graceful with no sources
 check("trace-to-vector force_mode is accepted (no-op with no files)",
@@ -486,6 +535,162 @@ check("Decals has a Generate->SVG prompt box + button + method",
 # _generate tags a decal-gen run so _finish_image traces it to SVG
 check("decal-gen flag defaults off (normal generation unaffected)",
       not getattr(ui, "_decal_gen", False))
+
+# ---- AI redraw to vector (v2.15): red buttons, segmentation, palette snap,
+# ---- sheet rebuild at the printed size, the per-decal engine graph ----------
+print("decals AI redraw")
+check("Decals action buttons are red Go buttons (like the other tabs' generate)",
+      all(getattr(ui, n).cget("style") == "Go.TButton"
+          for n in ("decal_btn", "decal_vec_btn", "decal_gen_btn")))
+check("redraw strength defaults to a gentle 0.35, exact-colour lock on",
+      abs(ui.decal_redraw_var.get() - 0.35) < 1e-6
+      and ui.decal_palette_var.get())
+check("the AI redraw worker is wired",
+      callable(getattr(ui, "_redraw_decals", None)))
+ui.decal_sources = []
+ui._redraw_decals()
+check("redraw with no sources says to add files (no crash)",
+      "add" in ui.decal_status_var.get().lower(), ui.decal_status_var.get())
+check("the Decals buttons are enabled again after a no-op",
+      "disabled" not in ui.decal_vec_btn.state())
+try:
+    import numpy as _np4
+    # a sheet: two decals far apart on a transparent background; the first
+    # has a black detail inside its red block
+    _sh = _np4.zeros((300, 400, 4), _np4.uint8)
+    _sh[40:120, 30:130] = (206, 22, 30, 255)
+    _sh[60:100, 50:110] = (0, 0, 0, 255)
+    _sh[180:260, 250:370] = (20, 60, 200, 255)
+    _sheet = app.Image.fromarray(_sh, "RGBA")
+    _boxes = _dec.segment_decals(_sheet)
+    check("segment_decals finds the two decals", len(_boxes) == 2, _boxes)
+    check("…in reading order (top-left first), padded around the art",
+          len(_boxes) == 2 and _boxes[0][0] < _boxes[1][0]
+          and _boxes[0][0] <= 30 and _boxes[0][2] >= 130, _boxes)
+    _pal = _dec.palette_of(_sheet.crop(_boxes[0]))
+    _pal_set = {tuple(int(v) for v in c) for c in _pal}
+    check("palette_of returns the decal's exact scan colours",
+          (206, 22, 30) in _pal_set and (0, 0, 0) in _pal_set
+          and len(_pal_set) <= 3, _pal_set)
+    _noisy = app.Image.fromarray(
+        _np4.array([[[210, 30, 25], [3, 2, 0]]], _np4.uint8), "RGB")
+    _snapped = _np4.asarray(_dec.snap_palette(_noisy, _pal))
+    check("snap_palette maps near colours onto the exact palette",
+          tuple(int(v) for v in _snapped[0, 0]) == (206, 22, 30)
+          and tuple(int(v) for v in _snapped[0, 1]) == (0, 0, 0))
+    _calls = []
+
+    def _fake_refine(rgb, size):
+        _calls.append((rgb.size, size))
+        return rgb.resize(size)        # an identity "AI" at the work size
+
+    _out = _dec.redraw_sheet(_sheet, _fake_refine, native_dpi=100,
+                             size_scale=1.5, target_dpi=100)
+    check("redraw_sheet redraws every decal once",
+          len(_calls) == 2 and len(_out["items"]) == 2, (_calls, len(_out["items"])))
+    check("the crop goes to the AI at scan size; the canvas is /8 and >= floor",
+          all(r[0] < 200 and s[0] % 8 == 0 and s[1] % 8 == 0 and max(s) >= 640
+              for r, s in _calls), _calls)
+    check("the sheet SVG states its printed size (scale applied) + viewBox",
+          'width="6.0000in"' in _out["svg"] and 'height="4.5000in"' in _out["svg"]
+          and 'viewBox="0 0 400 300"' in _out["svg"], _out["svg"][:200])
+    check("each decal SVG has its own physical size",
+          all('in"' in it["svg"] and "viewBox" in it["svg"]
+              for it in _out["items"]))
+    check("the sheet raster is at target DPI × scale (600×450)",
+          _out["rgba"].size == (600, 450), _out["rgba"].size)
+    _ra = _np4.asarray(_out["rgba"])
+    check("the redrawn decals land in place with the exact colours",
+          tuple(int(v) for v in _ra[70, 60][:3]) == (206, 22, 30)
+          and _ra[70, 60][3] > 200
+          and tuple(int(v) for v in _ra[120, 120][:3]) == (0, 0, 0)
+          and tuple(int(v) for v in _ra[330, 465][:3]) == (20, 60, 200),
+          (tuple(_ra[70, 60]), tuple(_ra[120, 120]), tuple(_ra[330, 465])))
+    check("the background stays transparent",
+          _ra[10, 10][3] == 0 and _ra[200, 150][3] == 0)
+    check("cancel aborts the redraw",
+          _dec.redraw_sheet(_sheet, _fake_refine, cancelled=lambda: True) is None)
+    # the fringe fix: where the AI's shape sits inside the scan's outline the
+    # gap holds the AI's white background — that band must go, the interior
+    # must stay (an all-white "AI" result is the extreme case)
+    _ow = _dec.redraw_sheet(
+        _sheet, lambda rgb, size: app.Image.new("RGB", size, (255, 255, 255)),
+        native_dpi=100, size_scale=1.0, target_dpi=100, keep_palette=False)
+    _oa = _np4.asarray(_ow["rgba"])[..., 3] > 128
+    _full = int((_sh[..., 3] > 0).sum())
+    check("background-coloured pixels along the outline are dropped, interior kept",
+          0 < int(_oa.sum()) < _full and bool(_oa[80, 80]),
+          (int(_oa.sum()), _full))
+    # the tracer hazard: a decal that fills most of its crop must not come
+    # back as a solid rectangle (the key-coloured margin keeps the key as
+    # the base layer)
+    _blk = _np4.zeros((200, 200, 4), _np4.uint8)
+    _blk[20:180, 20:180] = (206, 22, 30, 255)
+    _bs, _br = _dec.vectorize(app.Image.fromarray(_blk, "RGBA"), target_px=200,
+                              quantize_colors=0, presmooth=False)
+    _ba = _np4.asarray(_br)[..., 3] > 128
+    check("vectorize keeps the background transparent when ink dominates the crop",
+          not _ba[2, 2] and _ba[100, 100]
+          and abs(int(_ba.sum()) - 160 * 160) < 1200, int(_ba.sum()))
+    # the palette ignores edge blends: a red block with pinkish anti-aliased
+    # edge pixels must give a red (+black) palette, no pink
+    _edge = _sh.copy()
+    _edge[40, 30:130] = (230, 140, 150, 255)
+    _edge[119, 30:130] = (230, 140, 150, 255)
+    _pe = {tuple(int(v) for v in c)
+           for c in _dec.palette_of(app.Image.fromarray(_edge, "RGBA").crop(_boxes[0]))}
+    check("palette_of skips the one-pixel edge blends",
+          (206, 22, 30) in _pe and (230, 140, 150) not in _pe, _pe)
+    _wt = _sh.copy()
+    _wt[40:120, 30:130] = (230, 235, 234, 255)      # film-tinted "white" ink
+    _pw = {tuple(int(v) for v in c)
+           for c in _dec.palette_of(app.Image.fromarray(_wt, "RGBA").crop(_boxes[0]))}
+    check("film-tinted white ink snaps to pure white (printers leave it bare)",
+          (255, 255, 255) in _pw and (230, 235, 234) not in _pw, _pw)
+    _ps = _dec.svg_set_physical_size(
+        '<svg xmlns="x" width="90" height="60"><path d="M0 0"/></svg>', 1.5, 1.0)
+    check("svg_set_physical_size adds inches + a viewBox",
+          'width="1.5000in"' in _ps and 'height="1.0000in"' in _ps
+          and 'viewBox="0 0 90 60"' in _ps, _ps)
+    _rv2 = _dec.process_image(_src, mode="vector", remove_bg=True, denoise=0,
+                              tol=52, target_dpi=300, native_dpi=300,
+                              size_scale=1.5)
+    check("plain Vectorize SVGs now carry their printed size too",
+          'width="0.6000in"' in (_rv2.get("svg") or ""), (_rv2.get("svg") or "")[:160])
+except Exception as _e:
+    import traceback
+    traceback.print_exc()
+    check("AI redraw pipeline runs headless", False, repr(_e))
+_gp = {"model": "Juggernaut-XL-v9.safetensors", "prompt": "p", "negative": "n",
+       "width": 1024, "height": 768, "seed": 1, "denoise": 0.35,
+       "ref_image_name": "in.png"}
+_g = app.build_decal_refine_graph(
+    {**_gp, "loras": [("Decals.safetensors", 1.0)], "esrgan": True})
+_kinds = [v["class_type"] for v in _g.values()]
+check("refine graph: LoadImage -> ESRGAN -> scale -> VAEEncode -> KSampler("
+      "denoise) -> decode -> save",
+      all(k in _kinds for k in ("LoadImage", "ImageUpscaleWithModel",
+                                "ImageScale", "VAEEncode", "KSampler",
+                                "VAEDecode", "SaveImage"))
+      and _g["6"]["inputs"]["denoise"] == 0.35
+      and _g["13"]["inputs"]["width"] == 1024
+      and _g["13"]["inputs"]["crop"] == "disabled", _kinds)
+check("refine graph applies the ticked LoRA",
+      "LoraLoader" in _kinds
+      and _g["20"]["inputs"]["lora_name"] == "Decals.safetensors")
+check("refine graph without ESRGAN skips the upscale nodes",
+      "ImageUpscaleWithModel" not in [
+          v["class_type"] for v in
+          app.build_decal_refine_graph({**_gp, "esrgan": False}).values()])
+# the AI-upscale helper used to call Generator-only helpers on the App and
+# swallow the AttributeError; with no engine it must simply hand back the input
+_ea = app.engine_alive
+app.engine_alive = lambda *a, **k: False
+try:
+    check("AI-upscale helper returns the input when the engine is down",
+          ui._decal_ai_upscale(_sheet, 2.0) is _sheet)
+finally:
+    app.engine_alive = _ea
 try:
     import numpy as _np2
     _rng = _np2.random.default_rng(1)
