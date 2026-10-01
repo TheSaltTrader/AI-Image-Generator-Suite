@@ -1,5 +1,17 @@
 # Changelog — AI Image Generator Suite
 
+## v2.15.2 — 2026-10-01
+- **Fixed: a sheet scanned on WHITE paper came out as one giant decal.** The
+  background keyer keeps neutral white on purpose (white ink on the blue
+  carrier film). On white backing that meant the whole page stayed opaque, the
+  AI redraw treated it as a single decal and invented art into the empty
+  space. White backing is now detected and white is treated as background
+  there, so the coloured/dark decals are cut out and redrawn on their own. The
+  status line says when a sheet was on white paper (white-ink decals cannot
+  be separated from white backing and are left out).
+- **Fixed:** after a Decals job the main status line kept saying "Loading the
+  model into GPU memory…"; it now says Ready and the bar resets.
+
 ## v2.15.1 — 2026-10-01
 - **Fixed: "Update failed: the release zip has no AIImageGeneratorSuite_old_…exe".**
   An update renames the running exe aside as `…_old_<pid>.exe` and can only

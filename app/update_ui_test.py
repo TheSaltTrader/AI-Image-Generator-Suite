@@ -641,6 +641,26 @@ try:
            for c in _dec.palette_of(app.Image.fromarray(_edge, "RGBA").crop(_boxes[0]))}
     check("palette_of skips the one-pixel edge blends",
           (206, 22, 30) in _pe and (230, 140, 150) not in _pe, _pe)
+    # a sheet scanned on WHITE paper: white is the background there (the
+    # white-ink protection is for tinted carrier film only) — v2.15.2: a
+    # whole white page used to stay opaque and become one giant decal
+    _wp = _np4.full((120, 160, 3), (250, 247, 246), _np4.uint8)
+    _wp[30:70, 20:80] = (206, 22, 30)                 # a red decal
+    _wp[30:70, 100:140] = (255, 255, 255)             # white "ink" (invisible)
+    _wp[90:92, 20:140] = (205, 205, 205)              # a sticker's faint cut edge
+    _wpr = _dec.process_image(app.Image.fromarray(_wp, "RGB"), mode="cleanup",
+                              remove_bg=True, denoise=0, tol=52,
+                              target_dpi=300, native_dpi=300, exact=True)
+    _wpa = _np4.asarray(_wpr["rgba"])[..., 3]
+    check("white paper is detected as a neutral carrier",
+          _dec.is_neutral_carrier(_dec.detect_carrier(app.Image.fromarray(_wp, "RGB")))
+          and not _dec.is_neutral_carrier((214, 240, 242)))
+    check("on white paper the page background goes transparent",
+          _wpa[5, 5] < 40 and _wpa[100, 150] < 40, (int(_wpa[5, 5]), int(_wpa[100, 150])))
+    check("…the red decal stays and is the only cut-out (faint grey edges dropped)",
+          _wpa[50, 50] > 200 and _wpa[91, 80] < 40
+          and len(_dec.segment_decals(_wpr["rgba"])) == 1,
+          (int(_wpa[91, 80]), len(_dec.segment_decals(_wpr["rgba"]))))
     _wt = _sh.copy()
     _wt[40:120, 30:130] = (230, 235, 234, 255)      # film-tinted "white" ink
     _pw = {tuple(int(v) for v in c)

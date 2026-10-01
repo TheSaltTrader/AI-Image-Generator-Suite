@@ -1003,6 +1003,25 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **White-paper scan → one giant decal + invented art (v2.15.2).** The user's
+  first real AI-redraw run was Cobra_001.pdf: a white sticker sheet (mostly
+  white-ink decals: blank rectangles/circles, white "GIJ-74J S-653x" text)
+  scanned on WHITE paper, carrier (250,247,246). `_carrier_alpha` protects
+  neutral white (`is_white`) so white ink survives on the blue film — on white
+  backing that kept 970k of 974k px opaque, `segment_decals` returned the whole
+  page as ONE box, the AI got a near-blank 976×998 canvas and wrote "LEAN"
+  into it (the prompt's own word "clean" leaking in as typography). FIX:
+  `is_neutral_carrier()` (chroma < 14, brightness > 225) → the keyer drops the
+  white protection and keys on plain distance; the redraw worker notes the
+  sheet was on white paper (white-ink decals are left out — they cannot be
+  told from the backing and would not print at home anyway). Validated
+  headless: tol 79 → the 5 coloured/dark decals (two red "3" badges, the red
+  arrow, the crosshair, the black panel) as separate boxes; tol 52 also picks
+  up faint sticker-edge fragments. Also: the engine wait left "Loading the
+  model…" on the MAIN status after a decal job (decal jobs report on the
+  Decals line) → decal_done now resets status_var + the bar. The user's
+  "software is not on screen but still loaded" was simply the window
+  minimised (IsIconic; restored with eye_raise) — nothing hung. update_ui 335.
 - **"Update failed: the release zip has no AIImageGeneratorSuite_old_16396.exe"
   (v2.15.1).** The user's v2.13.1→v2.14.0 self-update renamed the running exe
   aside as `AIImageGeneratorSuite_old_16396.exe`; the old copy's PyInstaller

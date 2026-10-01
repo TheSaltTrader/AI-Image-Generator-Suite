@@ -137,9 +137,11 @@ exe** via the spec (`collect_all`). Verify in a frozen build with
   width/height in inches for vector).
 
 **Honest limits:** white ink ≈ the film colour can't be separated (keep bg, print
-on white paper); home printers can't print white; the AI redraw depends on the
-chosen model/LoRA and strength — text and fine detail survive best at low
-strength; decals closer than ~16 px on the sheet are cut out as one.
+on white paper); on a sheet scanned on WHITE paper (`is_neutral_carrier`) white
+is the background and white-ink decals are left out entirely; home printers
+can't print white; the AI redraw depends on the chosen model/LoRA and
+strength — text and fine detail survive best at low strength; decals closer
+than ~16 px on the sheet are cut out as one.
 
 ---
 

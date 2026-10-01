@@ -104,6 +104,17 @@ def detect_carrier(img, border=0.06):
     return tuple(int(v) for v in med)
 
 
+def is_neutral_carrier(carrier):
+    """True when the scan's backing is plain white/neutral paper rather than
+    a tinted carrier film. On white paper, white IS the background: white
+    ink cannot be told from it (and would not print on white anyway)."""
+    try:
+        c = [float(v) for v in carrier]
+    except (TypeError, ValueError):
+        return False
+    return (max(c) - min(c)) < 14 and (sum(c) / 3.0) > 225
+
+
 def _carrier_alpha(a_rgb, carrier, tol=52, soft=18):
     """Alpha (0=carrier/transparent, 255=keep) that removes the carrier colour
     while KEEPING white ink and coloured art.
@@ -111,7 +122,12 @@ def _carrier_alpha(a_rgb, carrier, tol=52, soft=18):
     White ink sits close to a light carrier in plain distance, so we key on the
     carrier's TINT direction: the carrier is a light, faintly-tinted colour, so
     a pixel is carrier only when it is light AND shares that tint. Neutral white
-    (no tint) and saturated art (different tint) are kept."""
+    (no tint) and saturated art (different tint) are kept.
+
+    On a NEUTRAL carrier (a sheet scanned on white paper) that protection is
+    turned off and the key is plain colour distance: with it on, a whole white
+    page stayed opaque, became one giant "decal" and the AI redraw invented
+    art into it (v2.15.2)."""
     a = a_rgb.astype(np.float32)
     C = np.array(carrier, np.float32)
     grayC = C.mean()
@@ -122,9 +138,13 @@ def _carrier_alpha(a_rgb, carrier, tol=52, soft=18):
     proj = (tintP * tintC).sum(2) / (ntC * ntC)      # tint alignment w/ carrier
     dist = np.linalg.norm(a - C, axis=2)             # colour distance
     light = a.mean(2)
-    is_white = (np.abs(tintP).sum(2) < 24) & (light > 210)   # neutral & bright
-    carrier_like = ((dist < tol) | ((proj > 0.55) & (proj < 1.8)
-                    & (np.abs(light - grayC) < 40))) & (~is_white)
+    if is_neutral_carrier(carrier):
+        is_white = np.zeros(dist.shape, bool)         # white = background
+        carrier_like = dist < tol
+    else:
+        is_white = (np.abs(tintP).sum(2) < 24) & (light > 210)   # neutral & bright
+        carrier_like = ((dist < tol) | ((proj > 0.55) & (proj < 1.8)
+                        & (np.abs(light - grayC) < 40))) & (~is_white)
     # soft edge: ramp alpha over `soft` units of distance past the hard cut
     alpha = np.clip((dist - tol) / max(1, soft), 0, 1) * 255
     alpha[~carrier_like] = 255
@@ -759,6 +779,13 @@ def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
         # applied to the (possibly colour-processed) RGB — otherwise white-balance
         # erases the very tint the keyer uses to find the carrier film
         alpha = _carrier_alpha(np.asarray(orig), carrier, tol=tol)
+        if is_neutral_carrier(carrier):
+            # white paper: the faint grey shadows along the cut edges of
+            # white stickers survive the distance key but are not art —
+            # light AND colourless pixels go with the background
+            o = np.asarray(orig).astype(np.int32)
+            faint = (o.mean(2) > 200) & ((o.max(2) - o.min(2)) < 30)
+            alpha = np.where(faint, 0, alpha).astype(np.uint8)
         rgba = Image.fromarray(
             np.dstack([np.asarray(cleaned.convert("RGB")), alpha]), "RGBA")
         if tidy_matte:

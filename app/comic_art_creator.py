@@ -104,7 +104,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.15.1"
+APP_VERSION = "2.15.2"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -5623,9 +5623,12 @@ class App:
                 return gen._fetch_image(imgs[0]).convert("RGB")
 
             try:
+                white_paper = []
                 for src in srcs:
                     for label, img in decals.iter_source_images(src):
                         ui_q.put(("decal_status", f"{label}: cleaning the scan…"))
+                        if decals.is_neutral_carrier(decals.detect_carrier(img)):
+                            white_paper.append(label)
                         res = decals.process_image(img, **opts)
 
                         def prog(i, n, _lab=label):
@@ -5673,6 +5676,12 @@ class App:
             except Exception as e:
                 applog.exception("decal AI redraw failed")
                 err = str(e)
+            if white_paper and not err:
+                ui_q.put(("decal_note",
+                          "Note: " + ", ".join(white_paper) + " was scanned on "
+                          "WHITE paper — white-ink decals cannot be separated "
+                          "from white backing, so only the coloured/dark "
+                          "decals were redrawn."))
             ui_q.put(("decal_done", done, err, False, "redraw"))
 
         threading.Thread(target=work, daemon=True).start()
@@ -9905,6 +9914,9 @@ class App:
                                             "output images.")
                 elif kind == "decal_status":
                     self.decal_status_var.set(msg[1])
+                elif kind == "decal_note":
+                    # a remark that must survive the final "Done" line
+                    self._decal_note = msg[1]
                 elif kind == "decal_add":
                     # a finished decal — preview (on white) into the gallery;
                     # the transparent file is already saved to the decals folder
@@ -9920,6 +9932,14 @@ class App:
                     what = msg[4] if len(msg) > 4 else "process"
                     self._decals_busy = False
                     self._set_decal_buttons(True)
+                    # the engine wait leaves "Loading the model…" on the main
+                    # status line; the job is over, say so there too
+                    try:
+                        self.status_var.set("Ready." if not err
+                                            else f"Decals: {err}")
+                        self.progress["value"] = 0
+                    except Exception:
+                        pass
                     if err == "cancelled":
                         self.decal_status_var.set(
                             f"Cancelled — {n} sheet(s) were finished before "
@@ -9930,12 +9950,14 @@ class App:
                             "mentions PyMuPDF or vtracer, that add-on isn't "
                             "available in this build.")
                     elif what == "redraw":
+                        note = getattr(self, "_decal_note", "")
+                        self._decal_note = ""
                         self.decal_status_var.set(
                             f"Done — {n} sheet(s) AI-redrawn. Each sheet is "
                             "saved as SVG + PNG (every decal in place) and "
                             "each decal as its own SVG + PNG in a <name>_redraw "
                             "folder, all at the printed size; the sheets are "
-                            "in the gallery.")
+                            "in the gallery." + ((" " + note) if note else ""))
                     else:
                         svg = " + SVG" if self.decal_mode_var.get() == "vector" \
                             else ""
