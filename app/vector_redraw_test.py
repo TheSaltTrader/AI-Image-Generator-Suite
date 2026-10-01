@@ -187,6 +187,30 @@ try:
 except RuntimeError as e:
     check("a refusal raises (so the caller falls back)", "declined" in str(e))
 
+print("orientation ask")
+
+
+class _OrientResp(_Resp):
+    class _B:
+        type = "text"
+        text = "270"
+    content = [_B()]
+
+
+class _OrientClient:
+    class messages:
+        @staticmethod
+        def create(**kw):
+            _calls.append(kw)
+            return _OrientResp()
+
+
+_calls.clear()
+check("ask_orientation returns the model's rotation as an int",
+      vr.ask_orientation(crop, client=_OrientClient()) == 270
+      and _calls[-1]["messages"][0]["content"][0]["type"] == "image"
+      and _calls[-1]["output_config"]["effort"] == "low")
+
 print("the key store")
 t = "AIImageGeneratorSuite/_test_vr"
 check("write/read/delete round trip in the Credential Manager",

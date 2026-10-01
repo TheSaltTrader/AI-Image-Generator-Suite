@@ -105,7 +105,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.16.3"
+APP_VERSION = "2.17.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -5318,16 +5318,40 @@ class App:
                      exportselection=False, width=6,
                      values=["300", "600", "1200"]).grid(row=0, column=1,
                                                          padx=(4, 12))
-        ttk.Label(drow, text="Scan DPI", style="Dim.TLabel").grid(row=0,
-                                                                  column=2)
-        self.decal_native_var = StringVar(value="300")
-        ttk.Combobox(drow, textvariable=self.decal_native_var, state="readonly",
-                     exportselection=False, width=6,
-                     values=["150", "200", "300", "600"]).grid(row=0, column=3,
-                                                              padx=(4, 0))
-        self._tip(drow, "Output DPI is the print resolution of the result; "
-                        "Scan DPI is what the original was scanned at (300 for "
-                        "these). Output ≥ scan enlarges it for crisp printing.")
+        ttk.Label(drow, text="(the source's own resolution is read from "
+                             "the file)", style="Dim.TLabel").grid(
+            row=0, column=2, padx=(4, 0))
+        self._tip(drow, "Output DPI is the print resolution of the result. "
+                        "The source's resolution is not a setting: a PDF "
+                        "says how big its scanned page is, an image file "
+                        "carries its DPI, and a photo gets it from the sheet "
+                        "width below. Output ≥ source enlarges it for crisp "
+                        "printing.")
+        # a photographed sheet is recognised, found and straightened on its
+        # own (and the vision model is asked which way is up); the one thing
+        # a photo cannot carry is its size, so the sheet's real width is the
+        # only input
+        wrow = ttk.Frame(left); wrow.grid(row=r, sticky="ew", pady=(4, 2)); r += 1
+        ttk.Label(wrow, text="Sheet width (mm, photos only)",
+                  style="Dim.TLabel").pack(side="left")
+        self.decal_width_mm_var = StringVar(value="")
+        ttk.Entry(wrow, textvariable=self.decal_width_mm_var, width=7).pack(
+            side="left", padx=(6, 0))
+        self._tip(wrow, "A photo has no DPI. Measure the sheet's real width "
+                        "and type it here; the picture's pixels divided by "
+                        "that width give the true resolution, so printed "
+                        "sizes come out right. Scans carry their DPI — leave "
+                        "it empty for them.")
+        self.decal_report_btn = ttk.Button(wrow, text="📋 Quality report",
+                                           command=self._show_decal_report)
+        self.decal_report_btn.pack(side="left", padx=(10, 0))
+        self._tip(self.decal_report_btn,
+                  "Every file you add is analysed on its own: scan or photo, "
+                  "how small the text is, sharpness, compression, lighting, "
+                  "whether the backing can be removed, how many decals — and "
+                  "the share of decals each method is expected to get right, "
+                  "with a recommendation. The headline shows in the status; "
+                  "this opens the full report.")
 
         ttk.Label(left, text="Convert for figure scale",
                   style="Head.TLabel").grid(row=r, sticky=W, pady=(6, 0)); r += 1
@@ -5519,17 +5543,124 @@ class App:
                 added += 1
         self._update_decal_count()
         if added:
-            self.decal_status_var.set(f"Added {added} file(s). Pick a method "
-                                      "and press Process decals.")
+            self.decal_status_var.set(f"Added {added} file(s) — analysing the "
+                                      "source quality…")
+            self._assess_decal_sources([p for p in paths if p in self.decal_sources])
 
     def _clear_decal_sources(self):
         self.decal_sources = []
         self.decal_list.delete(0, "end")
+        self._decal_orient = {}             # orientations remembered per page
+        self._decal_report_text = ""
         self._update_decal_count()
 
     def _update_decal_count(self):
         n = len(self.decal_sources)
         self.decal_count_var.set(f"{n} file(s)" if n else "no files added")
+
+    def _decal_source_prep(self):
+        """What the workers need to know about the source (read on the UI
+        thread): the sheet width for a photo's DPI. Photo detection,
+        cropping and straightening are automatic."""
+        try:
+            mm = float(self.decal_width_mm_var.get() or 0)
+        except Exception:
+            mm = 0.0
+        return {"width_mm": mm if mm > 0 else None}
+
+    @staticmethod
+    def _prepare_source(img, prep, file_dpi, rotate=0):
+        """Make one source page scan-like and find out its resolution.
+        A photo (the border is a table, not the sheet) is cropped to its
+        sheet, straightened, its lighting flattened and the sheet set to
+        white; the page is rotated by `rotate` when the orientation is
+        known. The DPI is the file's own (`file_dpi`, read from the PDF or
+        the image header) — a photo has none, so there it comes from the
+        sheet width, and without either 300 is assumed and said so.
+        Returns (image, dpi, note, is_photo)."""
+        photo = decals.looks_like_photo(img)
+        img, note = decals.prepare_photo(img, rotate=rotate, auto_crop=True)
+        dpi = None
+        if prep.get("width_mm"):
+            d = decals.dpi_from_width(img.width, prep["width_mm"])
+            if d:
+                dpi = int(round(d))
+                note = (note + "; " if note else "") + f"{dpi} dpi from the sheet width"
+        if dpi is None and file_dpi and not photo:
+            dpi = int(round(file_dpi))
+        if dpi is None:
+            dpi = 300
+            note = (note + "; " if note else "") + (
+                "no resolution in the file — 300 dpi assumed"
+                + (" (type the sheet width in mm for true sizes)" if photo else ""))
+        return img, dpi, note, photo
+
+    def _decal_orientation(self, src, label, img, client=None, model=None):
+        """The counter-clockwise rotation (0/90/180/270) that makes the
+        page's text read upright — asked of the vision model once per page
+        (it reads text; geometry cannot tell 'upside down') and remembered,
+        so Add files, Process and Redraw agree. 0 when there is no key."""
+        cache = self.__dict__.setdefault("_decal_orient", {})
+        key = (str(src), label)
+        if key in cache:
+            return cache[key]
+        rot = 0
+        try:
+            if client is not None or vector_redraw.get_api_key():
+                probe, _n = decals.prepare_photo(img, rotate=0, auto_crop=True)
+                rot = vector_redraw.ask_orientation(
+                    probe, model=model or self._vision_model_id(), client=client)
+        except Exception:
+            applog.exception("orientation ask failed; the page is left as is")
+            rot = 0
+        cache[key] = rot
+        return rot
+
+    def _assess_decal_sources(self, paths):
+        """Analyse newly added files off the UI thread and report: a
+        headline per page in the status, the full text behind the
+        📋 Quality report button. Runs automatically on Add files."""
+        prep = self._decal_source_prep()
+        ui_q = self.ui_queue
+
+        def work():
+            reports = []
+            for p in paths:
+                try:
+                    for label, raw, file_dpi in decals.iter_sources(p):
+                        rot = self._decal_orientation(p, label, raw)
+                        img, dpi, note, photo = self._prepare_source(
+                            raw, prep, file_dpi, rotate=rot)
+                        r = decals.assess_source(img, native_dpi=dpi, raw=raw,
+                                                 kind="photo" if photo else "scan",
+                                                 photo=photo, orientation=rot)
+                        lines = [f"— {label} —"] + ([note] if note else []) + r["report"]
+                        reports.append((label, r, lines))
+                except Exception as e:
+                    applog.exception("source assessment failed")
+                    reports.append((Path(p).name, None,
+                                    [f"— {Path(p).name} —", f"could not analyse: {e}"]))
+            ui_q.put(("decal_report", reports))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _show_decal_report(self):
+        """The full quality report of the queued files, in a window."""
+        text = getattr(self, "_decal_report_text", "")
+        if not text:
+            self.decal_status_var.set("No report yet — add files and the "
+                                      "analysis runs by itself.")
+            return
+        win = Toplevel(self.root)
+        win.title("Decal source quality report")
+        win.configure(bg=BG)
+        win.transient(self.root)
+        box = Text(win, width=90, height=28, wrap=WORD, bg=BG2, fg=FG,
+                   font=(UI_FONT, 10), padx=12, pady=10)
+        box.pack(fill="both", expand=True)
+        box.insert("1.0", text)
+        box.configure(state="disabled")
+        ttk.Button(win, text="Close", command=win.destroy).pack(pady=(4, 8))
 
     def _decal_scale_factor(self):
         s = decals.SCALE_N.get(self.decal_src_scale.get(), 12)
@@ -5572,7 +5703,6 @@ class App:
             self.decal_status_var.set("Add one or more images first "
                                       "(➕ Add files…).")
             return
-        native = int(self.decal_native_var.get())
         tgt_dpi = int(self.decal_dpi_var.get())
         size_scale = self._decal_scale_factor()
         mode = force_mode or self.decal_mode_var.get()
@@ -5580,17 +5710,14 @@ class App:
         # already scalable (it used to switch vector mode to native DPI with
         # no scale conversion at all)
         ai = bool(self.decal_ai_var.get()) and mode != "vector"
-        # AI upscale wants the FAITHFUL native-res image, then enlarges it with
-        # the ESRGAN model; without AI, the pipeline does its own LANCZOS resize
-        final_factor = size_scale * max(1.0, tgt_dpi / native)
         # cleanup with auto-colour OFF = EXACT pixel-faithful (art RGB untouched,
         # only background + thin streak lines change); auto-colour ON transforms
         exact = (mode == "cleanup" and not self.decal_wb_var.get())
+        # the source's own resolution (native_dpi / target_dpi) is set per
+        # page below: it comes from the file, not from a setting
         opts = dict(mode=mode,
                     remove_bg=self.decal_removebg_var.get(),
                     denoise=(0 if exact else 2), tol=int(self.decal_tol_var.get()),
-                    target_dpi=(native if ai else tgt_dpi),
-                    native_dpi=native,
                     do_trim=self.decal_trim_var.get(),
                     size_scale=(1.0 if ai else size_scale),
                     remove_lines=self.decal_lines_var.get(),
@@ -5600,6 +5727,7 @@ class App:
                     solidify=self.decal_solid_var.get(),
                     smooth=self.decal_smooth_var.get())
         srcs = list(self.decal_sources)
+        prep = self._decal_source_prep()
         vector = opts["mode"] == "vector"
         ai_warn = ai and not engine_alive()
         self._decals_busy = True
@@ -5616,8 +5744,20 @@ class App:
                     self.ui_queue.put(("decal_status",
                                        f"Processing {i + 1}/{len(srcs)}: "
                                        f"{Path(src).name}…"))
-                    for label, img in decals.iter_source_images(src):
-                        res = decals.process_image(img, **opts)
+                    for label, raw, file_dpi in decals.iter_sources(src):
+                        rot = self._decal_orientation(src, label, raw)
+                        img, src_dpi, pnote, photo = self._prepare_source(
+                            raw, prep, file_dpi, rotate=rot)
+                        if pnote:
+                            self.ui_queue.put(("decal_status", f"{label}: {pnote}"))
+                        # AI upscale wants the FAITHFUL native-res image, then
+                        # enlarges it with the ESRGAN model; without AI, the
+                        # pipeline does its own LANCZOS resize
+                        final_factor = size_scale * max(1.0, tgt_dpi / float(src_dpi))
+                        o = dict(opts, native_dpi=src_dpi,
+                                 target_dpi=(src_dpi if ai else tgt_dpi),
+                                 photo=photo)
+                        res = decals.process_image(img, **o)
                         rgba = res["rgba"]
                         dpi_out = tgt_dpi
                         if ai and not res.get("svg"):
@@ -5625,15 +5765,17 @@ class App:
                                 "decal_status", f"AI-upscaling {label}…"))
                             up = self._decal_ai_upscale(rgba, final_factor)
                             if up is rgba:
-                                dpi_out = native   # the AI step was skipped
+                                dpi_out = src_dpi   # the AI step was skipped
                             rgba = up
+                        film = (decals.PHOTO_WHITE if photo
+                                else decals.detect_carrier(img))
                         out_png = DECALS_OUT / f"{label}.png"
                         # the PNG carries its print resolution, so it opens
                         # and prints at the right physical size
                         rgba.save(out_png, dpi=(dpi_out, dpi_out))
                         entry = {"model": "decal", "seed": label,
                                  "user_prompt": label, "png": str(out_png),
-                                 "film": _film_colour(decals.detect_carrier(img)),
+                                 "film": _film_colour(film),
                                  "size_in": (rgba.width / float(dpi_out),
                                              rgba.height / float(dpi_out))}
                         entry_path = str(out_png)
@@ -5645,7 +5787,7 @@ class App:
                         # the gallery preview sits on the sheet's own film
                         # colour (white ink would vanish on white); the file
                         # on disk keeps its transparency
-                        prev = _on_film(rgba, decals.detect_carrier(img))
+                        prev = _on_film(rgba, film)
                         self.ui_queue.put(("decal_add", prev, entry, entry_path))
                         done += 1
             except Exception as e:
@@ -5750,7 +5892,6 @@ class App:
                  for n in self._selected_loras()]
         hint = self._get(self.decal_prompt_box)
         prompt = ((hint + ", ") if hint else "") + DECAL_REDRAW_STYLE
-        native = int(self.decal_native_var.get())
         tgt_dpi = int(self.decal_dpi_var.get())
         size_scale = self._decal_scale_factor()
         keep_pal = bool(self.decal_palette_var.get())
@@ -5759,17 +5900,18 @@ class App:
             gap_mm = max(0.0, float(self.decal_gap_var.get()))
         except Exception:
             gap_mm = 1.0
-        gap_px = int(round(gap_mm / 25.4 * native))
         # the faithful cleanup supplies the alpha (silhouettes) and the
         # palette; the background MUST be removed for the cut-out to work
+        # (the page's own resolution is set per page, from the file)
         opts = dict(mode="cleanup", remove_bg=True, denoise=0,
-                    tol=int(self.decal_tol_var.get()), target_dpi=native,
-                    native_dpi=native, do_trim=False, size_scale=1.0,
+                    tol=int(self.decal_tol_var.get()),
+                    do_trim=False, size_scale=1.0,
                     remove_lines=self.decal_lines_var.get(), balance=False,
                     exact=True, tidy_matte=self.decal_tidy_var.get(),
                     solidify=self.decal_solid_var.get(),
                     smooth=self.decal_smooth_var.get())
         srcs = list(self.decal_sources)
+        prep = self._decal_source_prep()
         self._decals_busy = True
         self._set_decal_buttons(False)
         CANCEL.clear()
@@ -5840,6 +5982,7 @@ class App:
 
             refine = diffusion_refine if method == "diffusion" else esrgan_refine
             vector_fn = None
+            client = None
             if method == "vision":
                 import anthropic
                 client = anthropic.Anthropic(api_key=vector_redraw.get_api_key(),
@@ -5851,12 +5994,23 @@ class App:
             try:
                 white_paper = []
                 for src in srcs:
-                    for label, img in decals.iter_source_images(src):
-                        ui_q.put(("decal_status", f"{label}: cleaning the scan…"))
-                        carrier = decals.detect_carrier(img)
+                    for label, raw, file_dpi in decals.iter_sources(src):
+                        # which way is up: the vision model's answer,
+                        # remembered from Add files (asked now if not yet)
+                        rot = self._decal_orientation(src, label, raw,
+                                                      client=client, model=vmodel)
+                        img, src_dpi, pnote, photo = self._prepare_source(
+                            raw, prep, file_dpi, rotate=rot)
+                        ui_q.put(("decal_status", f"{label}: "
+                                  + (pnote + "; " if pnote else "")
+                                  + "cleaning the scan…"))
+                        carrier = (decals.PHOTO_WHITE if photo
+                                   else decals.detect_carrier(img))
                         if decals.is_neutral_carrier(carrier):
                             white_paper.append(label)
-                        res = decals.process_image(img, **opts)
+                        o = dict(opts, native_dpi=src_dpi, target_dpi=src_dpi,
+                                 photo=photo)
+                        res = decals.process_image(img, **o)
 
                         def prog(i, n, _lab=label):
                             cost = (f"  ≈ ${stats['cost']:.2f} so far"
@@ -5866,10 +6020,11 @@ class App:
                                       f"{n}…{cost}"))
 
                         out = decals.redraw_sheet(
-                            res["rgba"], refine, native_dpi=native,
+                            res["rgba"], refine, native_dpi=src_dpi,
                             size_scale=size_scale, target_dpi=tgt_dpi,
                             keep_palette=keep_pal, progress=prog,
-                            cancelled=CANCEL.is_set, gap=gap_px,
+                            cancelled=CANCEL.is_set,
+                            gap=int(round(gap_mm / 25.4 * src_dpi)),
                             vector_fn=vector_fn, limit=1 if preview else None)
                         if out is None:
                             err = "cancelled"
@@ -5983,6 +6138,10 @@ class App:
                                   json={"prompt": graph,
                                         "client_id": gen.client_id},
                                   timeout=30)
+                if r.status_code == 400:
+                    # say WHY (a bare 400 told nothing in the log)
+                    applog.log("decal AI upscale: engine rejected the graph: "
+                               + r.text[:400])
                 r.raise_for_status()
                 imgs = gen._await_images(ws, r.json()["prompt_id"], timeout=900)
             finally:
@@ -10196,6 +10355,33 @@ class App:
                 elif kind == "decal_note":
                     # a remark that must survive the final "Done" line
                     self._decal_note = msg[1]
+                elif kind == "decal_report":
+                    reports = msg[1]
+                    self._decal_report_text = "\n\n".join(
+                        "\n".join(lines) for _l, _r, lines in reports)
+                    heads = []
+                    for label, r, _lines in reports:
+                        if r is None:
+                            heads.append(f"{label}: could not analyse")
+                            continue
+                        s = r["scores"]
+                        heads.append(
+                            f"{label}: {r['kind']}, {r['decals']} decals, "
+                            f"text ≈ {r['letters_px']:.0f} px" if r['letters_px']
+                            else f"{label}: {r['kind']}, {r['decals']} decals")
+                        heads[-1] += (f" → expected usable: trace {s['trace']:.0%}, "
+                                      f"vision {s['vision']:.0%}")
+                    rec = ""
+                    for _l, r, lines in reports:
+                        for ln in lines:
+                            if ln.startswith("Recommendation:"):
+                                rec = ln
+                                break
+                        if rec:
+                            break
+                    self.decal_status_var.set(
+                        "; ".join(heads) + (". " + rec if rec else "")
+                        + "  (📋 Quality report for details)")
                 elif kind == "decal_add":
                     # a finished decal — preview (on white) into the gallery;
                     # the transparent file is already saved to the decals folder

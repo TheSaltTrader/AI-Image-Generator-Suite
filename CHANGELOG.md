@@ -1,5 +1,29 @@
 # Changelog — AI Image Generator Suite
 
+## v2.17.0 — 2026-10-01
+- **The source is judged before it is converted.** Every file added to the
+  Decals tab is analysed on its own: scan or photo, the file's real
+  resolution, how small the text is (px and mm), sharpness, JPEG
+  compression, lighting, whether the backing can be removed, how many decals
+  it holds — and the share of decals each method (clean trace, vision model,
+  re-imagine) is expected to get right, with a plain recommendation (rescan
+  at N dpi, retake, crop, type the sheet width). The headline shows in the
+  status line; **📋 Quality report** opens the full text.
+- **The resolution is read from the file, not chosen.** The "Scan DPI" box is
+  gone: a PDF says how big its scanned page is drawn (one of the sample
+  sheets is 200 dpi — the fixed 300 had been sizing it a third too small),
+  an image file carries its DPI tag, and a photo has none: there the
+  optional *Sheet width (mm)* gives it, otherwise 300 is assumed and said so.
+- **Photos of a sheet work without settings.** A picture whose border is a
+  table rather than the sheet is recognised; the sheet is found and
+  straightened, its lighting flattened and the sheet set to white, a sliver
+  of table left along a bowed edge is dropped, and the vision model is asked
+  once which way is up (remembered for Process and Redraw). The Photo
+  checkbox and the Rotate field of the preview build are gone.
+- Known limits: white-ink stickers on a photographed sheet cannot be
+  separated (the sheet is keyed as white); without a vision key the
+  orientation is not checked, and the report says so.
+
 ## v2.16.3 — 2026-10-01
 - **Taskbar, second attempt.** The window now carries the app's identity
   itself (the per-window property the taskbar reads), so the pinned button

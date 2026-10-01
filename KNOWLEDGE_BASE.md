@@ -1003,6 +1003,48 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Pre-flight assessment, DPI from the file, automatic photo path
+  (v2.17.0).** User: "If the process can validate the picture, determine
+  the quality and success rate based on picture or scan and give you a
+  success rate and recommendation before trying to convert" / "image output
+  should be analyzed automatically by the process, not a selectable field
+  by user" / "talking about the DPI of the image being added".
+  `decals.iter_sources()` yields (label, image, dpi): PDF dpi = embedded
+  image px / `page.get_image_rects()` width in inches (pymupdf) —
+  Cobra_001.pdf is 200 dpi, every other sample 300; raster dpi =
+  `Image.info["dpi"]` when > 96 (72/96 are placeholders), else None; a photo
+  (no tag) → `dpi_from_width` when the user typed the sheet width, else 300
+  assumed and flagged in the report. `assess_source()` calibration (KW p3
+  at 300 dpi: letters 23 px, sharpness 246, blockiness 1.35; Cobra_001:
+  25 px, 117, 1.81): letters_px = median short side of pieces with
+  short ≥ 9, long ≤ 90, long ≤ 4×short — the first cut took the smallest
+  third of all pieces and read 8 px of specks; blockiness is measured on
+  the RAW picture (the 8-px JPEG grid is lost once a photo is
+  cropped/straightened); a photo's sharpness is divided by the flattening
+  gain² (250 / sheet grey) or a dim, soft photo reads "sharp" (807 vs 107).
+  Scores: ramps detail 12..55 px, focus 40..300, clean 1.4..1.9, even
+  σ 8..30; separation penalty ×0.35 when the opaque share ∉ [2%, 60%].
+  Photo path: `looks_like_photo` (border not bright/neutral) → `find_sheet`
+  (largest region differing from the border colour, 4 extreme corners) →
+  `straighten` (PIL QUAD, 1% inset) → `normalize_photo` (brightest colour
+  mode ≥ 2% = the sheet; block-wise illumination field of sheet-coloured
+  pixels, holes filled from neighbours; picture × 250/field → sheet white,
+  cast removed) → `process_image(photo=True)` keys on `PHOTO_WHITE` and
+  `_drop_border_fringe` clears border-HUGGING long pieces that are thin
+  (< 10%) or sparse (< 30% of their box) — `_label` is a BFS on a 4× grid.
+  DEAD ENDS: painting "table-coloured" pixels white (the raw border median
+  was the RED decal block, since the sheet filled the frame, and the red
+  block got painted; the wood crescent and the black block are
+  colour-identical in a dim shot — only shape separates them); a no-key
+  orientation heuristic (centroid-alignment entropy of letter-sized pieces:
+  the upright Z06 sheet reads "sideways", grids of decals align both ways)
+  — orientation is the vision model's answer only
+  (`vector_redraw.ask_orientation`: one ≤ 1024 px picture, effort low),
+  cached per (source, page) in `App._decal_orient`, cleared with the list.
+  Result on the user's phone photo (1440×1920, sideways on dark wood, no
+  EXIF): 30 decals cut (the red and black printed blocks as one, 29
+  stickers), the sliver gone; white-on-white stickers lost by design.
+  update_ui 376, vector_redraw 32.
 - **Taskbar, second attempt (v2.16.3).** After v2.16.1 the user still saw
   the pin unlit and "clicking it starts a new session". app.log showed no
   second `start` line and no "Already running" prompt — the second copy DID
@@ -1042,8 +1084,8 @@ the run.
   white labels come back as ':QALINFO' / '11' — at 300 dpi those letters
   are not in the data; the vision model says UNSURE on the same crops and
   the trace renders them jagged. The honest lever is the SCAN: 600–1200
-  dpi for sheets with 2 mm labels (set "Scan DPI" to match). update_ui
-  355, vector_redraw 31.
+  dpi for sheets with 2 mm labels (since v2.17 the app reads the file's
+  own DPI; a better scan is the lever). update_ui 355, vector_redraw 31.
 - **Taskbar pin never "lit", clicking it started a second copy (v2.16.1).**
   User: "When loading the app, the icon does not show its loaded, so when you
   click on it, it tries to restart it." The taskbar matches a running window

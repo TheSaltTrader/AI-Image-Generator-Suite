@@ -125,6 +125,20 @@ exe** via the spec (`collect_all`). Verify in a frozen build with
   caption says "SVG vector", `_save_as` offers the SVG, delete removes
   both files. The model is told to answer UNSURE rather than guess
   unreadable text; that decal falls back to the clean trace.
+- **Source assessment, photos, DPI from the file (v2.17):**
+  `decals.iter_sources` yields (label, image, dpi) with the dpi read from
+  the PDF page / image tag (None for a photo); `App._prepare_source` makes
+  a page scan-like (photo → `find_sheet`/`straighten`/`normalize_photo`)
+  and settles the dpi (sheet width > file > 300 assumed, said in the note);
+  `App._decal_orientation` asks the vision model once per page which way
+  is up (`vector_redraw.ask_orientation`, cached, 0 without a key);
+  `decals.assess_source` computes the metrics, the per-method success
+  scores and the report. `_assess_decal_sources` runs all of it on Add
+  files (`decal_report` queue message → status headline + 📋 Quality
+  report window). There is NO Scan DPI / Photo / Rotate control: the only
+  input is the optional sheet width (mm) for photos. `process_image(
+  photo=True)` keys on `PHOTO_WHITE` and drops border-hugging table
+  slivers (`_drop_border_fringe`).
 - **AI redraw (v2.15, now the "Re-imagine" method):** `_redraw_decals()`
   (App) → `decals.redraw_sheet(rgba, refine)`. The faithful cleanup supplies the alpha; `segment_decals` (run-based
   connected components, no scipy) cuts the sheet into decals in reading order;
@@ -186,8 +200,8 @@ global across installs, and both share the one engine/GPU. `tasklist` for
 ### Run tests (use the **venv python** — system python lacks pymupdf/vtracer)
 ```
 venv\Scripts\python.exe app\update_ui_test.py     # MAIN gate — builds the real
-                                                  # App (engine/net stubbed), 355 checks
-venv\Scripts\python.exe app\vector_redraw_test.py # vision redraw, fake client (30)
+                                                  # App (engine/net stubbed), 376 checks
+venv\Scripts\python.exe app\vector_redraw_test.py # vision redraw, fake client (32)
 venv\Scripts\python.exe app\swap_test.py          # face-swap two-step (22)
 venv\Scripts\python.exe app\variations_test.py    # clones store (18)
 # others: self_update_test, ragmap_test, engine_files_test, startup_test, applog_test, …
@@ -309,7 +323,7 @@ on GitHub).
 
 ## 10. State at handoff
 
-- All test suites green (update_ui 355, vector_redraw 30). Frozen build
+- All test suites green (update_ui 376, vector_redraw 32). Frozen build
   self-test passes (incl. the SDK, fontTools and text outlining frozen).
 - Latest release published to GitHub; dev tree clean (only gitignored build
   artifacts untracked). `Stickers/_final/` holds the user's cleaned sample

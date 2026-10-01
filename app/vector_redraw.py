@@ -256,6 +256,48 @@ def draw_decal(crop_rgba, w_in, h_in, palette, hint="", model=DEFAULT_MODEL,
             "request_id": getattr(resp, "_request_id", None)}
 
 
+def ask_orientation(img, model=DEFAULT_MODEL, client=None, api_key=None):
+    """Which way is up? One small call per sheet: the model looks at the
+    whole page (downscaled) and answers 0, 90, 180 or 270 = the counter-
+    clockwise rotation that makes the text upright. Returns an int;
+    0 when it cannot tell. The clean trace does not need this (geometry
+    is geometry); the vision model reads text and does."""
+    import anthropic
+    if client is None:
+        key = api_key or get_api_key()
+        if not key:
+            return 0
+        client = anthropic.Anthropic(api_key=key, timeout=60.0)
+    im = img.convert("RGB")
+    if max(im.size) > 1024:
+        s = 1024.0 / max(im.size)
+        im = im.resize((max(1, int(im.width * s)), max(1, int(im.height * s))),
+                       Image.LANCZOS)
+    buf = io.BytesIO()
+    im.save(buf, format="PNG")
+    b64 = base64.standard_b64encode(buf.getvalue()).decode("ascii")
+    resp = client.messages.create(
+        model=model, max_tokens=64,
+        output_config={"effort": "low"},
+        messages=[{"role": "user", "content": [
+            {"type": "image", "source": {"type": "base64",
+                                         "media_type": "image/png", "data": b64}},
+            {"type": "text", "text":
+                "This is a scan or photo of a sticker (decal) sheet. Which "
+                "way does most of its text read? Reply with exactly one "
+                "number and nothing else: 0 if the text is upright as "
+                "shown; 90 if the picture must be rotated 90 degrees "
+                "counter-clockwise to make the text upright; 180 if it is "
+                "upside down; 270 if it must be rotated 90 degrees "
+                "clockwise."}]}])
+    if resp.stop_reason == "refusal":
+        return 0
+    text = "".join(b.text for b in resp.content
+                   if getattr(b, "type", "") == "text").strip()
+    m = re.search(r"\b(0|90|180|270)\b", text)
+    return int(m.group(1)) if m else 0
+
+
 def make_vector_fn(client, model, target_dpi, hint="", stats=None,
                    cancelled=None, log=None):
     """The `vector_fn` for decals.redraw_sheet: ask the model, outline the

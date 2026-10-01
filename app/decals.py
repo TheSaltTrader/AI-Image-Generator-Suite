@@ -13,6 +13,7 @@ needs vtracer (both optional — the app installs them into the engine venv on
 first use). Importable and runnable as a CLI (see main())."""
 
 import io
+import warnings
 import json
 import sys
 from pathlib import Path
@@ -51,10 +52,13 @@ def scale_factor(source_n, target_n):
 
 
 # ---------------------------------------------------------------- input
-def iter_source_images(path):
-    """Yield (label, PIL.Image RGB) for every page/image in a source file.
-    Supports PDF (each page's embedded image, at its native resolution) and
-    ordinary raster formats. A multi-page PDF yields one entry per page."""
+def iter_sources(path):
+    """Yield (label, PIL.Image RGB, dpi) for every page/image in a source
+    file — the resolution comes from the FILE, never from a setting: a PDF
+    page says how big its scanned picture is drawn (pixels / inches), an
+    image file carries a DPI tag (a 72/96 placeholder counts as unknown),
+    and a photo has none (dpi=None). Supports PDF (each page's embedded
+    image at its native pixels) and ordinary raster formats."""
     path = Path(path)
     ext = path.suffix.lower()
     if ext in PDF_EXTS:
@@ -63,7 +67,7 @@ def iter_source_images(path):
         for pno in range(doc.page_count):
             page = doc[pno]
             imgs = page.get_images(full=True)
-            got = None
+            got, dpi = None, None
             if imgs:
                 # the largest embedded image at native pixels (scanners embed
                 # one full-page JPEG); fall back to rendering the page
@@ -71,14 +75,389 @@ def iter_source_images(path):
                            * doc.extract_image(im[0])["height"])
                 info = doc.extract_image(best[0])
                 got = Image.open(io.BytesIO(info["image"])).convert("RGB")
+                try:
+                    rects = page.get_image_rects(best[0])
+                    if rects and rects[0].width > 0:
+                        dpi = int(round(info["width"] / (rects[0].width / 72.0)))
+                except Exception:
+                    dpi = None
             if got is None:
                 pm = page.get_pixmap(dpi=300)
                 got = Image.frombytes("RGB", (pm.width, pm.height), pm.samples)
+                dpi = 300
             label = path.stem if doc.page_count == 1 else f"{path.stem}_p{pno + 1}"
-            yield label, got
+            yield label, got, dpi
         doc.close()
     else:
-        yield path.stem, Image.open(path).convert("RGB")
+        im = Image.open(path)
+        dpi = None
+        try:
+            d = im.info.get("dpi")
+            if d and float(d[0]) > 96:          # 72/96 = nobody set it
+                dpi = int(round(float(d[0])))
+        except Exception:
+            dpi = None
+        yield path.stem, im.convert("RGB"), dpi
+
+
+def iter_source_images(path):
+    """(label, image) pairs — iter_sources without the resolution."""
+    for label, img, _dpi in iter_sources(path):
+        yield label, img
+
+
+# ---------------------------------------------------------------- photos
+def looks_like_photo(img):
+    """True when the picture's border is NOT the sheet: a scan's border is
+    the carrier/paper (bright, near-neutral); a photo's border is a table,
+    a cloth, a floor (dark or coloured)."""
+    c = detect_carrier(img)
+    gray = sum(c) / 3.0
+    chroma = max(c) - min(c)
+    return gray < 150 or chroma > 60
+
+
+def find_sheet(img, down=4, min_frac=0.15):
+    """Corners of the sheet in a photo — (TL, TR, BR, BL) in pixel
+    coordinates — found as the largest region that differs from the
+    border colour (the table), i.e. the sheet with its stickers. None when
+    no such region covers at least `min_frac` of the picture."""
+    rgb = img.convert("RGB")
+    carrier = detect_carrier(rgb)
+    small = rgb.resize((max(1, rgb.width // down), max(1, rgb.height // down)),
+                       Image.BILINEAR)
+    a = np.asarray(small).astype(np.int32)
+    dist = np.sqrt(((a - np.array(carrier, np.int32)) ** 2).sum(2))
+    mask = dist > 70
+    # close small gaps (sticker edges, texture) so the sheet is one region
+    mask = np.asarray(Image.fromarray(mask.astype(np.uint8) * 255)
+                      .filter(ImageFilter.MaxFilter(5))
+                      .filter(ImageFilter.MinFilter(5))) > 0
+    comps = _components(mask)
+    if not comps:
+        return None
+    H, W = mask.shape
+    best, best_area = None, 0
+    for (x0, y0, x1, y1) in comps:
+        area = (x1 - x0 + 1) * (y1 - y0 + 1)
+        if area > best_area:
+            best, best_area = (x0, y0, x1, y1), area
+    if best_area < min_frac * H * W:
+        return None
+    x0, y0, x1, y1 = best
+    sub = mask[y0:y1 + 1, x0:x1 + 1]
+    ys, xs = np.where(sub)
+    xs = xs + x0
+    ys = ys + y0
+    # the four extreme points of the region = the sheet's corners
+    s = xs + ys
+    d = xs - ys
+    tl = (xs[s.argmin()], ys[s.argmin()])
+    br = (xs[s.argmax()], ys[s.argmax()])
+    tr = (xs[d.argmax()], ys[d.argmax()])
+    bl = (xs[d.argmin()], ys[d.argmin()])
+    f = float(down)
+    return tuple((int(round(x * f)), int(round(y * f))) for x, y in (tl, tr, br, bl))
+
+
+def straighten(img, corners, inset=0.01):
+    """Perspective-correct the sheet between `corners` (TL, TR, BR, BL) to
+    an axis-aligned picture of the sheet alone. `inset` pulls each corner
+    toward the centre by that share of the sheet, so the sliver of table
+    the corner search leaves along an edge is not carried over."""
+    pts = [tuple(float(v) for v in c) for c in corners]
+    cx = sum(p[0] for p in pts) / 4.0
+    cy = sum(p[1] for p in pts) / 4.0
+    pts = [(x + (cx - x) * inset, y + (cy - y) * inset) for x, y in pts]
+    (tlx, tly), (trx, try_), (brx, bry), (blx, bly) = pts
+
+    def dist(a, b):
+        return float(np.hypot(a[0] - b[0], a[1] - b[1]))
+
+    w = max(8, int(round((dist((tlx, tly), (trx, try_))
+                          + dist((blx, bly), (brx, bry))) / 2.0)))
+    h = max(8, int(round((dist((tlx, tly), (blx, bly))
+                          + dist((trx, try_), (brx, bry))) / 2.0)))
+    # PIL's QUAD maps (upper-left, lower-left, lower-right, upper-right)
+    return img.convert("RGB").transform(
+        (w, h), Image.QUAD,
+        (tlx, tly, blx, bly, brx, bry, trx, try_), Image.BICUBIC)
+
+
+PHOTO_WHITE = (250, 250, 250)
+
+
+def _sheet_mode(a):
+    """The brightest colour that covers at least 2% of picture `a`
+    (float HxWx3) — on a photographed sheet, the sheet itself. None when
+    nothing covers that much."""
+    q = (a // 16).astype(np.int32)
+    idx = q[..., 0] * 256 + q[..., 1] * 16 + q[..., 2]
+    cnt = np.bincount(idx.ravel(), minlength=4096) / float(idx.size)
+    sig = np.nonzero(cnt >= 0.02)[0]
+    if sig.size == 0:
+        return None
+    bright = max(sig, key=lambda i: (i // 256) + (i // 16) % 16 + i % 16)
+    return np.array([(bright // 256) * 16 + 8, ((bright // 16) % 16) * 16 + 8,
+                     (bright % 16) * 16 + 8], np.float32)
+
+
+def normalize_photo(img, white=250):
+    """Flatten a photographed sheet's lighting and set the sheet to white,
+    so the picture can be keyed like a scan on white paper. The sheet
+    colour is the brightest colour that covers a fair share of the picture;
+    the illumination field is the block-wise mean of sheet-coloured pixels
+    (holes where decals lie are filled from the lit sheet around them),
+    and every pixel is scaled by white / field — which also removes the
+    light's colour cast. Returns (image, sheet_colour) — the input and None
+    when no sheet colour stands out."""
+    rgb = img.convert("RGB")
+    a = np.asarray(rgb).astype(np.float32)
+    H, W = a.shape[:2]
+    mode = _sheet_mode(a)
+    if mode is None:
+        return rgb, None
+    gray = a.mean(2)
+    tint = a - gray[..., None]
+    tmode = mode - mode.mean()
+    cand = ((np.abs(tint - tmode).sum(2) < 36) & (gray > mode.mean() - 50)
+            & (gray < mode.mean() + 60))
+    s = max(16, min(H, W) // 24)
+    bh, bw = max(1, H // s), max(1, W // s)
+    field = np.full((bh, bw, 3), np.nan, np.float32)
+    for by in range(bh):
+        for bx in range(bw):
+            y0, x0 = by * s, bx * s
+            y1 = H if by == bh - 1 else y0 + s
+            x1 = W if bx == bw - 1 else x0 + s
+            m = cand[y0:y1, x0:x1]
+            if m.mean() >= 0.1:
+                field[by, bx] = a[y0:y1, x0:x1][m].mean(0)
+    # fill the holes (decals) from the nearest lit sheet around them
+    for _ in range(bh + bw):
+        nan = np.isnan(field[..., 0])
+        if not nan.any():
+            break
+        padded = np.pad(field, ((1, 1), (1, 1), (0, 0)), constant_values=np.nan)
+        neigh = np.stack([padded[1:-1, :-2], padded[1:-1, 2:],
+                          padded[:-2, 1:-1], padded[2:, 1:-1]])
+        with np.errstate(invalid="ignore"), warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            fill = np.nanmean(neigh, axis=0)
+        field = np.where(nan[..., None], fill, field)
+    field[np.isnan(field[..., 0])] = mode
+    for _ in range(2):                       # a little smoothing
+        padded = np.pad(field, ((1, 1), (1, 1), (0, 0)), mode="edge")
+        field = (padded[1:-1, 1:-1] * 4 + padded[1:-1, :-2] + padded[1:-1, 2:]
+                 + padded[:-2, 1:-1] + padded[2:, 1:-1]) / 8.0
+    fimg = Image.fromarray(np.clip(field, 1, 255).astype(np.uint8), "RGB")
+    f = np.asarray(fimg.resize((W, H), Image.BILINEAR)).astype(np.float32)
+    out = np.clip(a * (float(white) / np.maximum(f, 1.0)), 0, 255)
+    return Image.fromarray(out.astype(np.uint8), "RGB"), tuple(int(v) for v in mode)
+
+
+def prepare_photo(img, rotate=0, auto_crop=True):
+    """A photographed sheet made scan-like: the sheet found and straightened
+    (when the border is not the sheet), its lighting flattened and the sheet
+    set to white, then rotated by `rotate` degrees (0/90/180/270, counter-
+    clockwise like PIL) so the text reads upright. Returns (image, note) —
+    note says what happened ('' for a scan)."""
+    note = ""
+    out = img
+    if auto_crop and looks_like_photo(img):
+        corners = find_sheet(img)
+        if corners is not None:
+            out = straighten(img, corners)
+            note = (f"photo: cropped to the sheet ({out.width}×{out.height} px)")
+            W, H = img.size
+            edge = any(x <= 0.01 * W or x >= 0.99 * W or y <= 0.01 * H
+                       or y >= 0.99 * H for x, y in corners)
+            if edge:
+                note += ("; the sheet runs to the picture's edge — shoot with "
+                         "table showing all round it")
+        else:
+            note = "photo: no sheet found — using the whole picture"
+        out, sheet = normalize_photo(out)
+        if sheet is not None:
+            note += "; lighting flattened, sheet set to white"
+    r = int(rotate) % 360
+    if r:
+        out = out.rotate(r, expand=True)
+        note = (note + "; " if note else "") + f"rotated {r}°"
+    return out, note
+
+
+def _blockiness(gray):
+    """JPEG block energy: differences across 8-px column boundaries vs
+    differences everywhere; ~1.0 for a clean picture, >1.3 heavily
+    compressed (a phone photo sent through a messaging app)."""
+    d = np.abs(np.diff(gray, axis=1))
+    if d.shape[1] < 16:
+        return 1.0
+    at = float(d[:, 7::8].mean())
+    everywhere = float(d.mean())
+    return at / max(1e-6, everywhere)
+
+
+def assess_source(img, native_dpi=300, gap_px=None, raw=None, kind=None,
+                  photo=False, orientation=None, dpi_known=True):
+    """Judge a page BEFORE converting: what it is (scan or photo), how
+    much detail it holds, how clean, and how each redraw method is likely
+    to fare — with a plain recommendation. `img` is the prepared page
+    (a photo already cropped, flattened and rotated); `raw` the untouched
+    file picture, used for the compression measure (JPEG blocks only line
+    up on the original pixels); `orientation` the rotation applied (None =
+    not known). Returns a dict:
+      kind, size, dpi, letters_px, sharpness, blockiness, light_std,
+      neutral, opaque_share, decals, scores {trace, vision, reimagine}
+      (0..1 = share of decals expected usable), report (text lines)."""
+    rgb = img.convert("RGB")
+    W, H = rgb.size
+    if kind is None:
+        kind = "photo" if (photo or looks_like_photo(rgb)) else "scan"
+    photo = photo or kind == "photo"
+    carrier = PHOTO_WHITE if photo else detect_carrier(rgb)
+    neutral = is_neutral_carrier(carrier)
+    g = np.asarray(rgb.convert("L")).astype(np.float32)
+    lap = (-4 * g[1:-1, 1:-1] + g[:-2, 1:-1] + g[2:, 1:-1]
+           + g[1:-1, :-2] + g[1:-1, 2:])
+    sharpness = float(lap.var())
+    graw = (np.asarray(raw.convert("L")).astype(np.float32)
+            if raw is not None else g)
+    block = _blockiness(graw)
+    if photo and raw is not None:
+        # the flattening multiplied the picture by white / sheet brightness,
+        # and edge energy by its square: undo that so a dim, soft photo is
+        # not called sharp
+        mode = _sheet_mode(np.asarray(raw.convert("RGB")).astype(np.float32))
+        if mode is not None:
+            gain = 250.0 / max(40.0, float(mode.mean()))
+            sharpness /= gain * gain
+    a = np.asarray(rgb).astype(np.int32)
+    dist = np.sqrt(((a - np.array(carrier, np.int32)) ** 2).sum(2))
+    bg = dist < 52
+    light_std = float(g[bg].std()) if bg.mean() > 0.05 else 0.0
+    if gap_px is None:
+        gap_px = max(4, int(round(native_dpi / 25.4)))      # 1 mm
+    res = process_image(rgb, mode="cleanup", remove_bg=True, denoise=0,
+                        tol=52, target_dpi=native_dpi, native_dpi=native_dpi,
+                        exact=True, tidy_matte=True, photo=photo)
+    rgba = res["rgba"]
+    al = np.asarray(rgba)[..., 3] > 96
+    opaque_share = float(al.mean())
+    boxes = segment_decals(rgba, gap=gap_px)
+    pieces = segment_decals(rgba, gap=0, min_side=6, pad=0)
+    # letter-like marks: small pieces that are neither specks nor whole
+    # decals — their median size is how big the text is on this page
+    letterish = []
+    for (x0, y0, x1, y1) in pieces:
+        w, h = x1 - x0, y1 - y0
+        small, big = min(w, h), max(w, h)
+        if 9 <= small and big <= 90 and big <= 4 * small:
+            letterish.append(small)
+    letters_px = float(np.median(letterish)) if len(letterish) >= 5 else None
+    # --- scores: what share of the decals should come out usable ---------
+    # (calibrated on the user's 300 dpi film scans: letters ≈ 20 px,
+    #  sharpness ≈ 250, JPEG-in-PDF blockiness ≈ 1.35)
+    def ramp(v, lo, hi):
+        if v is None:
+            return 0.5
+        return float(min(1.0, max(0.0, (v - lo) / float(hi - lo))))
+
+    detail = ramp(letters_px, 12.0, 55.0)          # letter size in px
+    focus = ramp(sharpness, 40.0, 300.0)           # per-pixel edge energy
+    clean = 1.0 - ramp(block, 1.4, 1.9)            # compression
+    even = 1.0 - ramp(light_std, 8.0, 30.0)        # lighting
+    sep = 1.0 if 0.02 <= opaque_share <= 0.6 else 0.35
+    trace = 0.15 + 0.85 * (0.45 * detail + 0.25 * focus + 0.15 * clean
+                           + 0.15 * even) * sep
+    vision = 0.10 + 0.90 * (0.55 * detail + 0.20 * focus + 0.10 * clean
+                            + 0.15 * even) * sep
+    reimagine = 0.05 + 0.6 * (0.3 * detail + 0.4 * focus + 0.3 * even) * sep
+    scores = {"trace": round(trace, 2), "vision": round(vision, 2),
+              "reimagine": round(reimagine, 2)}
+    # --- the report ------------------------------------------------------
+    lines = []
+    mm_w = W / float(native_dpi) * 25.4
+    lines.append(f"{kind.upper()}: {W}×{H} px at {native_dpi} dpi "
+                 + (f"(≈ {mm_w:.0f} mm wide)" if dpi_known else
+                    f"(assumed — ≈ {mm_w:.0f} mm wide if so)"))
+    if orientation is None:
+        lines.append("Orientation: not checked (no vision key) — the page "
+                     "is used as it is")
+    elif orientation:
+        lines.append(f"Orientation: text was not upright — the page is "
+                     f"turned {orientation}° (vision model)")
+    else:
+        lines.append("Orientation: upright (vision model)")
+    if letters_px is None:
+        lines.append("Detail: too few marks to judge letter size")
+    else:
+        mm = letters_px / float(native_dpi) * 25.4
+        lines.append(f"Detail: small marks ≈ {letters_px:.0f} px "
+                     f"({mm:.1f} mm) "
+                     + ("— fine for text" if letters_px >= 45 else
+                        "— marginal for text" if letters_px >= 28 else
+                        "— too small for text (letters will garble)"))
+    lines.append(f"Sharpness: {sharpness:.0f} "
+                 + ("(sharp)" if sharpness >= 200 else
+                    "(soft)" if sharpness >= 80 else "(blurred)"))
+    if block >= 1.6:
+        lines.append(f"Compression: heavy JPEG blocking ({block:.2f}) — "
+                     "transfer the picture at full quality")
+    if photo:
+        lines.append("Lighting: " + ("even" if light_std < 10 else
+                                     "uneven" if light_std < 25 else
+                                     "glare / strong gradient — the "
+                                     "background cannot be keyed cleanly")
+                     + f" (σ {light_std:.0f}, after flattening)")
+        lines.append("Backing: a photographed sheet is keyed as white — "
+                     "white-ink decals cannot be separated and are left out")
+    else:
+        lines.append("Backing: " + ("white paper — white-ink decals cannot be "
+                                    "separated and are left out" if neutral else
+                                    "tinted film — white ink is kept"))
+    if opaque_share > 0.6:
+        lines.append(f"Background removal kept {opaque_share:.0%} of the page "
+                     "— the backing is not being recognised (crop the "
+                     "picture to the sheet, or raise the sensitivity)")
+    lines.append(f"Decals found: {len(boxes)}")
+    lines.append("Expected usable: clean trace ≈ {:.0%}, vision model ≈ {:.0%}, "
+                 "re-imagine ≈ {:.0%}".format(trace, vision, reimagine))
+    rec = []
+    if letters_px is not None and letters_px < 45:
+        want = int(round(native_dpi * 50.0 / max(letters_px, 1.0)))
+        want = min(2400, max(600, int(round(want / 300.0)) * 300))
+        if photo:
+            rec.append("photograph each decal close up (fill the frame) "
+                       "or scan the sheet at %d dpi for readable text" % want)
+        else:
+            rec.append(f"rescan at {want} dpi for readable text")
+    if photo and (light_std >= 25 or block >= 1.6):
+        rec.append("retake square-on in even light, full-size transfer")
+    if sharpness < 80:
+        rec.append("the picture is blurred — refocus / rescan")
+    if photo and not dpi_known:
+        rec.append("type the sheet's real width (mm) so printed sizes are right")
+    if opaque_share > 0.6:
+        rec.append("crop the picture to the sheet")
+    if not rec:
+        rec.append("good to go — run Preview one decal first")
+    lines.append("Recommendation: " + "; ".join(rec))
+    return {"kind": kind, "size": (W, H), "dpi": native_dpi,
+            "letters_px": letters_px, "sharpness": sharpness,
+            "blockiness": block, "light_std": light_std, "neutral": neutral,
+            "opaque_share": opaque_share, "decals": len(boxes),
+            "orientation": orientation, "scores": scores, "report": lines}
+
+
+def dpi_from_width(px_width, width_mm):
+    """Pixels per inch of a picture whose real width is width_mm."""
+    try:
+        mm = float(width_mm)
+        return (float(px_width) / (mm / 25.4)) if mm > 0 else None
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------- cleaning
@@ -830,11 +1209,83 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
 
 
 # ---------------------------------------------------------------- pipeline
+def _label(mask):
+    """Label the 8-connected regions of a small boolean grid: returns
+    (labels int32 array, 0 = background; count). Plain breadth-first
+    search — meant for a reduced grid of a few hundred thousand cells."""
+    H, W = mask.shape
+    labels = np.zeros((H, W), np.int32)
+    n = 0
+    ys, xs = np.nonzero(mask)
+    for sy, sx in zip(ys.tolist(), xs.tolist()):
+        if labels[sy, sx]:
+            continue
+        n += 1
+        labels[sy, sx] = n
+        stack = [(sy, sx)]
+        while stack:
+            y, x = stack.pop()
+            for dy in (-1, 0, 1):
+                yy = y + dy
+                if yy < 0 or yy >= H:
+                    continue
+                for dx in (-1, 0, 1):
+                    xx = x + dx
+                    if xx < 0 or xx >= W or labels[yy, xx] or not mask[yy, xx]:
+                        continue
+                    labels[yy, xx] = n
+                    stack.append((yy, xx))
+    return labels, n
+
+
+def _drop_border_fringe(alpha, down=4):
+    """Clear opaque pieces that are the table showing at the picture's
+    edge — the strip or crescent a photo crop leaves along a bowed sheet
+    edge. A piece goes when it HUGS the border (it touches the edge along
+    at least half its length — a decal that merely reaches the edge
+    touches it at one end), is long (over 20% of the picture) and is
+    either thin (short side under 10%) or sparse (fills under 30% of its
+    own box: a curved sliver). A printed block that reaches the edge is
+    far thicker and fills its box; the small stickers beside a sliver are
+    separate pieces and are never touched."""
+    H, W = alpha.shape
+    m = alpha > 96
+    hh, ww = max(1, H // down), max(1, W // down)
+    small = m[:hh * down, :ww * down].reshape(hh, down, ww, down).any(axis=(1, 3))
+    labels, n = _label(small)
+    if not n:
+        return alpha
+    edge = np.concatenate([labels[0, :], labels[-1, :], labels[:, 0], labels[:, -1]])
+    edge = edge[edge > 0]
+    if edge.size == 0:
+        return alpha
+    edge_count = np.bincount(edge, minlength=n + 1)
+    out = alpha.copy()
+    kill = np.zeros_like(small)
+    for i in np.nonzero(edge_count)[0].tolist():
+        cells = labels == i
+        ys, xs = np.nonzero(cells)
+        wc, hc = xs.max() - xs.min() + 1, ys.max() - ys.min() + 1
+        w, h = wc * down, hc * down
+        fill = cells.sum() / float(wc * hc)
+        hug = edge_count[i] >= 0.5 * max(wc, hc)
+        long_ = max(w, h) > 0.2 * max(H, W)
+        thin = min(w, h) < 0.10 * min(H, W)
+        sparse = fill < 0.3
+        if hug and long_ and (thin or sparse):
+            kill |= cells
+    if kill.any():
+        full = np.zeros((H, W), bool)
+        full[:hh * down, :ww * down] = np.repeat(np.repeat(kill, down, 0), down, 1)
+        out[full] = 0
+    return out
+
+
 def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
                   denoise=2, tol=52, target_dpi=600, native_dpi=300,
                   do_trim=False, size_scale=1.0, remove_lines=True,
                   balance=True, exact=False, tidy_matte=True, solidify=False,
-                  smooth=False):
+                  smooth=False, photo=False):
     """Run one image through the pipeline. Returns a dict with 'rgba' (and
     'svg' for vector mode). size_scale rescales the result for a different
     figure scale (e.g. 1.5 to take a 3.75\" decal to 1/12 Classified).
@@ -843,10 +1294,15 @@ def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
     to the scan (no denoise, no sharpen, no colour change) — only the alpha
     (background) is computed, and the only RGB change allowed is removing the
     scanner streak lines when remove_lines is on. Use it when fidelity must be
-    perfect."""
+    perfect.
+
+    photo=True is for a photographed sheet that prepare_photo has already
+    flattened and set to white: the backing IS white (whatever the border
+    holds), and thin dark strips along the picture edge — the table the
+    crop could not shed — are dropped."""
     orig = _auto_orient(img).convert("RGB")
     if carrier is None:
-        carrier = detect_carrier(orig)
+        carrier = PHOTO_WHITE if photo else detect_carrier(orig)
     if exact:
         cleaned = destripe(orig) if remove_lines else orig
     else:
@@ -868,6 +1324,8 @@ def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
             o = np.asarray(orig).astype(np.int32)
             faint = (o.mean(2) > 200) & ((o.max(2) - o.min(2)) < 30)
             alpha = np.where(faint, 0, alpha).astype(np.uint8)
+        if photo:
+            alpha = _drop_border_fringe(alpha)
         rgba = Image.fromarray(
             np.dstack([np.asarray(cleaned.convert("RGB")), alpha]), "RGBA")
         if tidy_matte:

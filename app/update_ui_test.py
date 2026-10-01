@@ -388,7 +388,7 @@ root.update()
 print("decals tab")
 check("the Decals tab exists", hasattr(ui, "_page_decals"))
 for _w in ("decal_list", "decal_mode_var", "decal_removebg_var",
-           "decal_tol_var", "decal_dpi_var", "decal_native_var",
+           "decal_tol_var", "decal_dpi_var",
            "decal_trim_var", "decal_btn"):
     check("Decals control %s wired" % _w, hasattr(ui, _w))
 check("Decals methods wired",
@@ -1836,6 +1836,131 @@ check("the new exe is told which pid to wait for",
       bool(_started) and "--after-update" in _started[0][0]
       and str(app.os.getpid()) in _started[0][0], str(_started))
 check("the window is closed once the hand-over is done", bool(destroyed))
+
+# ---- photos of a sheet (v2.17) --------------------------------------------
+print("photo mode")
+check("photo handling is automatic: only the sheet width is an input, plus the report button",
+      hasattr(ui, "decal_width_mm_var") and hasattr(ui, "decal_report_btn")
+      and not hasattr(ui, "decal_photo_var") and not hasattr(ui, "decal_rotate_var")
+      and callable(getattr(ui, "_assess_decal_sources", None)))
+try:
+    import numpy as _np6
+    # a "photo": dark table, a white sheet lying slightly askew, a red decal on it
+    _ph = _np6.full((400, 500, 3), (70, 40, 30), _np6.uint8)
+    _sheet_img = app.Image.fromarray(_ph, "RGB")
+    _d = app.ImageDraw.Draw(_sheet_img)
+    _quad = [(90, 60), (420, 75), (410, 345), (80, 330)]       # TL TR BR BL
+    _d.polygon(_quad, fill=(245, 243, 240))
+    _d.rectangle([200, 150, 300, 230], fill=(206, 22, 30))
+    check("a scan is not mistaken for a photo",
+          not _dec.looks_like_photo(_src) and _dec.looks_like_photo(_sheet_img))
+    _c = _dec.find_sheet(_sheet_img)
+    check("the sheet's corners are found in the photo",
+          _c is not None and all(abs(_c[i][0] - _quad[i][0]) <= 10
+                                 and abs(_c[i][1] - _quad[i][1]) <= 10
+                                 for i in range(4)), _c)
+    _st = _dec.straighten(_sheet_img, _c)
+    _sa = _np6.asarray(_st)
+    check("straightening yields the sheet alone, white at the corners, decal inside",
+          _sa[3, 3].min() > 220 and _sa[-4, -4].min() > 220
+          and _sa.shape[1] > 300 and _sa.shape[0] > 250
+          and (_sa[..., 0] > 180).sum() > (_sa[..., 1] < 60).sum() * 0.5, _sa.shape)
+    _pp, _note = _dec.prepare_photo(_sheet_img, rotate=90, auto_crop=True)
+    check("prepare_photo crops, rotates and says so",
+          "cropped" in _note and "rotated 90" in _note
+          and _pp.width == _st.height and _pp.height == _st.width, _note)
+    check("a scan passes through prepare_photo untouched",
+          _dec.prepare_photo(_src, rotate=0, auto_crop=True)[1] == ""
+          and _dec.prepare_photo(_src, rotate=0, auto_crop=True)[0].size == _src.size)
+    check("DPI from the sheet width (1500 px wide, 127 mm) = 300",
+          abs(_dec.dpi_from_width(1500, 127) - 300.0) < 0.5
+          and _dec.dpi_from_width(1500, 0) is None)
+    ui.decal_width_mm_var.set("127")
+    _prep = ui._decal_source_prep()
+    check("the UI hands the workers the sheet width", abs(_prep["width_mm"] - 127) < 1e-6)
+    check("there is no Scan DPI control any more (the resolution is read from the file)",
+          not hasattr(ui, "decal_native_var"))
+    # the sheet width is measured on the UPRIGHT picture: 1500×500 rotated
+    # 270° is 500 px wide, and 500 px over 127 mm is 100 dpi
+    _im2, _dpi2, _n2, _ph2 = ui._prepare_source(app.Image.new("RGB", (1500, 500), (250, 247, 246)), _prep, None, rotate=270)
+    check("_prepare_source applies the sheet-width DPI to the upright page",
+          _dpi2 == 100 and "100 dpi" in _n2 and _im2.size == (500, 1500) and not _ph2, (_dpi2, _n2, _im2.size))
+    ui.decal_width_mm_var.set("")
+    _prep = ui._decal_source_prep()
+    _im3, _dpi3, _n3, _ph3 = ui._prepare_source(_src, _prep, 200)
+    check("a scan takes the resolution its file carries", _dpi3 == 200 and _n3 == "" and not _ph3, (_dpi3, _n3))
+    _im4, _dpi4, _n4, _ph4 = ui._prepare_source(_src, _prep, None)
+    check("…and 300 is assumed, and said, when the file has none",
+          _dpi4 == 300 and "assumed" in _n4, (_dpi4, _n4))
+    _im5, _dpi5, _n5, _ph5 = ui._prepare_source(_sheet_img, _prep, 72)
+    check("a photo is recognised, cropped, flattened; its 72 dpi tag is ignored",
+          _ph5 and _dpi5 == 300 and "cropped" in _n5 and "flattened" in _n5
+          and "assumed" in _n5 and "sheet width" in _n5, (_dpi5, _n5))
+    _a5 = _np6.asarray(_im5)
+    check("the photographed sheet comes out white, its decal still red",
+          _a5[5, 5].min() >= 236 and _a5[-6, -6].min() >= 236
+          and ((_a5[..., 0] > 150) & (_a5[..., 1] < 80)).sum() > 5000, (_a5[5, 5], _a5[-6, -6]))
+    # the resolution comes from the file: a PDF page's drawn size, an
+    # image's DPI tag (72/96 = unknown)
+    import pymupdf as _mu, io as _io6
+    _pdf = app.Path(str(_fs_tmp)) / "dpi_probe.pdf"
+    _doc = _mu.open()
+    _pg = _doc.new_page(width=144, height=72)           # 2 × 1 inch
+    _buf = _io6.BytesIO()
+    app.Image.new("RGB", (400, 200), (250, 247, 246)).save(_buf, format="PNG")
+    _pg.insert_image(_pg.rect, stream=_buf.getvalue())
+    _doc.save(str(_pdf)); _doc.close()
+    _got = list(_dec.iter_sources(_pdf))
+    check("a PDF's resolution is read from the page (400 px over 2 in = 200 dpi)",
+          len(_got) == 1 and _got[0][2] == 200 and _got[0][1].size == (400, 200), _got[0][2] if _got else None)
+    _png6 = app.Path(str(_fs_tmp)) / "dpi_probe.png"
+    app.Image.new("RGB", (60, 40), (250, 247, 246)).save(_png6, dpi=(600, 600))
+    _png7 = app.Path(str(_fs_tmp)) / "dpi_none.png"
+    app.Image.new("RGB", (60, 40), (250, 247, 246)).save(_png7)
+    check("an image's DPI tag is read; none means unknown",
+          list(_dec.iter_sources(_png6))[0][2] == 600
+          and list(_dec.iter_sources(_png7))[0][2] is None)
+    # the orientation is the vision model's answer, asked once per page
+    _asked = []
+    _orig_ask = app.vector_redraw.ask_orientation
+    _orig_key = app.vector_redraw.get_api_key
+    app.vector_redraw.ask_orientation = lambda img, **kw: (_asked.append(1), 180)[1]
+    app.vector_redraw.get_api_key = lambda: "sk-ant-test-key-not-real"
+    try:
+        ui._decal_orient = {}
+        _o1 = ui._decal_orientation("x.pdf", "p1", _src)
+        _o2 = ui._decal_orientation("x.pdf", "p1", _src)
+        app.vector_redraw.get_api_key = lambda: None
+        _o3 = ui._decal_orientation("y.pdf", "p1", _src)
+    finally:
+        app.vector_redraw.ask_orientation = _orig_ask
+        app.vector_redraw.get_api_key = _orig_key
+    check("orientation: asked once per page and remembered; 0 without a key",
+          _o1 == 180 and _o2 == 180 and len(_asked) == 1 and _o3 == 0, (_o1, _o2, _asked, _o3))
+    # the automatic quality report
+    _r = _dec.assess_source(_src, native_dpi=300, raw=_src, orientation=0)
+    check("assess_source reports kind, decals, scores and a recommendation",
+          _r["kind"] == "scan" and _r["decals"] >= 1
+          and set(_r["scores"]) == {"trace", "vision", "reimagine"}
+          and all(0.0 <= v <= 1.0 for v in _r["scores"].values())
+          and any(ln.startswith("Orientation: upright") for ln in _r["report"])
+          and any(ln.startswith("Recommendation:") for ln in _r["report"]), _r["report"])
+    _rp = _dec.assess_source(_im5, native_dpi=240, raw=_sheet_img, photo=True, orientation=None, dpi_known=False)
+    check("…and tells a photo from a scan, with the backing and the width advice",
+          _rp["kind"] == "photo" and any("keyed as white" in ln for ln in _rp["report"])
+          and any("sheet's real width" in ln for ln in _rp["report"])
+          and any(ln.startswith("Orientation: not checked") for ln in _rp["report"]), _rp["report"])
+    ui.ui_queue.put(("decal_report", [("demo", _r, ["— demo —"] + _r["report"])]))
+    ui._poll_queue()
+    root.update()
+    check("the report lands in the status headline and the report window text",
+          "expected usable" in ui.decal_status_var.get()
+          and "Recommendation:" in getattr(ui, "_decal_report_text", ""),
+          ui.decal_status_var.get())
+except Exception as _e:
+    import traceback
+    traceback.print_exc()
+    check("photo mode runs headless", False, repr(_e))
 
 # ---- taskbar identity (v2.16.1) -------------------------------------------
 print("taskbar identity")
