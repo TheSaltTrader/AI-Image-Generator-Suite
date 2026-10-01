@@ -1003,6 +1003,27 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Taskbar, second attempt (v2.16.3).** After v2.16.1 the user still saw
+  the pin unlit and "clicking it starts a new session". app.log showed no
+  second `start` line and no "Already running" prompt — the second copy DID
+  focus the running window, but only after main()'s "Waiting for the
+  previous copy to finish closing…" box had polled the mutex for up to 12 s
+  (that wait ran BEFORE the focus check), on top of ~15 s of one-file
+  extraction: it looked like a fresh launch. FIX: focus-first — when the
+  mutex is held, `_focus_running_instance()` runs immediately (SHIFT = old
+  prompt), the wait box only when no window is on screen. The unlit pin:
+  the taskbar caches a pin's identity; a stamped .lnk may not be re-read
+  until Explorer restarts, and a copy relaunched by the updater
+  (`--after-update`) sat under a different identity. FIX: `set_window_aumid`
+  — the per-window PKEY_AppUserModel_ID via SHGetPropertyStoreForWindow +
+  IPropertyStore, called through raw COM vtable slots in ctypes (QI 0,
+  AddRef 1, Release 2, GetCount 3, GetAt 4, GetValue 5, SetValue 6,
+  Commit 7; PROPVARIANT 24 bytes: vt + 3 reserved WORDs, then the union;
+  c_wchar_p field keeps the string alive). GOTCHA: Tk's top-level HWND
+  (`GetParent(root.winfo_id())`) is 0 until the first event-loop pass —
+  a tag in the first line of App.__init__ silently failed; it now runs from
+  `root.after(0)` with retries. `get_window_aumid` reads it back (test).
+  update_ui 357.
 - **"Even with AI the results are terrible, pixelated, missing characters"
   (v2.16.2).** app.log: the user's first big vision run (Killer Whale p1,
   ~145 decals) hit `You have reached your specified API usage limits. You

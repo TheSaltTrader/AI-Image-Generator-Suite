@@ -1,5 +1,16 @@
 # Changelog — AI Image Generator Suite
 
+## v2.16.3 — 2026-10-01
+- **Taskbar, second attempt.** The window now carries the app's identity
+  itself (the per-window property the taskbar reads), so the pinned button
+  shows the running state even when Windows had cached the pin before it was
+  stamped, and even for a copy the updater relaunched.
+- **A click on the pin while the app runs brings the window forward at once.**
+  The second copy used to sit up to 12 seconds in a "waiting for the previous
+  copy" box before focusing the running window, which looked like a new
+  session starting. That wait now only happens when no window is on screen
+  (a copy that is still closing).
+
 ## v2.16.2 — 2026-10-01
 - **The vision redraw now STOPS when Anthropic refuses the calls** (API usage
   limit reached, no credit, key not allowed) and says so, with where to raise

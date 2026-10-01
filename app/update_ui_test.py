@@ -1853,6 +1853,14 @@ check("focusing a running copy reports False when no such window exists",
       app._focus_running_instance(title_prefix="ZZZ-no-such-window-ZZZ") is False)
 check("shortcut upkeep is a no-op outside a frozen build (tests, dev)",
       app._ensure_shortcuts() is None)
+# the window itself carries the app's identity (v2.16.3): set in App.__init__,
+# readable back through the same shell property store
+_hwnd = app.ctypes.windll.user32.GetParent(root.winfo_id())
+check("the main window is tagged with the app's AppUserModelID",
+      bool(_hwnd) and app.get_window_aumid(_hwnd) == app.APP_AUMID,
+      (bool(_hwnd), app.get_window_aumid(_hwnd)))
+check("tagging an unrelated window id fails quietly (no exception)",
+      app.set_window_aumid(0x12345) in (True, False))
 
 # ---- closing ------------------------------------------------------------
 print("closing")

@@ -105,7 +105,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.16.2"
+APP_VERSION = "2.16.3"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -3549,6 +3549,18 @@ class TabStrip(ttk.Frame):
 class App:
     def __init__(self, root):
         self.root = root
+        # the window carries the app's taskbar identity itself, so the
+        # pinned button lights up for it and a click brings it forward.
+        # Tk creates the top-level handle only on the first event-loop
+        # pass, so this runs from after() and retries a few times.
+        self._tag_identity_tries = 0
+
+        def _tag():
+            self._tag_identity_tries += 1
+            if not tag_window_identity(root) and self._tag_identity_tries < 6:
+                root.after(500, _tag)
+
+        root.after(0, _tag)
         root.title(f"AI Image Generator Suite v{APP_VERSION}")
         root.geometry("1500x940")
         root.minsize(1200, 780)
@@ -11848,6 +11860,111 @@ def _focus_running_instance(title_prefix="AI Image Generator Suite"):
         return False
 
 
+class _GUID(ctypes.Structure):
+    _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
+                ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
+
+
+class _PROPERTYKEY(ctypes.Structure):
+    _fields_ = [("fmtid", _GUID), ("pid", wintypes.DWORD)]
+
+
+class _PROPVARIANT(ctypes.Structure):
+    _fields_ = [("vt", wintypes.WORD), ("r1", wintypes.WORD),
+                ("r2", wintypes.WORD), ("r3", wintypes.WORD),
+                ("pwszVal", ctypes.c_wchar_p), ("pad", ctypes.c_void_p)]
+
+
+_IID_IPropertyStore = "{886d8eeb-8cf2-4446-8d02-cdba1dbdcf99}"
+_PKEY_AppUserModel_ID = ("{9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}", 5)
+_VT_LPWSTR = 31
+
+
+def _guid(text):
+    g = _GUID()
+    ctypes.windll.ole32.CLSIDFromString(text, ctypes.byref(g))
+    return g
+
+
+def _window_store(hwnd):
+    """IPropertyStore of a window (shell32.SHGetPropertyStoreForWindow),
+    as a raw COM pointer; None when the shell refuses."""
+    iid = _guid(_IID_IPropertyStore)
+    ps = ctypes.c_void_p()
+    hr = ctypes.windll.shell32.SHGetPropertyStoreForWindow(
+        wintypes.HWND(hwnd), ctypes.byref(iid), ctypes.byref(ps))
+    return ps if hr == 0 and ps else None
+
+
+def _com_method(ps, index, restype, *argtypes):
+    vtbl = ctypes.cast(ctypes.cast(ps, ctypes.POINTER(ctypes.c_void_p))[0],
+                       ctypes.POINTER(ctypes.c_void_p))
+    return ctypes.WINFUNCTYPE(restype, *argtypes)(vtbl[index])
+
+
+def set_window_aumid(hwnd, aumid=APP_AUMID):
+    """Tag a top-level window with the app's AppUserModelID (the window
+    property the taskbar reads to pair a window with a pinned button). The
+    process-wide call in main() should be enough, but a pin whose identity
+    the taskbar cached before it was stamped, or a copy relaunched by the
+    updater, left the pin unlit with the app running — the per-window
+    property is matched regardless. Returns True when set."""
+    try:
+        ps = _window_store(hwnd)
+        if ps is None:
+            return False
+        key = _PROPERTYKEY(_guid(_PKEY_AppUserModel_ID[0]), _PKEY_AppUserModel_ID[1])
+        pv = _PROPVARIANT()
+        pv.vt = _VT_LPWSTR
+        pv.pwszVal = aumid
+        set_value = _com_method(ps, 6, ctypes.HRESULT, ctypes.c_void_p,
+                                ctypes.POINTER(_PROPERTYKEY),
+                                ctypes.POINTER(_PROPVARIANT))
+        commit = _com_method(ps, 7, ctypes.HRESULT, ctypes.c_void_p)
+        release = _com_method(ps, 2, ctypes.c_ulong, ctypes.c_void_p)
+        hr = set_value(ps, ctypes.byref(key), ctypes.byref(pv))
+        if hr == 0:
+            hr = commit(ps)
+        release(ps)
+        return hr == 0
+    except Exception:
+        return False
+
+
+def get_window_aumid(hwnd):
+    """The AppUserModelID stored on a window, or '' (read-back for tests)."""
+    try:
+        ps = _window_store(hwnd)
+        if ps is None:
+            return ""
+        key = _PROPERTYKEY(_guid(_PKEY_AppUserModel_ID[0]), _PKEY_AppUserModel_ID[1])
+        pv = _PROPVARIANT()
+        get_value = _com_method(ps, 5, ctypes.HRESULT, ctypes.c_void_p,
+                                ctypes.POINTER(_PROPERTYKEY),
+                                ctypes.POINTER(_PROPVARIANT))
+        release = _com_method(ps, 2, ctypes.c_ulong, ctypes.c_void_p)
+        hr = get_value(ps, ctypes.byref(key), ctypes.byref(pv))
+        out = pv.pwszVal if (hr == 0 and pv.vt == _VT_LPWSTR and pv.pwszVal) else ""
+        try:
+            ctypes.windll.ole32.PropVariantClear(ctypes.byref(pv))
+        except Exception:
+            pass
+        release(ps)
+        return out or ""
+    except Exception:
+        return ""
+
+
+def tag_window_identity(root):
+    """Give the Tk root's top-level window the app's identity (see
+    set_window_aumid). Returns True when the tag went on."""
+    try:
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+        return bool(hwnd) and set_window_aumid(hwnd)
+    except Exception:
+        return False
+
+
 def _shortcut_fix_script(exe, aumid=APP_AUMID):
     """PowerShell that keeps the app's shortcuts consistent with the running
     process: the Start Menu entry exists, and every .lnk pointing at THIS
@@ -12050,6 +12167,22 @@ def main():
         return
     _mutex_handle, already = single_instance_handle()
     if already:
+        # a live copy with its window on screen: give it the focus and
+        # leave at once — that is what a click on the taskbar icon means.
+        # (SHIFT held = the old question about a second window; the 12 s
+        # "waiting" dance below is only for a copy that is closing, whose
+        # window is already hidden.)
+        _shift = False
+        try:
+            _shift = bool(ctypes.windll.user32.GetAsyncKeyState(0x10) & 0x8000)
+        except Exception:
+            pass
+        if not _shift and _focus_running_instance():
+            try:
+                root.destroy()
+            except Exception:
+                pass
+            return
         # a copy that is closing hides its window at once and frees the
         # mutex a few seconds later (engine shutdown); a copy an update just
         # replaced is on its way out too. Wait for either — with a small
