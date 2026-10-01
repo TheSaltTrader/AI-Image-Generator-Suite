@@ -238,6 +238,25 @@ check("an UNSURE answer falls back to the trace and is counted as such",
       and _st3["unsure"] == 1 and _st3["fallback"] == 1 and _st3["ok"] == 0, _st3)
 check("the ask tells the model to say UNSURE rather than guess",
       "UNSURE" in vr.SYSTEM and "do NOT guess" in vr.SYSTEM)
+class _Capped:
+    class beta:
+        class messages:
+            @staticmethod
+            def create(**kw):
+                raise RuntimeError("Error code: 400 - {'type': 'error', 'error': "
+                                   "{'type': 'invalid_request_error', 'message': "
+                                   "'You have reached your specified API usage "
+                                   "limits. You will regain access on 2026-11-01 "
+                                   "at 00:00 UTC.'}}")
+    messages = beta.messages
+
+
+try:
+    vr.make_vector_fn(_Capped(), "claude-sonnet-5-5", 300)(crop, pal, 0.5, 0.2)
+    check("a usage-limit error stops the run with a clear message", False)
+except RuntimeError as e:
+    check("a usage-limit error stops the run with a clear message",
+          "usage limits" in str(e) and "console.anthropic.com" in str(e), str(e))
 _st2 = {}
 check("a failed call falls back (None) and is counted",
       vr.make_vector_fn(_Boom(), "claude-sonnet-5-5", 300, stats=_st2)(crop, pal, 0.5, 0.2) is None

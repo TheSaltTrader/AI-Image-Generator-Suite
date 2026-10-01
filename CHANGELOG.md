@@ -1,5 +1,11 @@
 # Changelog — AI Image Generator Suite
 
+## v2.16.2 — 2026-10-01
+- **The vision redraw now STOPS when Anthropic refuses the calls** (API usage
+  limit reached, no credit, key not allowed) and says so, with where to raise
+  the limit. Before, every remaining decal silently fell back to the clean
+  trace — a whole sheet of traced decals looked like the model's work.
+
 ## v2.16.1 — 2026-10-01
 - **Fixed: the taskbar pin did not light up while the app ran, and clicking
   it started a second copy.** Windows groups a running window with a pinned

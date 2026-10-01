@@ -1003,6 +1003,26 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **"Even with AI the results are terrible, pixelated, missing characters"
+  (v2.16.2).** app.log: the user's first big vision run (Killer Whale p1,
+  ~145 decals) hit `You have reached your specified API usage limits. You
+  will regain access on 2026-11-01 at 00:00 UTC` (the Anthropic workspace's
+  monthly cap on the key seeded from CDG Spec Forge) after 17 drawings;
+  187 calls were refused and `make_vector_fn` silently fell back to the
+  clean trace for each → 224 traced vs 17 drawn files; the user judged the
+  TRACE. FIX: an account-level refusal (usage/spending limit, credit,
+  billing, PermissionDenied, Authentication) now RAISES → the run stops
+  with "Anthropic stopped the calls: … raise the limit at
+  console.anthropic.com → Settings → Limits". ASKED whether Jev (now in AI
+  Vision v1.6.0 as `eye_judge`) would help drawing: NO — Jev is a text
+  yes/no/pick-one decision model over OCR text, it neither sees pixels nor
+  draws. OCR EXPERIMENT (winocr, system Python 3.12, 4× crops, 4 rotations,
+  binarised ink masks): reads FUEL and the title, but the ~24 px rotated
+  white labels come back as ':QALINFO' / '11' — at 300 dpi those letters
+  are not in the data; the vision model says UNSURE on the same crops and
+  the trace renders them jagged. The honest lever is the SCAN: 600–1200
+  dpi for sheets with 2 mm labels (set "Scan DPI" to match). update_ui
+  355, vector_redraw 31.
 - **Taskbar pin never "lit", clicking it started a second copy (v2.16.1).**
   User: "When loading the app, the icon does not show its loaded, so when you
   click on it, it tries to restart it." The taskbar matches a running window

@@ -287,13 +287,30 @@ def make_vector_fn(client, model, target_dpi, hint="", stats=None,
                     "clean trace used")
             return None
         except Exception as e:
+            # an account-level stop (bad key, spending limit, no credit)
+            # ends the whole run with a clear message — silently tracing
+            # the remaining 140 decals is not what the user asked for
+            msg = str(e)
+            low = msg.lower()
             try:
                 import anthropic
                 if isinstance(e, anthropic.AuthenticationError):
                     raise RuntimeError("the Anthropic API key was rejected — "
                                        "check it with 🔑 API key…")
+                if isinstance(e, anthropic.PermissionDeniedError):
+                    raise RuntimeError("the Anthropic API key is not allowed "
+                                       "to use this model: " + msg[:200])
             except ImportError:
                 pass
+            if ("usage limit" in low or "spending limit" in low
+                    or "credit balance" in low or "billing" in low
+                    or "regain access" in low):
+                raise RuntimeError(
+                    "Anthropic stopped the calls: " + msg.split("message")[-1]
+                    .strip(" ':{}\"")[:220]
+                    + " — raise the limit at console.anthropic.com → Settings "
+                      "→ Limits (or wait for the reset). No decal was drawn "
+                      "by the model after this point.")
             if log:
                 log("vision redraw call failed; clean trace used: %r" % (e,))
             st["fallback"] += 1
