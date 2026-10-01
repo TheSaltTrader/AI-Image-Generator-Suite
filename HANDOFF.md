@@ -186,8 +186,8 @@ global across installs, and both share the one engine/GPU. `tasklist` for
 ### Run tests (use the **venv python** — system python lacks pymupdf/vtracer)
 ```
 venv\Scripts\python.exe app\update_ui_test.py     # MAIN gate — builds the real
-                                                  # App (engine/net stubbed), 346 checks
-venv\Scripts\python.exe app\vector_redraw_test.py # vision redraw, fake client (25)
+                                                  # App (engine/net stubbed), 355 checks
+venv\Scripts\python.exe app\vector_redraw_test.py # vision redraw, fake client (30)
 venv\Scripts\python.exe app\swap_test.py          # face-swap two-step (22)
 venv\Scripts\python.exe app\variations_test.py    # clones store (18)
 # others: self_update_test, ragmap_test, engine_files_test, startup_test, applog_test, …
@@ -284,6 +284,11 @@ on GitHub).
 
 ## 9. Gotchas / standing rules
 
+- **Taskbar identity:** the process declares `APP_AUMID`; shortcuts and
+  pins must carry the same AppUserModelID or the taskbar treats the running
+  window as a different app. `_ensure_shortcuts()` stamps it at every
+  launch (PowerShell + IPropertyStore); a launch while running focuses the
+  open window (`_focus_running_instance`), SHIFT gives the old prompt.
 - **Edit source with the Write/Edit tools**, not bash heredocs (they eat
   backslashes; a failed assert mid-script discards prior edits).
 - **Never blind-kill the user's processes**; identify by PID/command line, not
@@ -304,8 +309,8 @@ on GitHub).
 
 ## 10. State at handoff
 
-- All test suites green (update_ui 346, vector_redraw 25). Frozen build
-  self-test passes.
+- All test suites green (update_ui 355, vector_redraw 30). Frozen build
+  self-test passes (incl. the SDK, fontTools and text outlining frozen).
 - Latest release published to GitHub; dev tree clean (only gitignored build
   artifacts untracked). `Stickers/_final/` holds the user's cleaned sample
   output; `Stickers/` holds their source PDFs (user data, not committed).

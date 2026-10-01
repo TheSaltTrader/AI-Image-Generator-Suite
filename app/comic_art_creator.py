@@ -105,7 +105,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.16.0"
+APP_VERSION = "2.16.1"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -11800,6 +11800,154 @@ def _app_icon_path():
     return p if p.exists() else APP_DIR / "icon.ico"
 
 
+APP_AUMID = "TheSaltTrader.AIImageGeneratorSuite"
+
+
+def _focus_running_instance(title_prefix="AI Image Generator Suite"):
+    """Bring the already-running copy's main window to the front (restored
+    if minimised). Returns True when a window was found and activated —
+    what a user expects from clicking the taskbar icon of a running app,
+    rather than a second copy asking whether to open another window."""
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        found = []
+
+        @ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+        def enum(hwnd, _lparam):
+            if not user32.IsWindowVisible(hwnd):
+                return True
+            n = user32.GetWindowTextLengthW(hwnd)
+            if n <= 0:
+                return True
+            buf = ctypes.create_unicode_buffer(n + 1)
+            user32.GetWindowTextW(hwnd, buf, n + 1)
+            if buf.value.startswith(title_prefix):
+                pid = wintypes.DWORD(0)
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if pid.value != os.getpid():
+                    found.append(hwnd)
+            return True
+
+        user32.EnumWindows(enum, 0)
+        if not found:
+            return False
+        h = found[0]
+        if user32.IsIconic(h):
+            user32.ShowWindow(h, 9)          # SW_RESTORE
+        # Windows refuses SetForegroundWindow from a process without input
+        # focus; a tap of ALT grants it (the documented workaround)
+        user32.keybd_event(0x12, 0, 0, 0)
+        user32.keybd_event(0x12, 0, 2, 0)
+        user32.SetForegroundWindow(h)
+        return True
+    except Exception:
+        return False
+
+
+def _shortcut_fix_script(exe, aumid=APP_AUMID):
+    """PowerShell that keeps the app's shortcuts consistent with the running
+    process: the Start Menu entry exists, and every .lnk pointing at THIS
+    exe's file name (Start Menu, taskbar pins, Desktop) carries the app's
+    AppUserModelID — without it the taskbar files the running window under
+    a different identity than the pinned button, so the pin never lights
+    up and clicking it starts a second copy. A pin whose target no longer
+    exists (the install moved) is retargeted to this exe. Shortcuts to
+    other programs are never touched; nothing is unpinned or deleted."""
+    exe = str(exe).replace("'", "''")
+    return r'''
+$exe = '__EXE__'; $aumid = '__AUMID__'
+$name = [IO.Path]::GetFileName($exe)
+$names = @($name, 'AIImageGeneratorSuite.exe', 'ComicArtCreator.exe')
+$sig = @"
+using System; using System.Runtime.InteropServices;
+public class AigsPStore {
+  [ComImport, Guid("886d8eeb-8cf2-4446-8d02-cdba1dbdcf99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  public interface IPropertyStore { int GetCount(out uint c); int GetAt(uint i, out PROPERTYKEY k); int GetValue(ref PROPERTYKEY k, out PROPVARIANT v); int SetValue(ref PROPERTYKEY k, ref PROPVARIANT v); int Commit(); }
+  [StructLayout(LayoutKind.Sequential, Pack=4)] public struct PROPERTYKEY { public Guid fmtid; public uint pid; }
+  [StructLayout(LayoutKind.Explicit, Size=24)] public struct PROPVARIANT { [FieldOffset(0)] public ushort vt; [FieldOffset(8)] public IntPtr p; [FieldOffset(16)] public IntPtr p2; }
+  [DllImport("shell32.dll", CharSet=CharSet.Unicode)] static extern int SHGetPropertyStoreFromParsingName(string path, IntPtr pbc, int flags, ref Guid riid, out IPropertyStore ppv);
+  static PROPERTYKEY Key() { PROPERTYKEY k = new PROPERTYKEY(); k.fmtid = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"); k.pid = 5; return k; }
+  public static string Read(string lnk) {
+    Guid iid = new Guid("886d8eeb-8cf2-4446-8d02-cdba1dbdcf99"); IPropertyStore ps;
+    if (SHGetPropertyStoreFromParsingName(lnk, IntPtr.Zero, 0, ref iid, out ps) != 0) return "";
+    PROPERTYKEY k = Key(); PROPVARIANT v; string s = "";
+    if (ps.GetValue(ref k, out v) == 0 && v.vt == 31) s = Marshal.PtrToStringUni(v.p);
+    Marshal.ReleaseComObject(ps); return s ?? "";
+  }
+  public static string Write(string lnk, string aumid) {
+    Guid iid = new Guid("886d8eeb-8cf2-4446-8d02-cdba1dbdcf99"); IPropertyStore ps;
+    int hr = SHGetPropertyStoreFromParsingName(lnk, IntPtr.Zero, 2, ref iid, out ps); if (hr != 0) return "open failed " + hr;
+    PROPERTYKEY k = Key(); PROPVARIANT v = new PROPVARIANT(); v.vt = 31; v.p = Marshal.StringToCoTaskMemUni(aumid);
+    hr = ps.SetValue(ref k, ref v); if (hr == 0) hr = ps.Commit();
+    Marshal.FreeCoTaskMem(v.p); Marshal.ReleaseComObject(ps);
+    return hr == 0 ? "ok" : "failed " + hr;
+  }
+}
+"@
+Add-Type -TypeDefinition $sig
+$ws = New-Object -ComObject WScript.Shell
+$smDir = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+$sm = Join-Path $smDir 'AI Image Generator Suite.lnk'
+if (-not (Test-Path $sm)) {
+  $s = $ws.CreateShortcut($sm); $s.TargetPath = $exe; $s.WorkingDirectory = (Split-Path $exe)
+  $s.IconLocation = "$exe,0"; $s.Description = 'AI Image Generator Suite'; $s.Save()
+  "created the Start Menu shortcut"
+}
+$dirs = @($smDir, (Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar'), [Environment]::GetFolderPath('Desktop'))
+$checked = 0; $fixed = 0
+foreach ($d in $dirs) {
+  if (-not (Test-Path $d)) { continue }
+  foreach ($f in (Get-ChildItem $d -Filter *.lnk -ErrorAction SilentlyContinue)) {
+    try {
+      $s = $ws.CreateShortcut($f.FullName)
+      $tn = [IO.Path]::GetFileName($s.TargetPath)
+      if (-not ($names -contains $tn)) { continue }
+      $checked++
+      if (($s.TargetPath -ine $exe) -and -not (Test-Path $s.TargetPath)) {
+        $s.TargetPath = $exe; $s.WorkingDirectory = (Split-Path $exe); $s.IconLocation = "$exe,0"; $s.Save()
+        "retargeted " + $f.Name; $fixed++
+      }
+      if ([AigsPStore]::Read($f.FullName) -ne $aumid) {
+        "stamped " + $f.Name + ": " + [AigsPStore]::Write($f.FullName, $aumid); $fixed++
+      }
+    } catch { "skipped " + $f.Name + ": " + $_.Exception.Message }
+  }
+}
+"checked $checked shortcut(s), fixed $fixed"
+'''.replace("__EXE__", exe).replace("__AUMID__", aumid)
+
+
+def _ensure_shortcuts():
+    """Once per launch, off the UI thread: run the shortcut upkeep above and
+    log its one-line result. Frozen Windows builds only; never raises."""
+    if os.name != "nt" or not getattr(sys, "frozen", False):
+        return
+
+    def work():
+        try:
+            import tempfile
+            script = Path(tempfile.gettempdir()) / "aigs_shortcuts.ps1"
+            script.write_text(_shortcut_fix_script(sys.executable),
+                              encoding="utf-8")
+            r = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive",
+                 "-ExecutionPolicy", "Bypass", "-File", str(script)],
+                capture_output=True, text=True, creationflags=NO_WINDOW,
+                timeout=90)
+            lines = [ln for ln in (r.stdout or "").splitlines() if ln.strip()]
+            applog.log("shortcuts: " + ("; ".join(lines[-4:]) if lines else
+                                        f"rc={r.returncode} "
+                                        f"{(r.stderr or '')[:200]}"))
+        except Exception:
+            applog.exception("shortcut upkeep failed")
+
+    threading.Thread(target=work, daemon=True).start()
+
+
 def main():
     # headless check that the Decals pipeline + its bundled deps are present
     # in this build (used to verify the frozen exe; exits without a GUI)
@@ -11836,8 +11984,7 @@ def main():
     # must be set for the icon to be consistent everywhere)
     try:
         import ctypes
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-            "TheSaltTrader.AIImageGeneratorSuite")
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_AUMID)
     except Exception:
         pass
     root = Tk()
@@ -11924,6 +12071,21 @@ def main():
             # "application has been destroyed" crash box
             return
     if already:
+        # the copy that is running gets the focus — that is what a click on
+        # the taskbar icon means. Holding SHIFT while launching keeps the
+        # old choice of opening a second window.
+        shift_held = False
+        try:
+            import ctypes as _ct
+            shift_held = bool(_ct.windll.user32.GetAsyncKeyState(0x10) & 0x8000)
+        except Exception:
+            pass
+        if not shift_held and _focus_running_instance():
+            try:
+                root.destroy()
+            except Exception:
+                pass
+            return
         from tkinter import messagebox as _mb
         try:
             open_anyway = _mb.askyesno(
@@ -11942,6 +12104,7 @@ def main():
                 pass
             return
     App(root)
+    _ensure_shortcuts()
     root.mainloop()
 
 

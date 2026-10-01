@@ -1,5 +1,18 @@
 # Changelog — AI Image Generator Suite
 
+## v2.16.1 — 2026-10-01
+- **Fixed: the taskbar pin did not light up while the app ran, and clicking
+  it started a second copy.** Windows groups a running window with a pinned
+  button only when both carry the same application ID; the app declares one,
+  but a pin or shortcut made from the exe file carried none. The app now
+  keeps its shortcuts consistent at every start: the Start Menu entry exists,
+  and every shortcut or taskbar pin that points at this app gets the app's
+  ID (a pin whose target moved is retargeted). Only shortcuts to this app are
+  touched; nothing is unpinned or deleted.
+- **Launching while already running now brings the open window to the
+  front** instead of asking whether to open another window. Hold SHIFT while
+  launching to get the old question and open a second window.
+
 ## v2.16.0 — 2026-10-01
 - **Redraw to vector, rebuilt around three methods.** The diffusion redraw
   mangled small text and symbols, so it is no longer the default.

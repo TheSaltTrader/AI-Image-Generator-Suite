@@ -1003,6 +1003,31 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Taskbar pin never "lit", clicking it started a second copy (v2.16.1).**
+  User: "When loading the app, the icon does not show its loaded, so when you
+  click on it, it tries to restart it." The taskbar matches a running window
+  to a pinned button by AppUserModelID: the process sets
+  `SetCurrentProcessExplicitAppUserModelID(APP_AUMID)`, so a pin Windows
+  creates from the RUNNING window carries that ID (the old H: pin did), but a
+  pin/shortcut made from the exe FILE (the "(2)" pin, my Start Menu .lnk)
+  carries none → a different identity → no running state, and a click
+  launches a new copy (→ "waiting for the other copy… open anyway?"). FIX
+  NOW: stamped `System.AppUserModel.ID` on the three .lnk files via
+  IPropertyStore (C# through PowerShell: SHGetPropertyStoreFromParsingName
+  GPS_READWRITE, PKEY fmtid 9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3 pid 5,
+  VT_LPWSTR; Shell.Application's ExtendedProperty read is STALE after a
+  write — read back through the store; release the store before reopening
+  the same file or you get ERROR_SHARING_VIOLATION). FIX IN THE APP:
+  `_shortcut_fix_script(exe)` + `_ensure_shortcuts()` run once per launch
+  (thread, PowerShell -File from %TEMP%): create the Start Menu entry if
+  missing, stamp the ID on every .lnk in Start Menu / User Pinned\TaskBar /
+  Desktop whose target file name is ours, retarget a pin whose target is
+  gone; never unpin/delete. `_focus_running_instance()` (EnumWindows by
+  title prefix, SW_RESTORE, ALT-tap + SetForegroundWindow) makes a launch
+  while running bring the open window forward; SHIFT held = the old "open
+  another window?" question. The taskbar may only pick up a changed pin ID
+  after Explorer restarts / next sign-in — tell the user: unpin, then pin
+  from the running window if it still doesn't light. update_ui 355.
 - **Redraw to vector rebuilt: clean trace / vision model / re-imagine
   (v2.16.0).** User on the diffusion redraw of Killer Whale sheet 2: "That is
   some terrible work, redrawing svg, all look terrible" — rightly: SDXL

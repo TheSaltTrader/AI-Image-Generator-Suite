@@ -1837,6 +1837,23 @@ check("the new exe is told which pid to wait for",
       and str(app.os.getpid()) in _started[0][0], str(_started))
 check("the window is closed once the hand-over is done", bool(destroyed))
 
+# ---- taskbar identity (v2.16.1) -------------------------------------------
+print("taskbar identity")
+_scr = app._shortcut_fix_script(r"D:\Some Dir\AIImageGeneratorSuite.exe")
+check("the shortcut upkeep script targets this exe and stamps the app's ID",
+      r"D:\Some Dir\AIImageGeneratorSuite.exe" in _scr
+      and app.APP_AUMID in _scr and "User Pinned" in _scr
+      and "Start Menu" in _scr)
+check("…and only ever touches shortcuts to this app, never unpins or deletes",
+      "ComicArtCreator.exe" in _scr and "Remove-Item" not in _scr
+      and "unpin" not in _scr.lower() and "ReleaseComObject" in _scr)
+check("a quote in the install path is escaped for PowerShell",
+      "''" in app._shortcut_fix_script(r"D:\O'Brien\AIImageGeneratorSuite.exe"))
+check("focusing a running copy reports False when no such window exists",
+      app._focus_running_instance(title_prefix="ZZZ-no-such-window-ZZZ") is False)
+check("shortcut upkeep is a no-op outside a frozen build (tests, dev)",
+      app._ensure_shortcuts() is None)
+
 # ---- closing ------------------------------------------------------------
 print("closing")
 destroyed.clear()
