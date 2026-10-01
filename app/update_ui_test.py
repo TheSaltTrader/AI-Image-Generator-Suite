@@ -539,6 +539,104 @@ check("decal-gen flag defaults off (normal generation unaffected)",
 # ---- AI redraw to vector (v2.15): red buttons, segmentation, palette snap,
 # ---- sheet rebuild at the printed size, the per-decal engine graph ----------
 print("decals AI redraw")
+# ---- v2.16: redraw methods, vision model, grouping, preview, film preview --
+check("redraw method defaults to the clean trace (nothing invented)",
+      hasattr(ui, "decal_method_var") and ui.decal_method_var.get() == "trace")
+check("the vision model picker lists Opus 5.5 (default) and Sonnet 5.5",
+      hasattr(ui, "decal_vision_model_var")
+      and ui._vision_model_id() == "claude-opus-5-5"
+      and any(m == "claude-sonnet-5-5" for _l, m in app.vector_redraw.MODELS))
+ui.decal_vision_model_var.set(app.vector_redraw.MODELS[1][0])
+check("picking the cheaper option resolves to Sonnet 5.5",
+      ui._vision_model_id() == "claude-sonnet-5-5")
+ui.decal_vision_model_var.set(app.vector_redraw.MODELS[0][0])
+check("API key button + status label + preview button are wired",
+      hasattr(ui, "decal_key_btn") and hasattr(ui, "decal_key_lab")
+      and hasattr(ui, "decal_preview_btn")
+      and callable(getattr(ui, "_set_vision_key", None)))
+check("the API key is never part of the saved UI state",
+      not any("key" in k.lower() and "decal" in k.lower()
+              for k in ui._collect_ui_state().keys())
+      and "sk-ant" not in json.dumps(ui._collect_ui_state()))
+check("grouping distance defaults to 1.0 mm and is saved with the UI state",
+      abs(float(ui.decal_gap_var.get()) - 1.0) < 1e-6
+      and abs(float(ui._collect_ui_state().get("decal_gap", 0)) - 1.0) < 1e-6
+      and ui._collect_ui_state().get("decal_method") == "trace")
+_ug = app.build_decal_upscale_graph({"width": 640, "height": 448, "esrgan": True,
+                                     "ref_image_name": "in.png"})
+check("the clean-trace graph is ESRGAN + scale only (no sampler)",
+      [v["class_type"] for v in _ug.values()]
+      == ["LoadImage", "UpscaleModelLoader", "ImageUpscaleWithModel",
+          "ImageScale", "SaveImage"])
+_film = app._on_film(app.Image.new("RGBA", (4, 4), (255, 255, 255, 255)),
+                     (214, 240, 242))
+check("gallery previews sit on the film colour (white ink stays visible)",
+      _film.getpixel((1, 1)) == (255, 255, 255)
+      and app._on_film(app.Image.new("RGBA", (4, 4), (0, 0, 0, 0)),
+                       (214, 240, 242)).getpixel((1, 1)) == (214, 240, 242)
+      and app._on_film(app.Image.new("RGBA", (4, 4), (0, 0, 0, 0)),
+                       (250, 247, 246)).getpixel((1, 1)) == (205, 215, 225))
+try:
+    import numpy as _np5
+    # size-aware grouping: two BIG decals 12 px apart stay separate; a small
+    # satellite 8 px under a big one joins it; letters join into a word
+    _g = _np5.zeros((200, 300, 4), _np5.uint8)
+    _g[20:120, 20:120] = (206, 22, 30, 255)        # big A
+    _g[20:120, 132:232] = (20, 60, 200, 255)       # big B, 12 px to the right
+    _g[128:140, 30:60] = (0, 0, 0, 255)            # small caption 8 px under A
+    for _x in (150, 170, 190, 210):                # four "letters" 8 px under B
+        _g[128:140, _x:_x + 8] = (0, 0, 0, 255)
+    _gb = _dec.segment_decals(app.Image.fromarray(_g, "RGBA"), gap=16, pad=0)
+    check("two big decals near each other stay separate; small marks join",
+          len(_gb) == 2 and _gb[0][3] >= 140 and _gb[1][3] >= 140, _gb)
+    check("gap=0 keeps every piece on its own",
+          len(_dec.segment_decals(app.Image.fromarray(_g, "RGBA"), gap=0,
+                                  pad=0, min_side=6)) == 7)
+except Exception as _e:
+    check("size-aware grouping", False, repr(_e))
+# vector results carry their SVG: the preview zooms from it, the caption says
+# so, Save As hands out the SVG, delete takes the twin PNG too
+try:
+    import tempfile as _tf
+    _vd = Path(_tf.mkdtemp())
+    _vsvg = _vd / "demo.svg"
+    _vsvg.write_text('<svg xmlns="http://www.w3.org/2000/svg" width="0.5in" '
+                     'height="0.2in" viewBox="0 0 150 60">'
+                     '<rect x="6" y="8" width="104" height="44" fill="#e04231"/></svg>',
+                     encoding="utf-8")
+    _vpng = _vd / "demo.png"
+    _vimg = app.Image.new("RGB", (150, 60), (214, 240, 242))
+    _vimg.save(_vpng)
+    _vparams = {"model": "decal", "seed": "demo", "user_prompt": "demo",
+                "svg": str(_vsvg), "png": str(_vpng), "film": (214, 240, 242),
+                "size_in": (0.5, 0.2)}
+    ui.session.append((_vimg, _vparams, str(_vsvg)))
+    ui.current = len(ui.session) - 1
+    ui._show_current()
+    check("a vector result is captioned as SVG with its printed size",
+          "SVG" in ui.info_var.get() and "0.50 × 0.20 in" in ui.info_var.get(),
+          ui.info_var.get())
+    _calls = []
+    _real_rr = app.vector_redraw.render_svg_region
+    app.vector_redraw.render_svg_region = lambda *a, **k: _calls.append((a, k)) or _real_rr(*a, **k)
+    ui._zoom, ui._view_c = 3.0, None
+    ui._draw_frame(_vimg)
+    app.vector_redraw.render_svg_region = _real_rr
+    check("zooming a vector result renders from the SVG (sharp), not the raster",
+          len(_calls) == 1 and _calls[0][1].get("backing") == (214, 240, 242))
+    ui._zoom, ui._view_c = 1.0, None
+    check("Save As copies the SVG for an .svg name and the PNG for a .png name",
+          ui._save_source(_vparams, str(_vsvg), r"C:\x\out.svg") == str(_vsvg)
+          and ui._save_source(_vparams, str(_vsvg), r"C:\x\out.png") == str(_vpng)
+          and ui._save_source({"model": "x"}, r"C:\y\a.png", r"C:\x\o.png") == r"C:\y\a.png")
+    ui._add_thumb(ui.current)
+    ui._delete_paths([str(_vsvg)])
+    check("deleting a vector result removes both the SVG and its PNG",
+          not _vsvg.exists() and not _vpng.exists())
+except Exception as _e:
+    import traceback
+    traceback.print_exc()
+    check("vector results in the gallery", False, repr(_e))
 check("Decals action buttons are red Go buttons (like the other tabs' generate)",
       all(getattr(ui, n).cget("style") == "Go.TButton"
           for n in ("decal_btn", "decal_vec_btn", "decal_gen_btn")))
@@ -588,6 +686,21 @@ try:
                              size_scale=1.5, target_dpi=100)
     check("redraw_sheet redraws every decal once",
           len(_calls) == 2 and len(_out["items"]) == 2, (_calls, len(_out["items"])))
+    # thin WHITE ink on its own (a white label on the film) must survive the
+    # edge-band fringe rule — it used to be dropped as "light = background"
+    _wi = _np4.zeros((120, 200, 4), _np4.uint8)
+    _wi[50:60, 20:180] = (255, 255, 255, 255)          # a 10 px white stroke
+    _wo = _dec.redraw_sheet(app.Image.fromarray(_wi, "RGBA"),
+                            lambda rgb, size: rgb.resize(size),
+                            native_dpi=100, size_scale=1.0, target_dpi=100,
+                            keep_palette=True, min_side=6)
+    _woa = _np4.asarray(_wo["rgba"]) if _wo["rgba"] is not None else None
+    check("thin white ink survives the clean trace",
+          _woa is not None and _woa[55, 100][3] > 200
+          and tuple(int(v) for v in _woa[55, 100][:3]) == (255, 255, 255)
+          and (_woa[50:60, 20:180, 3] > 128).mean() > 0.8,
+          None if _woa is None else
+          (tuple(_woa[55, 100]), float((_woa[50:60, 20:180, 3] > 128).mean())))
     check("the crop goes to the AI at scan size; the canvas is /8 and >= floor",
           all(r[0] < 200 and s[0] % 8 == 0 and s[1] % 8 == 0 and max(s) >= 640
               for r, s in _calls), _calls)

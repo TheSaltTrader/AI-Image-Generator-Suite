@@ -516,15 +516,55 @@ def _components(mask):
     return [tuple(b) for b in boxes.values()]
 
 
-def segment_decals(rgba, gap=16, min_side=24, pad=6, down=4):
+def _group_boxes(boxes, gap, small_side, touch=6):
+    """Size-aware grouping of raw pieces into decals. Two pieces join when
+    they lie within `gap` px of each other AND at least one of them is
+    SMALL (longest side < small_side): letters join into a word, a word
+    joins the logo it captions — but two big decals that merely sit close
+    together stay apart (the old blanket bridging cut an "M" badge and the
+    "LOAD INFO" label under it out as one). Two big pieces still join when
+    they all but touch (within `touch` px): the fragments a faint decal
+    breaks into. Repeats until nothing changes."""
+    boxes = [list(b) for b in boxes]
+    changed = True
+    while changed and len(boxes) > 1:
+        changed = False
+        n = len(boxes)
+        for i in range(n):
+            if boxes[i] is None:
+                continue
+            for j in range(i + 1, n):
+                if boxes[j] is None:
+                    continue
+                a, b = boxes[i], boxes[j]
+                small_a = max(a[2] - a[0], a[3] - a[1]) < small_side
+                small_b = max(b[2] - b[0], b[3] - b[1]) < small_side
+                g = gap if (small_a or small_b) else min(gap, touch)
+                near = (a[0] - g <= b[2] and b[0] - g <= a[2]
+                        and a[1] - g <= b[3] and b[1] - g <= a[3])
+                if near:
+                    boxes[i] = [min(a[0], b[0]), min(a[1], b[1]),
+                                max(a[2], b[2]), max(a[3], b[3])]
+                    boxes[j] = None
+                    changed = True
+        boxes = [b for b in boxes if b is not None]
+    return [tuple(b) for b in boxes]
+
+
+def segment_decals(rgba, gap=16, min_side=24, pad=6, down=4, small_side=48,
+                   bridge=3):
     """Split a cleaned sheet (RGBA, transparent background) into the boxes of
     its individual decals, in reading order (rows top→bottom, left→right).
 
-    Opaque pixels are grouped into connected regions after bridging gaps of
-    up to `gap` px (so a logo and the text under it stay one decal); specks
-    smaller than `min_side` px are dropped; each box gets `pad` px around it.
-    Segmentation runs on a `down`× reduced mask for speed, then the boxes are
-    tightened on the full-resolution alpha."""
+    Opaque pixels form connected pieces (tiny JPEG breaks bridged by
+    `bridge` px); pieces are then grouped SIZE-AWARE: a piece joins a
+    neighbour within `gap` px only when one of the two is small (longest
+    side < `small_side` px — letters, specks of a logo), so captions stay
+    with their logo while two big decals near each other stay separate.
+    gap=0 keeps every piece on its own. Specks smaller than `min_side` px
+    are dropped; each box gets `pad` px around it. Segmentation runs on a
+    `down`× reduced mask for speed, then the boxes are tightened on the
+    full-resolution alpha."""
     a = np.asarray(rgba)
     if a.ndim != 3 or a.shape[2] != 4:
         return [(0, 0, rgba.width, rgba.height)]
@@ -533,10 +573,12 @@ def segment_decals(rgba, gap=16, min_side=24, pad=6, down=4):
     down = max(1, int(down))
     hh, ww = max(1, H // down), max(1, W // down)
     m = opaque[:hh * down, :ww * down].reshape(hh, down, ww, down).any(axis=(1, 3))
-    r = max(1, int(round(gap / down)))
-    md = np.asarray(Image.fromarray(m.astype(np.uint8) * 255)
-                    .filter(ImageFilter.MaxFilter(2 * r + 1))) > 0
-    out = []
+    # the quarter-scale pooling already closes breaks under `down` px; only
+    # dilate when a wider bridge was asked for (gap=0 must keep pieces apart)
+    r = int(bridge) // down
+    md = (np.asarray(Image.fromarray(m.astype(np.uint8) * 255)
+                     .filter(ImageFilter.MaxFilter(2 * r + 1))) > 0) if r >= 1 else m
+    raw = []
     for x0, y0, x1, y1 in _components(md):
         X0, Y0 = x0 * down, y0 * down
         X1, Y1 = min(W, (x1 + 1) * down), min(H, (y1 + 1) * down)
@@ -544,8 +586,12 @@ def segment_decals(rgba, gap=16, min_side=24, pad=6, down=4):
         if not sub.any():
             continue
         ys, xs = np.where(sub)
-        bx0, bx1 = X0 + int(xs.min()), X0 + int(xs.max()) + 1
-        by0, by1 = Y0 + int(ys.min()), Y0 + int(ys.max()) + 1
+        raw.append((X0 + int(xs.min()), Y0 + int(ys.min()),
+                    X0 + int(xs.max()) + 1, Y0 + int(ys.max()) + 1))
+    if gap and gap > 0:
+        raw = _group_boxes(raw, int(gap), int(small_side))
+    out = []
+    for bx0, by0, bx1, by1 in raw:
         if (bx1 - bx0) < min_side or (by1 - by0) < min_side:
             continue
         out.append((max(0, bx0 - pad), max(0, by0 - pad),
@@ -641,7 +687,7 @@ def snap_palette(rgb_img, palette):
 def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
                  keep_palette=True, palette_colors=16, work_px=1024,
                  min_work_px=640, progress=None, cancelled=None, gap=16,
-                 min_side=24):
+                 min_side=24, vector_fn=None, limit=None):
     """AI-redraw every decal on a cleaned sheet and rebuild the sheet as
     vector art at its correct physical size.
 
@@ -655,6 +701,14 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
     (its alpha is cut from the scan) and, with keep_palette, its exact
     COLOURS (the redraw is snapped to the scan's own palette).
 
+    vector_fn  optional vector_fn(crop_rgba, palette, w_in, h_in) ->
+               (svg_text, raster_rgba) | None. When it returns a drawing
+               (e.g. a vision model's SVG), that is used for the decal
+               instead of the refine→trace path; None falls back to it.
+               The svg is expected in the crop's pixel coordinates with
+               width/height in inches; the raster at w_in*target_dpi wide.
+    limit      redraw only the first `limit` decals (a preview)
+
     Returns None when cancelled, else a dict:
       svg    the whole sheet as one SVG — every decal in its place, width/
              height in inches (size_scale applied), so it prints at size
@@ -663,6 +717,8 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
     boxes = segment_decals(rgba, gap=gap, min_side=min_side)
     if not boxes:
         return {"svg": None, "rgba": None, "items": []}
+    if limit:
+        boxes = boxes[:int(limit)]
     W, H = rgba.size
     k = float(size_scale) * float(target_dpi) / float(native_dpi)  # scan px -> out px
     sheet_w_in = W / float(native_dpi) * size_scale
@@ -677,6 +733,31 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
             progress(i, len(boxes))
         crop = rgba.crop((x0, y0, x1, y1))
         cw, ch = crop.size
+        w_in = cw / float(native_dpi) * size_scale
+        h_in = ch / float(native_dpi) * size_scale
+        px_w = max(1, int(round(w_in * target_dpi)))
+        px_h = max(1, int(round(h_in * target_dpi)))
+        if vector_fn is not None:
+            # a drawing from a description (vision model): already vector
+            got = vector_fn(crop, palette_of(crop, colors=palette_colors),
+                            w_in, h_in)
+            if got is not None:
+                svg, ras = got
+                if ras.size != (px_w, px_h):
+                    ras = ras.resize((px_w, px_h), Image.LANCZOS)
+                items.append(dict(box=(x0, y0, x1, y1), svg=svg, rgba=ras,
+                                  size_in=(w_in, h_in), source="vector"))
+                px, py = int(round(x0 * k)), int(round(y0 * k))
+                part = ras
+                if px + part.width > sheet.width or py + part.height > sheet.height:
+                    part = part.crop((0, 0, max(1, min(part.width, sheet.width - px)),
+                                      max(1, min(part.height, sheet.height - py))))
+                if px < sheet.width and py < sheet.height:
+                    sheet.alpha_composite(part, (px, py))
+                # the drawing is in crop pixels already: place it as is
+                parts.append(f'<g transform="translate({x0} {y0})">'
+                             f'{svg_inner(svg)}</g>')
+                continue
         # the work canvas: about 4× the scan crop, clamped to [min_work_px,
         # work_px] on the long edge (diffusion models draw badly on tiny
         # canvases and invent on huge ones), both sides multiples of 8,
@@ -688,7 +769,8 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
         hr = max(64, int(round(ch * s / 8)) * 8)
         on_white = Image.alpha_composite(
             Image.new("RGBA", crop.size, (255, 255, 255, 255)), crop).convert("RGB")
-        out = refine(on_white, (wr, hr))
+        out = refine(on_white, (wr, hr)) if refine is not None \
+            else on_white.resize((wr, hr), Image.LANCZOS)
         if out is None:
             return None
         out = out.convert("RGB")
@@ -715,21 +797,21 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
         if keep_palette and pal is not None:
             out = snap_palette(out, pal)
             light |= _light(np.asarray(out).astype(np.int32))
+        # …but WHITE INK is light too: where the scan itself is light the
+        # pixel is ink, not fringe (thin white text used to vanish here)
+        scan_light = _light(np.asarray(on_white.resize((wr, hr), Image.BILINEAR))
+                            .astype(np.int32))
         keep = sil.copy()
-        keep[(sil & ~inner) & light] = False
+        keep[(sil & ~inner) & light & ~scan_light] = False
         redrawn = out.convert("RGBA")
         redrawn.putalpha(Image.fromarray((keep * 255).astype(np.uint8)))
-        w_in = cw / float(native_dpi) * size_scale
-        h_in = ch / float(native_dpi) * size_scale
-        px_w = max(1, int(round(w_in * target_dpi)))
-        px_h = max(1, int(round(h_in * target_dpi)))
         svg, ras = vectorize(redrawn, target_px=px_w, quantize_colors=0,
                              presmooth=False, drop_halo=False)
         svg = svg_set_physical_size(svg, w_in, h_in)
         if ras.size != (px_w, px_h):
             ras = ras.resize((px_w, px_h), Image.LANCZOS)
         items.append(dict(box=(x0, y0, x1, y1), svg=svg, rgba=ras,
-                          size_in=(w_in, h_in)))
+                          size_in=(w_in, h_in), source="trace"))
         px, py = int(round(x0 * k)), int(round(y0 * k))
         part = ras
         if px + part.width > sheet.width or py + part.height > sheet.height:

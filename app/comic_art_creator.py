@@ -97,6 +97,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageTk
 from PIL.PngImagePlugin import PngInfo
 
 import self_update
+import vector_redraw
 import engine_files
 import applog
 import decals
@@ -104,7 +105,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.15.2"
+APP_VERSION = "2.16.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -1858,6 +1859,49 @@ def build_decal_refine_graph(p):
               "inputs": {"samples": ["6", 0], "vae": ["1", 2]}}
     g["8"] = {"class_type": "SaveImage",
               "inputs": {"filename_prefix": "cbac_decal", "images": ["7", 0]}}
+    return g
+
+
+def _film_colour(carrier=None):
+    """The backing colour a decal is previewed on: the sheet's own film
+    colour; on a neutral (white-paper) scan a light blue-grey stands in."""
+    try:
+        c = tuple(int(v) for v in carrier) if carrier else (214, 240, 242)
+        if decals.is_neutral_carrier(c):
+            c = (205, 215, 225)
+    except Exception:
+        c = (214, 240, 242)
+    return c
+
+
+def _on_film(rgba, carrier=None):
+    """A decal on the colour of the sheet it came from — the gallery
+    preview. On white, white-ink decals would be invisible."""
+    c = _film_colour(carrier)
+    return Image.alpha_composite(
+        Image.new("RGBA", rgba.size, c + (255,)), rgba.convert("RGBA")
+    ).convert("RGB")
+
+
+def build_decal_upscale_graph(p):
+    """One decal, NO diffusion: LoadImage → RealESRGAN 4× (when p["esrgan"])
+    → scale to the work canvas → SaveImage. The deterministic "clean trace"
+    redraw: sharpening only, nothing invented."""
+    g = {"10": {"class_type": "LoadImage",
+                "inputs": {"image": p["ref_image_name"]}}}
+    img_ref = ["10", 0]
+    if p.get("esrgan"):
+        g["11"] = {"class_type": "UpscaleModelLoader",
+                   "inputs": {"model_name": UPSCALE_MODEL}}
+        g["12"] = {"class_type": "ImageUpscaleWithModel",
+                   "inputs": {"upscale_model": ["11", 0], "image": img_ref}}
+        img_ref = ["12", 0]
+    g["13"] = {"class_type": "ImageScale",
+               "inputs": {"image": img_ref, "width": p["width"],
+                          "height": p["height"], "upscale_method": "lanczos",
+                          "crop": "disabled"}}
+    g["8"] = {"class_type": "SaveImage",
+              "inputs": {"filename_prefix": "cbac_decal_up", "images": ["13", 0]}}
     return g
 
 
@@ -5312,16 +5356,75 @@ class App:
                   "(faithful transparent raster) or Vectorize (a plain trace "
                   "into SVG — no AI, colours re-quantised).")
 
-        ttk.Label(left, text="AI redraw (low-quality scans → clean SVG)",
+        ttk.Label(left, text="Redraw to vector (low-quality scans → clean SVG)",
                   style="Head.TLabel").grid(row=r, sticky=W, pady=(8, 0)); r += 1
-        ttk.Label(left, text="Each decal is cut out of the scan, redrawn by the "
-                  "image model (the Image-generation tab's model + LoRAs), "
-                  "traced to SVG and put back on the sheet at its printed "
-                  "size. The scan fixes each decal's outline and, by default, "
-                  "its exact colours.", style="Dim.TLabel", wraplength=410,
+        ttk.Label(left, text="Each decal is cut out of the scan and rebuilt as "
+                  "vector art at its printed size (sheet SVG + PNG, and each "
+                  "decal on its own). The scan fixes each decal's outline and "
+                  "exact colours.", style="Dim.TLabel", wraplength=410,
                   justify="left").grid(row=r, sticky=W, pady=(2, 2)); r += 1
+        ttk.Label(left, text="Redraw method", style="Dim.TLabel").grid(
+            row=r, sticky=W); r += 1
+        self.decal_method_var = StringVar(value="trace")
+        _m1 = ttk.Radiobutton(
+            left, text="Clean trace — sharpen with RealESRGAN, keep the exact "
+                       "colours, trace (nothing invented)",
+            variable=self.decal_method_var, value="trace")
+        _m1.grid(row=r, sticky=W); r += 1
+        self._tip(_m1, "Deterministic: the scan is sharpened by RealESRGAN, "
+                       "snapped to its own palette and traced into clean flat "
+                       "shapes. Text stays exactly as scanned (as legible as "
+                       "the scan allows). Needs the engine for the sharpening; "
+                       "without it a plain enlargement is used.")
+        _m2 = ttk.Radiobutton(
+            left, text="Vision model — describes each decal and draws it as "
+                       "vector with real text (Claude; needs an API key)",
+            variable=self.decal_method_var, value="vision")
+        _m2.grid(row=r, sticky=W); r += 1
+        self._tip(_m2, "Each decal is sent to the vision model with its exact "
+                       "size and palette; it answers with an SVG — real "
+                       "shapes, real text in a bold font. Every drawing is "
+                       "checked against the scan (outline overlap + colour "
+                       "layout) and falls back to the clean trace when it "
+                       "drifts. Cloud call, a few cents per decal; the key is "
+                       "stored in the Windows Credential Manager only.")
+        _m3 = ttk.Radiobutton(
+            left, text="Re-imagine with the image model — large logos only",
+            variable=self.decal_method_var, value="diffusion")
+        _m3.grid(row=r, sticky=W); r += 1
+        self._tip(_m3, "Image-to-image with the Image-generation tab's model "
+                       "and LoRAs at the strength below. Fine for a big "
+                       "single-colour logo; it mangles small text and symbols "
+                       "— use the other two methods for those.")
+        vrow = ttk.Frame(left); vrow.grid(row=r, sticky="ew", pady=(2, 2)); r += 1
+        ttk.Label(vrow, text="Vision model", style="Dim.TLabel").pack(side="left")
+        self.decal_vision_model_var = StringVar(value=vector_redraw.MODELS[0][0])
+        ttk.Combobox(vrow, textvariable=self.decal_vision_model_var,
+                     state="readonly", exportselection=False, width=26,
+                     values=[lab for lab, _m in vector_redraw.MODELS]).pack(
+            side="left", padx=(6, 6))
+        self.decal_key_btn = ttk.Button(vrow, text="🔑 API key…",
+                                        command=self._set_vision_key)
+        self.decal_key_btn.pack(side="left")
+        self.decal_key_lab = ttk.Label(vrow, text="", style="Dim.TLabel")
+        self.decal_key_lab.pack(side="left", padx=(6, 0))
+        self._refresh_vision_key_lab()
+        self._tip(vrow, "Opus 5.5 draws best; Sonnet 5.5 costs about half. "
+                        "Roughly 1–4 cents per decal. The key is yours, from "
+                        "console.anthropic.com; it never leaves this machine "
+                        "except to call the API.")
+        grow = ttk.Frame(left); grow.grid(row=r, sticky="ew", pady=(2, 2)); r += 1
+        ttk.Label(grow, text="Group nearby pieces within",
+                  style="Dim.TLabel").pack(side="left")
+        self.decal_gap_var = DoubleVar(value=1.0)
+        ttk.Spinbox(grow, from_=0.0, to=10.0, increment=0.2, width=5,
+                    textvariable=self.decal_gap_var).pack(side="left", padx=(6, 4))
+        ttk.Label(grow, text="mm", style="Dim.TLabel").pack(side="left")
+        self._tip(grow, "Letters and small marks closer than this join the "
+                        "decal next to them (a logo keeps its caption). Two "
+                        "big decals never join. 0 keeps every piece separate.")
         rrow = ttk.Frame(left); rrow.grid(row=r, sticky="ew", pady=(2, 2)); r += 1
-        ttk.Label(rrow, text="Redraw strength",
+        ttk.Label(rrow, text="Re-imagine strength",
                   style="Dim.TLabel").pack(side="left")
         self.decal_redraw_var = DoubleVar(value=0.35)
         self.decal_redraw_lab = ttk.Label(rrow, text="0.35", width=5,
@@ -5344,17 +5447,26 @@ class App:
                        "in your scan, so the SVG uses the original colours "
                        "exactly and traces as clean flat fills. OFF: keeps "
                        "whatever colours the AI painted.")
+        self.decal_preview_btn = ttk.Button(
+            left, text="👁 Preview one decal",
+            command=lambda: self._redraw_decals(preview=True))
+        self.decal_preview_btn.grid(row=r, sticky="ew", pady=(4, 2)); r += 1
+        self._tip(self.decal_preview_btn,
+                  "Redraws only the FIRST decal of the first sheet with the "
+                  "chosen method and shows it in the gallery — check the "
+                  "result (and the cost, for the vision model) before running "
+                  "a whole sheet. Saved under decals\\_preview.")
         self.decal_vec_btn = ttk.Button(
-            left, text="🖊 Redraw to vector (AI → SVG)", style="Go.TButton",
+            left, text="🖊 Redraw to vector (SVG)", style="Go.TButton",
             command=self._redraw_decals)
-        self.decal_vec_btn.grid(row=r, sticky="ew", pady=(4, 4)); r += 1
+        self.decal_vec_btn.grid(row=r, sticky="ew", pady=(0, 4)); r += 1
         self._tip(self.decal_vec_btn,
-                  "AI-redraws the queued scan(s) decal by decal. For each sheet "
-                  "it writes one SVG + PNG of the whole sheet (every decal in "
-                  "place) plus a folder with each decal as its own SVG + PNG — "
-                  "all at the correct printed size for the chosen figure "
-                  "scale. Uses the engine; Cancel on the Image tab stops it. "
-                  "A description in the box below (optional) guides the redraw.")
+                  "Redraws the queued scan(s) decal by decal with the chosen "
+                  "method. For each sheet it writes one SVG + PNG of the whole "
+                  "sheet (every decal in place) plus a folder with each decal "
+                  "as its own SVG + PNG — all at the correct printed size for "
+                  "the chosen figure scale. Cancel on the Image tab stops it. "
+                  "A description in the box below (optional) guides the AI.")
 
         ttk.Label(left, text="Generate an original decal (AI → SVG)",
                   style="Head.TLabel").grid(row=r, sticky=W, pady=(8, 0)); r += 1
@@ -5507,18 +5619,22 @@ class App:
                         # the PNG carries its print resolution, so it opens
                         # and prints at the right physical size
                         rgba.save(out_png, dpi=(dpi_out, dpi_out))
+                        entry = {"model": "decal", "seed": label,
+                                 "user_prompt": label, "png": str(out_png),
+                                 "film": _film_colour(decals.detect_carrier(img)),
+                                 "size_in": (rgba.width / float(dpi_out),
+                                             rgba.height / float(dpi_out))}
+                        entry_path = str(out_png)
                         if res.get("svg"):
-                            (DECALS_OUT / f"{label}.svg").write_text(
-                                res["svg"], encoding="utf-8")
-                        # a white-backed preview for the gallery (the file on
-                        # disk keeps its transparency)
-                        prev = Image.alpha_composite(
-                            Image.new("RGBA", rgba.size, (255, 255, 255, 255)),
-                            rgba).convert("RGB")
-                        self.ui_queue.put((
-                            "decal_add", prev,
-                            {"model": "decal", "seed": label,
-                             "user_prompt": label}, str(out_png)))
+                            svg_path = DECALS_OUT / f"{label}.svg"
+                            svg_path.write_text(res["svg"], encoding="utf-8")
+                            entry["svg"] = str(svg_path)
+                            entry_path = str(svg_path)   # the SVG is the file
+                        # the gallery preview sits on the sheet's own film
+                        # colour (white ink would vanish on white); the file
+                        # on disk keeps its transparency
+                        prev = _on_film(rgba, decals.detect_carrier(img))
+                        self.ui_queue.put(("decal_add", prev, entry, entry_path))
                         done += 1
             except Exception as e:
                 applog.exception("decal processing failed")
@@ -5527,10 +5643,46 @@ class App:
 
         threading.Thread(target=work, daemon=True).start()
 
+    def _set_vision_key(self):
+        """Ask for the Anthropic API key; it goes to the Windows Credential
+        Manager (never a file). An empty entry removes the saved key."""
+        from tkinter import simpledialog
+        key = simpledialog.askstring(
+            "Anthropic API key",
+            "Paste your Anthropic API key (sk-ant-…). It is stored in the "
+            "Windows Credential Manager, never in a file.\n\nLeave empty and "
+            "press OK to remove the saved key.",
+            parent=self.root, show="•")
+        if key is None:
+            return
+        ok = vector_redraw.set_api_key(key.strip())
+        self._refresh_vision_key_lab()
+        self.decal_status_var.set(
+            "API key saved." if (ok and key.strip()) else
+            "API key removed." if ok else "Could not store the key.")
+
+    def _refresh_vision_key_lab(self):
+        try:
+            has = bool(vector_redraw.get_api_key())
+            self.decal_key_lab.configure(
+                text="key: set" if has else "no key yet",
+                style="BadgeOn.TLabel" if has else "Dim.TLabel")
+        except Exception:
+            pass
+
+    def _vision_model_id(self):
+        lab = self.decal_vision_model_var.get() \
+            if hasattr(self, "decal_vision_model_var") else ""
+        for name, mid in vector_redraw.MODELS:
+            if name == lab:
+                return mid
+        return vector_redraw.DEFAULT_MODEL
+
     def _set_decal_buttons(self, enabled):
         """Grey the Decals action buttons while a job runs (one at a time:
         they share the engine and the status line)."""
-        for name in ("decal_btn", "decal_vec_btn", "decal_gen_btn"):
+        for name in ("decal_btn", "decal_vec_btn", "decal_gen_btn",
+                     "decal_preview_btn"):
             b = getattr(self, name, None)
             if b is not None:
                 try:
@@ -5538,28 +5690,49 @@ class App:
                 except Exception:
                     pass
 
-    def _redraw_decals(self):
-        """AI redraw: every decal on the queued scan(s) is cut out, enlarged,
-        redrawn by the image model (image-to-image on the scan crop — the
-        silhouette and, by default, the exact colours come from the scan),
-        traced to SVG and put back on a sheet at its correct printed size.
-        Draws with the Image-generation tab's model + LoRAs; runs on a
-        worker thread and reports through the Decals status line."""
+    def _redraw_decals(self, preview=False):
+        """Redraw to vector: every decal on the queued scan(s) is cut out and
+        rebuilt as vector art at its printed size, by the chosen method:
+          trace      RealESRGAN sharpening + the scan's exact palette + trace
+                     (deterministic — nothing invented)           [default]
+          vision     a vision model (Claude) describes the decal and draws it
+                     as SVG with real text; each drawing is checked against
+                     the scan and falls back to the trace when it drifts
+          diffusion  image-to-image with the Image tab's model (large logos)
+        preview=True redraws only the first decal of the first sheet (into
+        decals\\_preview) so the method and its cost can be judged first.
+        Runs on a worker thread; reports through the Decals status line."""
         if getattr(self, "_decals_busy", False):
             return
         if not self.decal_sources:
             self.decal_status_var.set("Add one or more scans first "
                                       "(➕ Add files…).")
             return
-        if not engine_alive():
-            self.decal_status_var.set("Start the engine first (open the Image "
-                                      "generation tab) — the AI redraw uses it.")
-            return
-        model = self._model_raw()
-        if not model:
-            self.decal_status_var.set("Pick a model on the Image generation tab "
-                                      "first — the redraw draws with it.")
-            return
+        method = self.decal_method_var.get() \
+            if hasattr(self, "decal_method_var") else "trace"
+        engine = engine_alive()
+        model = None
+        if method == "diffusion":
+            if not engine:
+                self.decal_status_var.set("Start the engine first (open the "
+                                          "Image generation tab) — the image "
+                                          "model runs on it.")
+                return
+            model = self._model_raw()
+            if not model:
+                self.decal_status_var.set("Pick a model on the Image generation "
+                                          "tab first — Re-imagine draws with it.")
+                return
+        vmodel = self._vision_model_id()
+        if method == "vision":
+            if not vector_redraw.have_sdk():
+                self.decal_status_var.set("This build has no Anthropic SDK — "
+                                          "the vision method is unavailable.")
+                return
+            if not vector_redraw.get_api_key():
+                self.decal_status_var.set("Add your Anthropic API key first "
+                                          "(🔑 API key…), then try again.")
+                return
         strength = round(float(self.decal_redraw_var.get()), 2)
         loras = [(n, round(self.lora_strength.get(), 2))
                  for n in self._selected_loras()]
@@ -5570,6 +5743,11 @@ class App:
         size_scale = self._decal_scale_factor()
         keep_pal = bool(self.decal_palette_var.get())
         esrgan = (MODELS / "upscale_models" / UPSCALE_MODEL).exists()
+        try:
+            gap_mm = max(0.0, float(self.decal_gap_var.get()))
+        except Exception:
+            gap_mm = 1.0
+        gap_px = int(round(gap_mm / 25.4 * native))
         # the faithful cleanup supplies the alpha (silhouettes) and the
         # palette; the background MUST be removed for the cut-out to work
         opts = dict(mode="cleanup", remove_bg=True, denoise=0,
@@ -5583,24 +5761,22 @@ class App:
         self._decals_busy = True
         self._set_decal_buttons(False)
         CANCEL.clear()
-        self.decal_status_var.set("AI redraw — cleaning the scan and cutting "
-                                  "the decals out…")
-        DECALS_OUT.mkdir(parents=True, exist_ok=True)
+        self.decal_status_var.set(("Preview — " if preview else "Redraw — ")
+                                  + "cleaning the scan and cutting the "
+                                    "decals out…")
+        out_dir = (DECALS_OUT / "_preview") if preview else DECALS_OUT
+        out_dir.mkdir(parents=True, exist_ok=True)
         ui_q = self.ui_queue
+        stats = {"cost": 0.0, "calls": 0, "ok": 0, "fallback": 0}
+        label_m = {"trace": "clean trace", "vision": "vision model",
+                   "diffusion": "re-imagine"}.get(method, method)
 
         def work():
             import websocket  # websocket-client
             gen = Generator(ui_q)       # the engine I/O helpers live there
             done, err = 0, None
 
-            def refine(rgb, size):
-                p = {"model": model, "loras": loras, "prompt": prompt,
-                     "negative": DECAL_REDRAW_NEGATIVE,
-                     "width": size[0], "height": size[1],
-                     "seed": random.randrange(2 ** 32), "denoise": strength,
-                     "esrgan": esrgan,
-                     "ref_image_name": gen._upload_pil(rgb, "cbac_decal_in.png")}
-                graph = build_decal_refine_graph(p)
+            def run_graph(graph, timeout=900):
                 ws = websocket.WebSocket()
                 ws.connect(f"ws://{ENGINE_HOST}:{ENGINE_PORT}/ws"
                            f"?clientId={gen.client_id}", timeout=30)
@@ -5610,37 +5786,79 @@ class App:
                                             "client_id": gen.client_id},
                                       timeout=30)
                     if r.status_code == 400:
-                        raise RuntimeError("the engine rejected the redraw "
-                                           "request (model/LoRA mismatch?): "
+                        raise RuntimeError("the engine rejected the request "
+                                           "(model/LoRA mismatch?): "
                                            + r.text[:300])
                     r.raise_for_status()
                     imgs = gen._await_images(ws, r.json()["prompt_id"],
-                                             timeout=900)
+                                             timeout=timeout)
                 finally:
                     ws.close()
                 if not imgs:
                     return None             # cancelled
                 return gen._fetch_image(imgs[0]).convert("RGB")
 
+            def esrgan_refine(rgb, size):
+                # sharpen with RealESRGAN on the engine when it is there;
+                # otherwise a plain enlargement (still exact colours + trace)
+                if engine and esrgan:
+                    try:
+                        got = run_graph(build_decal_upscale_graph(
+                            {"width": size[0], "height": size[1],
+                             "esrgan": True,
+                             "ref_image_name": gen._upload_pil(
+                                 rgb, "cbac_decal_in.png")}), timeout=300)
+                        if got is not None:
+                            return got
+                        if CANCEL.is_set():
+                            return None
+                    except Exception:
+                        applog.exception("decal ESRGAN step failed; "
+                                         "plain enlargement used")
+                return rgb.resize(size, Image.LANCZOS)
+
+            def diffusion_refine(rgb, size):
+                p = {"model": model, "loras": loras, "prompt": prompt,
+                     "negative": DECAL_REDRAW_NEGATIVE,
+                     "width": size[0], "height": size[1],
+                     "seed": random.randrange(2 ** 32), "denoise": strength,
+                     "esrgan": esrgan,
+                     "ref_image_name": gen._upload_pil(rgb, "cbac_decal_in.png")}
+                return run_graph(build_decal_refine_graph(p))
+
+            refine = diffusion_refine if method == "diffusion" else esrgan_refine
+            vector_fn = None
+            if method == "vision":
+                import anthropic
+                client = anthropic.Anthropic(api_key=vector_redraw.get_api_key(),
+                                             timeout=180.0)
+                vector_fn = vector_redraw.make_vector_fn(
+                    client, vmodel, tgt_dpi, hint=hint, stats=stats,
+                    cancelled=CANCEL.is_set, log=applog.log)
+
             try:
                 white_paper = []
                 for src in srcs:
                     for label, img in decals.iter_source_images(src):
                         ui_q.put(("decal_status", f"{label}: cleaning the scan…"))
-                        if decals.is_neutral_carrier(decals.detect_carrier(img)):
+                        carrier = decals.detect_carrier(img)
+                        if decals.is_neutral_carrier(carrier):
                             white_paper.append(label)
                         res = decals.process_image(img, **opts)
 
                         def prog(i, n, _lab=label):
+                            cost = (f"  ≈ ${stats['cost']:.2f} so far"
+                                    if method == "vision" else "")
                             ui_q.put(("decal_status",
-                                      f"{_lab}: AI-redrawing decal {i + 1} "
-                                      f"of {n}…"))
+                                      f"{_lab}: {label_m}, decal {i + 1} of "
+                                      f"{n}…{cost}"))
 
                         out = decals.redraw_sheet(
                             res["rgba"], refine, native_dpi=native,
                             size_scale=size_scale, target_dpi=tgt_dpi,
                             keep_palette=keep_pal, progress=prog,
-                            cancelled=CANCEL.is_set)
+                            cancelled=CANCEL.is_set, gap=gap_px,
+                            vector_fn=vector_fn, limit=1 if preview else None)
                         if out is None:
                             err = "cancelled"
                             break
@@ -5650,7 +5868,28 @@ class App:
                                       "(nothing opaque after background "
                                       "removal — try a lower sensitivity)."))
                             continue
-                        base = DECALS_OUT / f"{label}_redraw"
+                        if preview:
+                            it = out["items"][0]
+                            base = out_dir / f"{label}_preview_decal_01"
+                            it["rgba"].save(str(base) + ".png",
+                                            dpi=(tgt_dpi, tgt_dpi))
+                            Path(str(base) + ".svg").write_text(
+                                it["svg"], encoding="utf-8")
+                            prev = _on_film(it["rgba"], carrier)
+                            ui_q.put(("decal_add", prev,
+                                      {"model": "decal",
+                                       "seed": label + "_preview",
+                                       "user_prompt": f"{label} preview: decal 1 "
+                                                      f"({label_m}, "
+                                                      f"{it.get('source', '')})",
+                                       "svg": str(base) + ".svg",
+                                       "png": str(base) + ".png",
+                                       "film": _film_colour(carrier),
+                                       "size_in": tuple(it["size_in"])},
+                                      str(base) + ".svg"))
+                            done += 1
+                            break
+                        base = out_dir / f"{label}_redraw"
                         out["rgba"].save(str(base) + ".png",
                                          dpi=(tgt_dpi, tgt_dpi))
                         Path(str(base) + ".svg").write_text(
@@ -5661,28 +5900,41 @@ class App:
                                             dpi=(tgt_dpi, tgt_dpi))
                             (base / f"decal_{j:02d}.svg").write_text(
                                 it["svg"], encoding="utf-8")
-                        prev = Image.alpha_composite(
-                            Image.new("RGBA", out["rgba"].size,
-                                      (255, 255, 255, 255)),
-                            out["rgba"]).convert("RGB")
+                        prev = _on_film(out["rgba"], carrier)
                         ui_q.put(("decal_add", prev,
                                   {"model": "decal", "seed": label + "_redraw",
-                                   "user_prompt": f"{label} (AI redraw, "
-                                                  f"{len(out['items'])} decals)"},
-                                  str(base) + ".png"))
+                                   "user_prompt": f"{label} ({label_m}, "
+                                                  f"{len(out['items'])} decals)",
+                                   "svg": str(base) + ".svg",
+                                   "png": str(base) + ".png",
+                                   "film": _film_colour(carrier),
+                                   "size_in": (out["rgba"].width / float(tgt_dpi),
+                                               out["rgba"].height / float(tgt_dpi))},
+                                  str(base) + ".svg"))
                         done += 1
-                    if err:
+                    if err or (preview and done):
                         break
             except Exception as e:
-                applog.exception("decal AI redraw failed")
+                applog.exception("decal redraw failed")
                 err = str(e)
+            notes = []
             if white_paper and not err:
-                ui_q.put(("decal_note",
-                          "Note: " + ", ".join(white_paper) + " was scanned on "
-                          "WHITE paper — white-ink decals cannot be separated "
-                          "from white backing, so only the coloured/dark "
-                          "decals were redrawn."))
-            ui_q.put(("decal_done", done, err, False, "redraw"))
+                notes.append("Note: " + ", ".join(white_paper) + " was scanned "
+                             "on WHITE paper — white-ink decals cannot be "
+                             "separated from white backing, so only the "
+                             "coloured/dark decals were redrawn.")
+            if method == "vision" and stats["calls"] + stats["fallback"]:
+                unsure = stats.get("unsure", 0)
+                notes.append(f"Vision model: {stats['ok']} decal(s) drawn, "
+                             f"{stats['fallback']} fell back to the clean "
+                             f"trace"
+                             + (f" ({unsure} it could not read with "
+                                "confidence)" if unsure else "")
+                             + f", ≈ ${stats['cost']:.2f} spent.")
+            if notes:
+                ui_q.put(("decal_note", " ".join(notes)))
+            ui_q.put(("decal_done", done, err, False,
+                      "preview" if preview else "redraw"))
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -7253,6 +7505,13 @@ class App:
             "anatomy": self.anatomy_var.get(),
             "tab": (self.left_tabs.index("current")
                     if hasattr(self, "left_tabs") else 0),
+            "decal_method": (self.decal_method_var.get()
+                             if hasattr(self, "decal_method_var") else "trace"),
+            "decal_vision_model": (self.decal_vision_model_var.get()
+                                   if hasattr(self, "decal_vision_model_var")
+                                   else ""),
+            "decal_gap": (self.decal_gap_var.get()
+                          if hasattr(self, "decal_gap_var") else 1.0),
             "ragmap_path": self.ragmap_path,
             "face_source": self.face_source_var.get(),
             "face_paths": self.face_paths,
@@ -7372,6 +7631,14 @@ class App:
                 self.left_tabs.select(int(st.get("tab", 0) or 0))
             except Exception:
                 pass
+            for _k, _v in (("decal_method", "decal_method_var"),
+                           ("decal_vision_model", "decal_vision_model_var"),
+                           ("decal_gap", "decal_gap_var")):
+                if st.get(_k) not in (None, "") and hasattr(self, _v):
+                    try:
+                        getattr(self, _v).set(st[_k])
+                    except Exception:
+                        pass
             rmp = st.get("ragmap_path")
             if rmp and Path(rmp).exists():
                 # Skip the (slow, for a big map) reload when this exact map is
@@ -9953,11 +10220,19 @@ class App:
                         note = getattr(self, "_decal_note", "")
                         self._decal_note = ""
                         self.decal_status_var.set(
-                            f"Done — {n} sheet(s) AI-redrawn. Each sheet is "
+                            f"Done — {n} sheet(s) redrawn. Each sheet is "
                             "saved as SVG + PNG (every decal in place) and "
                             "each decal as its own SVG + PNG in a <name>_redraw "
                             "folder, all at the printed size; the sheets are "
                             "in the gallery." + ((" " + note) if note else ""))
+                    elif what == "preview":
+                        note = getattr(self, "_decal_note", "")
+                        self._decal_note = ""
+                        self.decal_status_var.set(
+                            "Preview done — the first decal is in the gallery "
+                            "and under decals\\_preview. Happy with it? Press "
+                            "Redraw to vector for the whole sheet."
+                            + ((" " + note) if note else ""))
                     else:
                         svg = " + SVG" if self.decal_mode_var.get() == "vector" \
                             else ""
@@ -10115,6 +10390,10 @@ class App:
                     vec.save(str(b) + ".png")
                     Path(str(b) + ".svg").write_text(svg, encoding="utf-8")
                     img = vec
+                    # the gallery entry knows its SVG: sharp zoom + Save As
+                    params["svg"] = str(b) + ".svg"
+                    params["png"] = str(b) + ".png"
+                    params["film"] = (255, 255, 255)
                 except Exception as e:
                     applog.exception("decal vectorize failed")
                     self.ui_queue.put(("status",
@@ -10169,11 +10448,35 @@ class App:
                min(img.width, int(cx + vw / 2) + 1),
                min(img.height, int(cy + vh / 2) + 1))
         crop = img.crop(box)
-        disp = crop.resize((max(1, int(crop.width * eff)),
-                            max(1, int(crop.height * eff))), Image.LANCZOS)
+        disp = None
+        svg = self._current_svg()
+        if svg:
+            # vector art: render the visible part from the SVG at this zoom,
+            # so it stays sharp at 8× instead of enlarging the raster
+            try:
+                prm = self.session[self.current][1]
+                disp = vector_redraw.render_svg_region(
+                    svg, img.width, box, eff,
+                    backing=prm.get("film") or (255, 255, 255))
+            except Exception:
+                applog.exception("svg zoom render failed; raster used")
+                disp = None
+        if disp is None:
+            disp = crop.resize((max(1, int(crop.width * eff)),
+                                max(1, int(crop.height * eff))), Image.LANCZOS)
         self.canvas.delete("all")
         self._tk_img = ImageTk.PhotoImage(disp)
         self.canvas.create_image(cw // 2, ch // 2, image=self._tk_img)
+
+    def _current_svg(self):
+        """The SVG behind the current gallery picture when it is vector art
+        (a decal redraw, a vectorized decal, a generated decal), else None."""
+        if self.current is None or not self.session \
+                or getattr(self, "_gif_frames", []):
+            return None
+        params = self.session[self.current][1]
+        svg = params.get("svg") if isinstance(params, dict) else None
+        return svg if svg and Path(svg).exists() else None
 
     def _current_frame(self):
         """The image the preview shows right now (gif frame or still)."""
@@ -10344,6 +10647,13 @@ class App:
                               f"seed {params['seed']}")
             return
         self._draw_frame(img)
+        svg = self._current_svg()
+        if svg:
+            sz = params.get("size_in")
+            size_txt = f"  ·  {sz[0]:.2f} × {sz[1]:.2f} in" if sz else ""
+            self.info_var.set(f"SVG vector  ·  {Path(svg).name}{size_txt}  ·  "
+                              "zoom stays sharp  ·  Save As gives the SVG")
+            return
         self.info_var.set(f"{params['model'].split('.')[0]}  ·  "
                           f"{img.width}×{img.height}  ·  seed {params['seed']}")
 
@@ -10540,6 +10850,20 @@ class App:
     def _delete_paths(self, paths):
         """Delete these session images from disk and the gallery."""
         gone, failed = [], []
+        # vector art has a twin file (SVG + PNG): take both
+        wanted = {str(p) for p in paths}
+        siblings = []
+        for _im, prm, pth in self.session:
+            if str(pth) in wanted and isinstance(prm, dict):
+                for k in ("svg", "png"):
+                    s = prm.get(k)
+                    if s and str(s) != str(pth):
+                        siblings.append(s)
+        for s in siblings:
+            try:
+                Path(s).unlink()
+            except OSError:
+                pass
         for p in paths:
             try:
                 Path(p).unlink()
@@ -10785,19 +11109,38 @@ class App:
         self.current = idx
         self._show_current()
 
+    @staticmethod
+    def _save_source(params, src, dest):
+        """Which file a Save As copies to `dest`: vector art saves its SVG
+        when the chosen name ends in .svg, its PNG rendering otherwise;
+        anything else saves the picture file itself."""
+        svg = params.get("svg") if isinstance(params, dict) else None
+        png = params.get("png") if isinstance(params, dict) else None
+        if svg and str(dest).lower().endswith(".svg"):
+            return svg
+        if str(src).lower().endswith(".svg"):
+            return png or svg
+        return src
+
     def _save_as(self):
         if self.current is None:
             return
         _img, params, src = self.session[self.current]
         is_gif = str(src).lower().endswith(".gif")
-        ext = ".gif" if is_gif else ".png"
-        ftypes = [("GIF animation", "*.gif")] if is_gif \
-            else [("PNG image", "*.png")]
+        svg = params.get("svg") if isinstance(params, dict) else None
+        if svg and Path(svg).exists():
+            ext = ".svg"
+            ftypes = [("SVG vector", "*.svg"), ("PNG image", "*.png")]
+            initial = Path(svg).name
+        else:
+            ext = ".gif" if is_gif else ".png"
+            ftypes = [("GIF animation", "*.gif")] if is_gif \
+                else [("PNG image", "*.png")]
+            initial = f"comic_seed{params['seed']}{ext}"
         path = filedialog.asksaveasfilename(
-            defaultextension=ext, filetypes=ftypes,
-            initialfile=f"comic_seed{params['seed']}{ext}")
+            defaultextension=ext, filetypes=ftypes, initialfile=initial)
         if path:
-            shutil.copy2(src, path)
+            shutil.copy2(self._save_source(params, src, path), path)
             self.status_var.set(f"Saved to {path}")
 
     # -------------------------------------------------- border maker
@@ -11463,7 +11806,7 @@ def main():
     if "--selftest-decals" in sys.argv:
         import numpy as _np
         ok = {}
-        for _m in ("pymupdf", "vtracer"):
+        for _m in ("pymupdf", "vtracer", "anthropic", "fontTools"):
             try:
                 __import__(_m); ok[_m] = True
             except Exception as _e:
@@ -11475,9 +11818,19 @@ def main():
             ok["cleanup"] = bool(_r["rgba"].mode == "RGBA")
         except Exception as _e:
             ok["cleanup"] = f"FAILED: {_e}"
+        try:
+            # fontTools loads its table modules by name — prove the frozen
+            # build can outline text (the vision redraw's SVGs need it)
+            _o = vector_redraw.text_to_paths(
+                '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 40">'
+                '<text x="50" y="30" font-size="24" font-weight="bold" '
+                'text-anchor="middle" fill="#000">AB</text></svg>')
+            ok["text_to_paths"] = ("<path" in _o and "<text" not in _o)
+        except Exception as _e:
+            ok["text_to_paths"] = f"FAILED: {_e}"
         print("DECALS-SELFTEST", ok)
         sys.exit(0 if ok.get("pymupdf") is True and ok.get("cleanup") is True
-                 else 1)
+                 and ok.get("text_to_paths") is True else 1)
     # a stable AppUserModelID so Windows groups and pins the app under its
     # own icon (separate from the exe icon and the window icon — all three
     # must be set for the icon to be consistent everywhere)
@@ -11528,6 +11881,26 @@ def main():
                 root.deiconify()
             except Exception:
                 pass
+    # A copy outside an installed folder (a stray exe in a download or
+    # backup folder) has no app\presets.json, no engine and no models; it
+    # used to crash with a FileNotFoundError box. Say what is wrong instead.
+    if getattr(sys, "frozen", False) and not (PROJECT / "app" / "presets.json").exists():
+        from tkinter import messagebox as _mb
+        try:
+            root.withdraw()
+            _mb.showwarning(
+                "Not an installed copy",
+                f"This {Path(sys.executable).name} is not inside an installed "
+                "folder (no app\\presets.json next to it), so it cannot run "
+                "from here.\n\nOpen the AIImageGeneratorSuite.exe in your "
+                "install folder instead — or run Setup.exe there to install.")
+        except Exception:
+            pass
+        try:
+            root.destroy()
+        except Exception:
+            pass
+        return
     _mutex_handle, already = single_instance_handle()
     if already:
         # a copy that is closing hides its window at once and frees the

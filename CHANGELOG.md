@@ -1,5 +1,42 @@
 # Changelog — AI Image Generator Suite
 
+## v2.16.0 — 2026-10-01
+- **Redraw to vector, rebuilt around three methods.** The diffusion redraw
+  mangled small text and symbols, so it is no longer the default.
+  - **Clean trace (default):** the scan is sharpened with RealESRGAN, snapped
+    to its own exact palette and traced into clean flat shapes. Nothing is
+    invented; text stays exactly as scanned.
+  - **Vision model (Claude):** each decal is sent to a vision model with its
+    exact size and palette; it answers with an SVG — real shapes, real text in
+    a bold font, converted to outlines so it prints anywhere. Every drawing is
+    checked against the scan (outline overlap + colour layout) and falls back
+    to the clean trace when it drifts — and the model is told to answer
+    UNSURE instead of guessing when a word is too small or too blurred to
+    read, which also falls back to the trace. Pick Opus 5.5 (best) or Sonnet 5.5
+    (about half the cost); roughly 1–4 cents per decal. Needs your own
+    Anthropic API key (🔑 API key… button). **The key is stored only in the
+    Windows Credential Manager — never in a settings file, the log or a
+    release.** Without a key the app stays fully local as before.
+  - **Re-imagine (image model):** the previous diffusion method, kept for
+    large single-colour logos, with its strength slider.
+- **👁 Preview one decal** redraws just the first decal with the chosen method
+  and shows it in the gallery (saved under `decals\_preview`), so you can
+  judge the result and the cost before running a whole sheet.
+- **Smarter cut-outs.** Pieces are grouped size-aware: letters join into a
+  word and a caption joins its logo, but two big decals close together stay
+  separate (the "M" badge no longer swallows the label under it). "Group
+  nearby pieces within … mm" sets the distance; 0 keeps every piece apart.
+- **Gallery previews on the film colour.** Decals are shown on the colour of
+  the sheet they came from, so white-ink decals are visible instead of
+  vanishing on white.
+- **Vector results are SVG in the gallery.** A redrawn or vectorized decal is
+  listed by its SVG: zooming the preview renders from the SVG so it stays
+  sharp at 8×, the caption shows "SVG vector" and the printed size, Save As
+  offers the SVG (PNG as the alternative), and deleting it removes both files.
+- **Fixed:** a copy of the exe started outside an installed folder (a stray
+  download or backup) crashed with a FileNotFoundError box; it now explains
+  and points to the installed app.
+
 ## v2.15.2 — 2026-10-01
 - **Fixed: a sheet scanned on WHITE paper came out as one giant decal.** The
   background keyer keeps neutral white on purpose (white ink on the blue

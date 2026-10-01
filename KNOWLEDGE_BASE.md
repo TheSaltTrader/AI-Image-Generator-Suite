@@ -1003,6 +1003,76 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Redraw to vector rebuilt: clean trace / vision model / re-imagine
+  (v2.16.0).** User on the diffusion redraw of Killer Whale sheet 2: "That is
+  some terrible work, redrawing svg, all look terrible" — rightly: SDXL
+  img2img on 2 mm text ("FUEL" → "FU:L"), the symbol panel and the sensor
+  decals turned to mush; the white-ink decals were there as pure white but
+  INVISIBLE on the white gallery preview. Asked whether Jev (Jarvis) could
+  help: no — Jev is TypeSafe's TEXT decision API, no image input. What does:
+  a VISION model DESCRIBING the decal and writing the SVG (demo by hand on
+  FUEL + B11 convinced the user: `output/decals/_demo_scan_vs_diffusion_vs_
+  vector.png`). BUILT: `app/vector_redraw.py` — official `anthropic` SDK
+  (1.11, bundled via collect_all; httpx2/pydantic ride along), `draw_decal`
+  = image block (crop on white, enlarged to ≥1024 px for legibility, but the
+  viewBox stays the crop's own pixels) + printed size + palette hex →
+  `claude-opus-5-5` default / `claude-sonnet-5-5` option, adaptive thinking
+  (no `thinking` param), `output_config.effort=high`, `fallbacks="default"` +
+  beta `server-side-fallback-2026-07-01` via `client.beta.messages.create`
+  (plain `messages.create` on a 400), stop_reason=="refusal" → raise;
+  `text_to_paths` = fontTools glyph outlines from C:\Windows\Fonts\arialbd/
+  ariblk (x/y, font-size, text-anchor, textLength, dominant-baseline central,
+  transform) so the SVG needs no font; `check_against_scan` = dilated-mask
+  IoU ≥0.45 + BLURRED mean colour ≤110 (the first per-pixel version failed a
+  correct B11 because a different font shifts glyphs; a colour-share
+  histogram test was then tried and DROPPED — on the first live run it
+  rejected the title, a triangle and FUEL at 0.96/0.80/0.89 overlap because a
+  small decal's anti-aliased edge pixels skew its colour shares); `make_vector_fn` = the closure redraw_sheet calls (AuthenticationError
+  raises → run stops; other errors / rejected drawings → None → clean trace;
+  stats calls/ok/fallback/cost). KEY: `AIImageGeneratorSuite/anthropic` in the
+  Windows Credential Manager via ctypes CredReadW/CredWriteW (UTF-16 blob, the
+  pywin32/keyring convention), ANTHROPIC_API_KEY env wins; seeded once for
+  this user from his `CDG Spec Forge:anthropic` entry (Jarvis holds only a
+  `jev@Jarvis AI Suite` key); the key is NEVER in settings.json (asserted in
+  update_ui), logs, repo or zip — release step greps for `sk-ant-`. METHODS in
+  the tab (`decal_method_var`: trace default | vision | diffusion): trace =
+  `build_decal_upscale_graph` (LoadImage→ESRGAN→ImageScale, no sampler; plain
+  LANCZOS when the engine is down) + palette snap + vectorize; the diffusion
+  path is "Re-imagine" with its strength slider. `decals.redraw_sheet` gained
+  `vector_fn` (returns (svg, raster) in crop px → placed with a bare
+  translate) and `limit` (👁 Preview one decal → decals\_preview, gallery shows
+  the single decal). GROUPING: `_group_boxes` size-aware — pieces join within
+  `gap` only when one is SMALL (<48 px), big+big only when within `touch`=6 px
+  (fragments of a faint decal); `gap` from the UI in mm (1.0 default →
+  12 px at 300 dpi; 1.4 let the "LOAD INFO" label chain letter by letter
+  into the "M" badge above it; 0 = none); bridge dilation only when
+  `bridge//down ≥ 1` (at quarter scale any dilation merged 8 px). Counts at
+  gap 17 px: Cobra_001 5, Cobra 19 (faint ghost logos fragment), KW p1 145 /
+  p2 23 / p3 53 — every separate sticker is its own decal now, so a vision
+  run on p1 is ~145 calls: the cost line + Preview-one exist for that. BAND
+  RULE FIX: thin white-ink text on its own vanished in the clean trace (the
+  light pixels in the edge band were dropped as fringe) → a band pixel is
+  dropped only when the SCAN was not light there (`~scan_light`). PREVIEWS: `_on_film(rgba, carrier)` composites on the sheet's
+  carrier colour (neutral → (205,215,225)) so white ink shows. TWO MORE
+  LIVE LESSONS: (a) the crop was sent to the model ON WHITE → white-ink
+  labels were invisible to it and left out of otherwise-accepted drawings
+  → `_crop_png_b64` now composites on a grey-blue BACKING (170,185,195) and
+  the ask says the backing is not part of the decal; (b) with the labels
+  visible, Sonnet drew small ROTATED white text as glyph-like junk and a
+  rotated "M" as a bowtie, and the silhouette check passed them (0.79/0.90
+  overlap) → the system prompt now tells the model to answer UNSURE instead
+  of guessing when it cannot read a word (`Unsure` → fallback to the trace,
+  counted in stats["unsure"]); the clean trace renders those labels
+  legibly, so the fallback is the right answer. Opus read the "M" correctly
+  where Sonnet did not — Opus stays the default. USER ASK (13:5x): "validate
+  the data showing are svg, these should zoom without losing quality and
+  those are the files we can download" → vector results now carry
+  params svg/png/film/size_in, the gallery entry path IS the SVG,
+  `_draw_frame` renders the zoomed region from the SVG via
+  `vector_redraw.render_svg_region` (pymupdf clip render, doc cached), the
+  caption says "SVG vector · W × H in", `_save_as` offers SVG (PNG alt;
+  `_save_source` picks by extension), `_delete_paths` removes the twin.
+  Tests: vector_redraw_test 30 (fake client — no network), update_ui 350.
 - **White-paper scan → one giant decal + invented art (v2.15.2).** The user's
   first real AI-redraw run was Cobra_001.pdf: a white sticker sheet (mostly
   white-ink decals: blank rectangles/circles, white "GIJ-74J S-653x" text)

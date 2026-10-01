@@ -105,8 +105,28 @@ exe** via the spec (`collect_all`). Verify in a frozen build with
   with a `<g transform>`): vtracer's stacked mode paints the DOMINANT colour as
   a full-canvas base layer, so a tightly cropped decal used to come back as a
   solid rectangle once the key paths were dropped.
-- **AI redraw (v2.15):** `_redraw_decals()` (App) → `decals.redraw_sheet(rgba,
-  refine)`. The faithful cleanup supplies the alpha; `segment_decals` (run-based
+- **Redraw to vector (v2.16) — three methods** (`decal_method_var`):
+  *trace* (default; `build_decal_upscale_graph` = RealESRGAN + scale, no
+  sampler, then palette snap + vectorize — deterministic), *vision*
+  (`vector_redraw.make_vector_fn` → `draw_decal` on the Claude API via the
+  official `anthropic` SDK: image + printed size + palette → SVG;
+  `text_to_paths` outlines the text with fontTools + a Windows bold font;
+  `check_against_scan` accepts or falls back to the trace; model
+  `claude-opus-5-5` default / `claude-sonnet-5-5`; the key lives ONLY in the
+  Windows Credential Manager `AIImageGeneratorSuite/anthropic` — never in
+  settings, logs, the repo or a release: the release step greps the tree for
+  `sk-ant-`), *diffusion* ("Re-imagine", the v2.15 path below). 👁 Preview one
+  decal = `limit=1` into `decals\_preview`. Cut-outs are grouped size-aware
+  (`_group_boxes`: small pieces join within the mm the user sets, big pieces
+  only when they all but touch). Gallery previews composite on the sheet's
+  film colour (`_on_film`). A vector result's gallery entry IS its SVG
+  (`params["svg"/"png"/"film"/"size_in"]`): `_draw_frame` zooms by
+  rendering the visible region from the SVG (`render_svg_region`), the
+  caption says "SVG vector", `_save_as` offers the SVG, delete removes
+  both files. The model is told to answer UNSURE rather than guess
+  unreadable text; that decal falls back to the clean trace.
+- **AI redraw (v2.15, now the "Re-imagine" method):** `_redraw_decals()`
+  (App) → `decals.redraw_sheet(rgba, refine)`. The faithful cleanup supplies the alpha; `segment_decals` (run-based
   connected components, no scipy) cuts the sheet into decals in reading order;
   each crop goes to `refine(rgb, (w, h))` = `build_decal_refine_graph` on the
   engine (LoadImage → RealESRGAN 4× → ImageScale → VAEEncode → KSampler at
@@ -166,7 +186,8 @@ global across installs, and both share the one engine/GPU. `tasklist` for
 ### Run tests (use the **venv python** — system python lacks pymupdf/vtracer)
 ```
 venv\Scripts\python.exe app\update_ui_test.py     # MAIN gate — builds the real
-                                                  # App (engine/net stubbed), 331 checks
+                                                  # App (engine/net stubbed), 346 checks
+venv\Scripts\python.exe app\vector_redraw_test.py # vision redraw, fake client (25)
 venv\Scripts\python.exe app\swap_test.py          # face-swap two-step (22)
 venv\Scripts\python.exe app\variations_test.py    # clones store (18)
 # others: self_update_test, ragmap_test, engine_files_test, startup_test, applog_test, …
@@ -227,7 +248,10 @@ venv\Scripts\python.exe -m PyInstaller build_app\ComicArtCreator.spec ^
    both exe names from `dist_app`, the refreshed docs, and `app/*.json`); copy
    sources to `releases/vX.Y.Z/source/`.
 6. Zip the `release/` contents → `AIImageGeneratorSuite_vX.Y.Z.zip`.
-7. `git add` the **source** files (CHANGELOG, KNOWLEDGE_BASE, app/*.py,
+7. **Secrets gate:** `grep -rIl -E "sk-ant-[A-Za-z0-9_-]{20,}"` over the
+   sources and the assembled `release/` must list nothing — the API key lives
+   only in the Credential Manager. A hit means stop and clean, never ship.
+8. `git add` the **source** files (CHANGELOG, KNOWLEDGE_BASE, app/*.py,
    version_app.txt) — **not** `build_app/` (gitignored) and not the exes/zip
    (gitignored). Commit, `git tag vX.Y.Z`, push `main` + the tag.
    - Gotcha: `git add` of a gitignored path **exits non-zero** and aborts an
@@ -247,7 +271,8 @@ on GitHub).
 ## 8. Dependencies
 
 - **App venv / bundled in exe:** numpy, Pillow, requests, websocket-client,
-  av, pymupdf, vtracer, pyinstaller.
+  av, pymupdf, vtracer, anthropic (official SDK; httpx2/pydantic come with
+  it), fonttools, pyinstaller.
 - **Engine venv (installed on first use, not in the exe):** torch cu128 +
   ComfyUI requirements; `insightface`+`onnxruntime`+inswapper/buffalo_l for face
   swap; `diffusers` for SD3.5 InstantX. Face-swap readiness = `faceswap_ready()`
@@ -279,7 +304,8 @@ on GitHub).
 
 ## 10. State at handoff
 
-- All test suites green (update_ui 331). Frozen build self-test passes.
+- All test suites green (update_ui 346, vector_redraw 25). Frozen build
+  self-test passes.
 - Latest release published to GitHub; dev tree clean (only gitignored build
   artifacts untracked). `Stickers/_final/` holds the user's cleaned sample
   output; `Stickers/` holds their source PDFs (user data, not committed).
