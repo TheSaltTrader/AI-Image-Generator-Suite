@@ -1714,6 +1714,9 @@ _killed = []
 _real_kill = app.kill_engine
 app.kill_engine = lambda: _killed.append(1)
 app.engine_ours_to_stop = lambda: False
+_swept = []
+_real_sweep = su.sweep_old_exes
+su.sweep_old_exes = lambda: _swept.append(1)
 ui._on_close()
 check("closing returns before the engine shutdown is done", not destroyed)
 pump(root, lambda: destroyed, timeout=10)
@@ -1721,7 +1724,9 @@ check("the app closes once the shutdown thread reports back",
       bool(destroyed))
 check("the engine is killed on close even when not 'ours' (no VRAM leak)",
       bool(_killed))
+check("leftover *_old_*.exe copies are swept again on close", bool(_swept))
 app.kill_engine = _real_kill
+su.sweep_old_exes = _real_sweep
 
 print()
 print("%d passed, %d failed" % (len(PASS), len(FAIL)))

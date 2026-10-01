@@ -104,7 +104,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.15.0"
+APP_VERSION = "2.15.1"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -7517,6 +7517,12 @@ class App:
                     ENGINE_OWNER_FILE.unlink(missing_ok=True)
                 except Exception:
                     pass      # never let cleanup stop the app from closing
+                try:
+                    # a leftover *_old_<pid>.exe whose holder has since
+                    # exited goes now, not only at the next launch
+                    self_update.sweep_old_exes()
+                except Exception:
+                    pass
                 self.ui_queue.put(("quit", None))
 
             threading.Thread(target=work, daemon=True).start()
@@ -7546,9 +7552,18 @@ class App:
 
     def _check_updates_bg_inner(self):
         # clear the exes an earlier update renamed aside — they could not be
-        # deleted while that update was running, but nothing holds them now
+        # deleted while that update was running, but nothing holds them now.
+        # If one is STILL held (the old copy's bootloader can sit on a
+        # "failed to remove temporary directory" box for hours), try again
+        # later rather than leaving a look-alike exe in the folder all day
         try:
             self_update.sweep_old_exes()
+        except Exception:
+            pass
+        try:
+            t = threading.Timer(900, self_update.sweep_old_exes)
+            t.daemon = True
+            t.start()
         except Exception:
             pass
         # …and the old engines / temp folders engine updates renamed aside
@@ -11455,6 +11470,42 @@ def main():
         root.iconbitmap(default=str(_app_icon_path()))
     except Exception:
         pass
+    # Started from a LEFTOVER copy? An update renames the running exe aside
+    # as <name>_old_<pid>.exe and cannot delete it until that copy exits; a
+    # user browsing the folder can double-click it by mistake (it happened:
+    # the old exe then ran beside the real one and its update check failed).
+    # Offer the real exe, which sits right next to it.
+    if getattr(sys, "frozen", False):
+        _me = Path(sys.executable)
+        _real = _me.with_name(self_update.canonical_exe_name(_me.name))
+        if _real.name.lower() != _me.name.lower() and _real.exists():
+            from tkinter import messagebox as _mb
+            try:
+                root.withdraw()
+                use_real = _mb.askyesno(
+                    "Leftover copy",
+                    f"You opened {_me.name} — a leftover from an earlier "
+                    "update. It is removed automatically on the next normal "
+                    f"launch.\n\nThe current app is {_real.name}, in the "
+                    f"same folder.\n\nOpen {_real.name} instead?")
+            except Exception:
+                use_real = False
+            if use_real:
+                try:
+                    subprocess.Popen([str(_real)] + sys.argv[1:],
+                                     cwd=str(_me.parent),
+                                     env=_clean_child_env())
+                except OSError:
+                    pass
+                try:
+                    root.destroy()
+                except Exception:
+                    pass
+                return
+            try:
+                root.deiconify()
+            except Exception:
+                pass
     _mutex_handle, already = single_instance_handle()
     if already:
         # a copy that is closing hides its window at once and frees the

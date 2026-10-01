@@ -194,9 +194,13 @@ venv\Scripts\python.exe -m PyInstaller build_app\ComicArtCreator.spec ^
 
 ## 6. Self-update (important for release compatibility)
 
-- `self_update.APP_EXE` is **dynamic** = the running exe's name; releases ship
-  **both** `AIImageGeneratorSuite.exe` and a byte-identical `ComicArtCreator.exe`
-  so installs from before the v2.4 rename still find their exe.
+- `self_update.APP_EXE` is **dynamic** = the running exe's name, passed through
+  `canonical_exe_name()` so a copy started from a leftover `…_old_<pid>.exe`
+  (an update renames the running exe aside and can only delete it later)
+  still updates under the real name; `main()` also offers the real exe when
+  it sees it was started from such a leftover. Releases ship **both**
+  `AIImageGeneratorSuite.exe` and a byte-identical `ComicArtCreator.exe` so
+  installs from before the v2.4 rename still find their exe.
 - The updater downloads the release **zip asset**, finds `APP_EXE` + `Setup.exe`
   by `rglob`, swaps them in (renames the running one aside), and refreshes
   `REFRESH_FILES` (CHANGELOG, KNOWLEDGE_BASE, RAGMAP, README, SECURITY, TRAINING,

@@ -660,6 +660,24 @@ try:
 except Exception as e:
     check("window smoke test", False, repr(e))
 
+# ---- a copy started from a leftover *_old_<pid>.exe (v2.15.1) --------------
+print("leftover copy name")
+check("a renamed-aside name maps back to the real exe",
+      su.canonical_exe_name("AIImageGeneratorSuite_old_16396.exe")
+      == "AIImageGeneratorSuite.exe")
+check("…for the old exe name too",
+      su.canonical_exe_name("ComicArtCreator_old_4.exe") == "ComicArtCreator.exe")
+check("…case-insensitively",
+      su.canonical_exe_name("AIIMAGEGENERATORSUITE_OLD_7.EXE")
+      == "AIIMAGEGENERATORSUITE.EXE")
+check("a normal name is left alone",
+      su.canonical_exe_name("AIImageGeneratorSuite.exe")
+      == "AIImageGeneratorSuite.exe")
+check("a name that merely contains _old_ elsewhere is left alone",
+      su.canonical_exe_name("my_old_tool.exe") == "my_old_tool.exe")
+check("the running APP_EXE never carries a _old_ suffix",
+      "_old_" not in su.APP_EXE)
+
 print()
 print("%d passed, %d failed" % (len(PASS), len(FAIL)))
 if FAIL:

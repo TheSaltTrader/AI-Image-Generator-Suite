@@ -64,8 +64,19 @@ RELEASES_PAGE = ("https://github.com/TheSaltTrader/"
 # The updater always acts on whatever exe is ACTUALLY running (so both keep
 # updating in place), and releases ship BOTH names in the zip during the
 # transition so either install finds its own exe.
-APP_EXE = (Path(sys.executable).name if getattr(sys, "frozen", False)
-           else "ComicArtCreator.exe")
+def canonical_exe_name(name):
+    """The exe's REAL name even when this copy is one an update renamed
+    aside (<stem>_old_<pid>.exe — kept only until a later launch sweeps it).
+    A user who double-clicks that leftover must still be able to update,
+    and the update must install under the real name, not a _old_ one.
+    (v2.15.1: a copy started as AIImageGeneratorSuite_old_16396.exe looked
+    for that very name inside the release zip and failed.)"""
+    m = re.match(r"^(.+)_old_\d+(\.exe)$", str(name), re.IGNORECASE)
+    return (m.group(1) + m.group(2)) if m else str(name)
+
+
+APP_EXE = (canonical_exe_name(Path(sys.executable).name)
+           if getattr(sys, "frozen", False) else "ComicArtCreator.exe")
 SETUP_EXE = "Setup.exe"
 
 # refreshed from the release zip alongside the exes — see the module note.

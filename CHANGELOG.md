@@ -1,5 +1,18 @@
 # Changelog — AI Image Generator Suite
 
+## v2.15.1 — 2026-10-01
+- **Fixed: "Update failed: the release zip has no AIImageGeneratorSuite_old_…exe".**
+  An update renames the running exe aside as `…_old_<pid>.exe` and can only
+  delete it later. If that leftover was double-clicked, the app ran from it
+  and its updater then looked for that odd name inside the release zip. The
+  updater now always works with the real exe name, so a copy started from a
+  leftover still updates and installs under the real name.
+- **Started from a leftover copy? The app now says so** and offers to open the
+  real `AIImageGeneratorSuite.exe` next to it instead.
+- Leftover `…_old_…exe` files are swept again when the app closes and 15
+  minutes after start (not only at launch), so a copy that was still held by a
+  stuck "failed to remove temporary directory" box does not linger all day.
+
 ## v2.15.0 — 2026-10-01
 - **AI redraw for low-quality decal scans → clean SVG at the printed size.**
   The Decals tab's "🖊 Redraw to vector (AI → SVG)" button now does what its

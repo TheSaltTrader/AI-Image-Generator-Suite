@@ -1003,6 +1003,26 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **"Update failed: the release zip has no AIImageGeneratorSuite_old_16396.exe"
+  (v2.15.1).** The user's v2.13.1→v2.14.0 self-update renamed the running exe
+  aside as `AIImageGeneratorSuite_old_16396.exe`; the old copy's PyInstaller
+  bootloader then sat for hours on a "Failed to remove temporary directory
+  _MEI465402" box (one file, MSVCP140.dll, still held — most likely by the
+  engine the old copy's boot-retry had just restarted, which inherited the
+  bootloader's DLL search path), so the new copy's startup `sweep_old_exes`
+  could not delete the leftover. Two hours later the user, browsing the
+  install folder, double-clicked the look-alike `_old_16396.exe` (twice);
+  `APP_EXE = Path(sys.executable).name` became that name, `stage_update`'s
+  `rglob(APP_EXE)` found nothing in the zip → the error. FIX: `self_update.
+  canonical_exe_name()` strips `_old_<pid>` so APP_EXE is always the real
+  name (update + install + relaunch all target it; `sweep_old_exes` pattern
+  right again); `main()` detects a start from a leftover and offers to open
+  the real exe next to it; the sweep also runs on close and 15 min after
+  start (threading.Timer — no Tk from the worker). RULE: never leave a
+  look-alike exe in the install folder longer than necessary; the user WILL
+  click it. The install was brought to v2.15.1 by copying the release files
+  over `AIImageGeneratorSuite.exe` directly (it was not the running image).
+  self_update_test +6, update_ui +1.
 - **AI redraw of decal scans → SVG at the printed size; equal-width scrolling
   tabs; red Decals buttons (v2.15.0).** User: "wire the redraw to vector so AI
   is used to redraw the provided pdf image decals if they are low quality and
