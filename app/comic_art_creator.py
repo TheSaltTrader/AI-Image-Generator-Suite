@@ -103,7 +103,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.14.0"
+APP_VERSION = "2.14.1"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -5110,14 +5110,15 @@ class App:
                                     command=self._process_decals)
         self.decal_btn.grid(row=r, sticky="ew", pady=(8, 4)); r += 1
         self.decal_vec_btn = ttk.Button(
-            left, text="🎨 Redraw to vector (SVG)",
+            left, text="🖊 Trace to vector (SVG)",
             command=lambda: self._process_decals("vector"))
         self.decal_vec_btn.grid(row=r, sticky="ew", pady=(0, 4)); r += 1
         self._tip(self.decal_vec_btn,
-                  "Trace the loaded image(s) into clean, infinitely-scalable "
-                  "vector shapes and save an SVG (plus a transparent PNG). Best "
-                  "on your own clean, flat artwork; a noisy or low-contrast scan "
-                  "traces less cleanly. Same as choosing the Vectorize method.")
+                  "TRACES the loaded image(s) into vector shapes and saves an "
+                  "SVG (+ transparent PNG) — it reproduces the loaded picture as "
+                  "vector, it does NOT re-draw or re-invent it. Best on your own "
+                  "clean, flat artwork. To CREATE new art from a description, "
+                  "use '🖊 Generate → SVG' above instead.")
         ttk.Button(left, text="📁 Open decals output folder",
                    command=lambda: os.startfile(DECALS_OUT)
                    if DECALS_OUT.exists() else

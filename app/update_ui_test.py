@@ -429,11 +429,11 @@ try:
 except Exception as _e:
     check("faithful colour fidelity", False, repr(_e))
 # dedicated "Redraw to vector" button + forced mode
-check("Decals has a Redraw-to-vector button",
+check("Decals has a Trace-to-vector button",
       hasattr(ui, "decal_vec_btn"))
 ui.decal_sources = []
 ui._process_decals("vector")   # force_mode accepted; graceful with no sources
-check("redraw-to-vector force_mode is accepted (no-op with no files)",
+check("trace-to-vector force_mode is accepted (no-op with no files)",
       "add" in ui.decal_status_var.get().lower())
 # edge/halo cleanup toggle + clean_matte
 check("Decals has an edge/halo cleanup toggle, on by default",

@@ -1,5 +1,15 @@
 # Changelog — AI Image Generator Suite
 
+## v2.14.1 — 2026-10-01
+- **"Redraw to vector" is now "🖊 Trace to vector (SVG)".** The button name and
+  tooltip now make clear it *traces* (reproduces) the image you loaded into clean
+  scalable SVG — it does not re-draw or re-invent the art. To create a brand-new
+  decal from a description, use "🖊 Generate → SVG" above it.
+- **Developer handoff docs.** Added `HANDOFF.md` — architecture, dev setup, the
+  build + release runbook, module map (incl. the decals pipeline), how to run the
+  test suites, dependencies, and known gotchas — so the project is ready to hand
+  off. `VERSION.txt` refreshed.
+
 ## v2.14.0 — 2026-09-30
 - **Generate an original decal from a prompt → SVG.** New prompt box + "🖊
   Generate → SVG" button in the Decals tab: describe your own design and it

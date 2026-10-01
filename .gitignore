@@ -20,6 +20,8 @@ output/
 variations/
 training/
 border/
+Stickers/
+*.bak
 app/settings.json
 app/update_state.json
 extra_model_paths.yaml

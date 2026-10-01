@@ -4,9 +4,9 @@ Everything learned building this app, written down so it does not have to
 be rediscovered. `<project>` below means the folder holding
 `ComicArtCreator.exe`.
 
-Companion documents: `RAGMAP.md` (the RAG-map contract), `SECURITY.md`
-(threat model), `TRAINING.md` (building a dataset), `CHANGELOG.md` (what
-changed when).
+Companion documents: `HANDOFF.md` (engineer onboarding + the build/release
+runbook), `RAGMAP.md` (the RAG-map contract), `SECURITY.md` (threat model),
+`TRAINING.md` (building a dataset), `CHANGELOG.md` (what changed when).
 
 ---
 
