@@ -463,6 +463,44 @@ check("the ETA reads percent, GB, speed and time left",
 check("…and says it is measuring before it knows the speed",
       "measuring" in vr.pull_eta_text(0, 21_000_000_000, 0.1))
 
+print("repeated decals")
+# a sheet: the same red label 4 times (one turned, one mirrored), a different one
+_sh = Image.new("RGBA", (900, 300), (0, 0, 0, 0))
+_lab = Image.new("RGBA", (160, 60), (0, 0, 0, 0))
+_ld = _ID.Draw(_lab)
+_ld.rectangle([0, 0, 159, 59], fill=(200, 20, 30, 255))
+_ld.polygon([(10, 10), (60, 30), (10, 50)], fill=(255, 255, 255, 255))
+_ld.rectangle([80, 15, 150, 25], fill=(255, 255, 255, 255))
+_sh.alpha_composite(_lab, (20, 20))
+_sh.alpha_composite(_lab, (220, 20))
+_sh.alpha_composite(_lab.rotate(180), (420, 20))
+_sh.alpha_composite(_lab.transpose(Image.FLIP_LEFT_RIGHT), (620, 20))
+_other = Image.new("RGBA", (160, 60), (0, 0, 0, 0))
+_ID.Draw(_other).ellipse([0, 0, 159, 59], fill=(20, 40, 160, 255))
+_sh.alpha_composite(_other, (20, 200))
+_boxes = _dec.segment_decals(_sh, gap=6)
+_groups = _dec.find_copies(_sh, _boxes)
+_hows = sorted(h for g in _groups for _i, h in g)
+check("copies are found — straight, turned and mirrored — and the different decal is not",
+      len(_groups) == 1 and len(_groups[0]) == 4 and _hows == ["", "", "mirror", "turn"], (_groups, len(_boxes)))
+_st5 = {}
+_out5 = _dec.redraw_sheet(_sh, None, native_dpi=300, target_dpi=150, gap=6, stats=_st5)
+_srcs = [it["source"] for it in _out5["items"]]
+check("the best copy is placed on the others (the 4th reused); the different decal drawn itself",
+      len(_out5["items"]) == 5 and _st5["copy_groups"] == 1 and _st5["copies"] >= 1 and "copy" in _srcs, (_st5, _srcs))
+_by = {it["box"][:2]: it for it in _out5["items"]}
+_tr = np.asarray(_out5["rgba"])
+# the turned copy's triangle points the other way: white near its right end, red near its left end
+_k = 150 / 300.0
+_y = int(round(50 * _k))
+check("a turned copy is drawn turned (its arrow points the other way)",
+      _tr[_y, int(round((420 + 160 - 30) * _k)), :3].min() > 200
+      and _tr[_y, int(round((420 + 20) * _k)), 0] > 150, (_tr[_y, int(round((420 + 160 - 30) * _k))].tolist(), _tr[_y, int(round(440 * _k))].tolist()))
+_st6 = {}
+_out6 = _dec.redraw_sheet(_sh, None, native_dpi=300, target_dpi=150, gap=6, stats=_st6, reuse_copies=False)
+check("…and with the switch off every decal is drawn on its own",
+      _st6["copies"] == 0 and all(it["source"] != "copy" for it in _out6["items"]))
+
 print("the key store")
 t = "AIImageGeneratorSuite/_test_vr"
 check("write/read/delete round trip in the Credential Manager",

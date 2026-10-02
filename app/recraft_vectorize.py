@@ -44,16 +44,33 @@ def set_key(key):
     return vector_redraw.cred_write(CRED_TARGET, (key or "").strip())
 
 
-def _prepare(crop_rgba):
-    """The decal on magenta, sized for the service. Returns (png bytes,
-    scale = sent px per crop px)."""
+def decal_palette(crop_rgba):
+    """The decal's own inks (the scan's colours, near-white = white ink)."""
+    import decals
+    # merge 60 / min_share 2%: the light blends of a halftone red (pinks)
+    # are not inks of their own — they made Recraft trace 790 shapes on
+    # one DANGER! (v2.23.3)
+    return decals.palette_of(crop_rgba.convert("RGBA"), colors=10, merge=60,
+                             min_share=0.02, erode=1)
+
+
+def _prepare(crop_rgba, pal=None):
+    """The decal FLATTENED (its own inks only, crisp edges, no halftone
+    mottle — decals.flatten_decal) on magenta, sized for the service.
+    Sending the raw scan made Recraft trace the noise: wobbly banner
+    edges, 1,000+ shapes with gradients on a DANGER!, an invented grey
+    fill (v2.23.3). Returns (png bytes, scale = sent px per crop px)."""
+    import decals
     crop = crop_rgba.convert("RGBA")
     W, H = crop.size
     # enlarge small decals (more detail to trace), keep inside the limits
     s = max(MIN_SIDE / float(min(W, H)), min(4.0, MAX_SIDE / float(max(W, H))))
     s = min(s, MAX_SIDE / float(max(W, H)))
     nw, nh = max(1, int(round(W * s))), max(1, int(round(H * s)))
-    big = crop.resize((nw, nh), Image.LANCZOS)
+    if pal is None:
+        pal = decal_palette(crop)
+    big = decals.flatten_decal(crop, pal, size=(nw, nh),
+                               band=max(1, int(round(s))))
     a = np.asarray(big)
     hard = a[..., 3] >= 128
     rgb = np.empty(a.shape[:2] + (3,), np.uint8)
@@ -88,21 +105,62 @@ def _is_key(rgb):
     return r >= 180 and b >= 180 and g <= 110
 
 
-def clean_svg(svg_text, sent_w, sent_h, scale):
-    """Remove the magenta backing shapes, then map the drawing back onto
-    the crop: viewBox in crop pixels (the service draws in sent pixels)."""
+def _gradient_colours(svg_text):
+    """{gradient id: the mean colour of its stops}."""
+    out = {}
+    for gid, body in re.findall(
+            r'<(?:linear|radial)Gradient\b[^>]*\bid="([^"]+)"[^>]*>(.*?)</(?:linear|radial)Gradient>',
+            svg_text, flags=re.S | re.I):
+        cols = [c for c in (_rgb_of(v) for v in re.findall(
+            r'stop-color\s*[:=]\s*"?\s*(#[0-9a-fA-F]{3,6}|rgb\([^)]*\))', body, re.I))
+            if c is not None]
+        if cols:
+            out[gid] = tuple(int(round(sum(c[k] for c in cols) / len(cols)))
+                             for k in range(3))
+    return out
+
+
+def clean_svg(svg_text, sent_w, sent_h, scale, pal=None, keep_key=False):
+    """Make Recraft's answer a decal: every fill — gradients included,
+    by the mean of their stops — becomes the nearest of the decal's own
+    inks or the magenta backing; backing shapes are dropped; the drawing
+    is mapped back onto the crop (viewBox in crop pixels)."""
+    grads = _gradient_colours(svg_text)
+    P = [tuple(int(v) for v in c) for c in pal] if pal is not None else []
+
+    def snap(c):
+        if not P:
+            return c, _is_key(c)
+        cands = P + [KEY_RGB]
+        best = min(cands, key=lambda q: sum((q[k] - c[k]) ** 2 for k in range(3)))
+        return best, best == KEY_RGB
+
     def drop(m):
         tag = m.group(0)
-        f = _FILL.search(tag)
-        if f:
-            c = _rgb_of(f.group(1))
-            if c is not None and _is_key(c):
+        g = re.search(r'fill\s*=\s*"url\(#([^)"]+)\)"', tag)
+        c = None
+        if g:
+            c = grads.get(g.group(1))
+        else:
+            f = _FILL.search(tag)
+            if f:
+                c = _rgb_of(f.group(1))
+        if c is None:
+            return tag
+        new, is_key = snap(c)
+        if is_key or _is_key(c):
+            if not keep_key:
                 return ""
+            new = KEY_RGB
+        hexc = "#%02x%02x%02x" % new
+        tag = re.sub(r'fill\s*=\s*"[^"]*"', f'fill="{hexc}"', tag, count=1)
+        tag = re.sub(r'fill\s*:\s*[^;"]+', f'fill:{hexc}', tag)
         return tag
     body = re.sub(r"<(path|rect|polygon|circle|ellipse)\b[^>]*?/>", drop,
                   svg_text, flags=re.S | re.I)
     body = re.sub(r"<(path|rect|polygon|circle|ellipse)\b[^>]*?>\s*</\1>", drop,
                   body, flags=re.S | re.I)
+    body = re.sub(r"<defs\b.*?</defs>", "", body, flags=re.S | re.I)
     inner = _inner(body)
     vb = _viewbox(svg_text) or (0.0, 0.0, float(sent_w), float(sent_h))
     cw, ch = sent_w / scale, sent_h / scale
@@ -112,6 +170,85 @@ def clean_svg(svg_text, sent_w, sent_h, scale):
             f'width="{cw:.2f}" height="{ch:.2f}" viewBox="0 0 {cw:.3f} {ch:.3f}">'
             f'<g transform="scale({sx:.6f} {sy:.6f}) translate({-vb[0]:.3f} {-vb[1]:.3f})">'
             f'{inner}</g></svg>')
+
+
+def finalize(svg_text, sent_w, sent_h, scale, pal=None, crop=None, sent=None):
+    """Recraft paints in layers: a clear window inside a decal is a
+    backing-coloured shape ON TOP of the ink beneath (the orca's ellipse
+    was a black ellipse with a magenta one over it). Removing the backing
+    shapes would expose that ink — so: render the answer with the
+    backing kept and with it removed; if removing it exposes paint, the
+    decal is traced again locally from Recraft's own clean render (flat
+    regions, no stacking); otherwise Recraft's shapes are kept as they
+    are. (MuPDF ignores SVG masks, so a mask is not an option.)"""
+    import decals
+    keyed = clean_svg(svg_text, sent_w, sent_h, scale, pal, keep_key=True)
+    clean = clean_svg(svg_text, sent_w, sent_h, scale, pal, keep_key=False)
+    w = max(64, min(1600, int(round(sent_w))))
+    rk = np.asarray(vector_redraw.render_svg(keyed, w))
+    rc = np.asarray(vector_redraw.render_svg(clean, w))
+    if rk.shape != rc.shape:
+        return clean
+    r_, g_, b_ = (rk[..., 0].astype(int), rk[..., 1].astype(int),
+                  rk[..., 2].astype(int))
+    # the backing AND its anti-aliased blends with an ink (black+magenta =
+    # purple): red and blue both well above green. Reds (B < G) and
+    # whites/greys (equal) are not caught. The blends snapped to a brown
+    # or white rim along the outlines.
+    key = ((r_ - g_ > 50) & (b_ - g_ > 50)) & (rk[..., 3] > 128)
+    exposed = key & (rc[..., 3] > 128)
+    # …and wherever the picture SENT was the clear backing, the answer
+    # must be clear too: Recraft fills a gap between shapes with a blend
+    # of the backing and the ink beside it (snapped to the ink)
+    if sent is not None:
+        sm = np.asarray(sent.convert("RGB").resize((rc.shape[1], rc.shape[0]),
+                                                   Image.NEAREST)).astype(int)
+        was_key = (sm[..., 0] >= 200) & (sm[..., 1] <= 70) & (sm[..., 2] >= 200)
+        # ignore a 2-px band at edges (anti-aliasing)
+        import decals as _d
+        was_key = _d.erode_mask(was_key, 2)
+        exposed = exposed | (was_key & (rc[..., 3] > 128))
+    if exposed.sum() <= 0.002 * key.size:
+        return clean
+    # re-trace from the keyed render. WHICH areas are clear comes from the
+    # scan's own outline (smoothed), not from Recraft's layers: Recraft
+    # fills a gap between shapes with a blend of the backing and the ink
+    # beside it, which snaps to the ink (a black wedge between the orca
+    # and its ring). The colours come from Recraft's clean render.
+    from PIL import ImageFilter
+    a = rk.copy()
+    if crop is not None:
+        sa = crop.convert("RGBA").split()[3].resize((a.shape[1], a.shape[0]),
+                                                    Image.LANCZOS)
+        sa = sa.filter(ImageFilter.GaussianBlur(max(1.0, w / 800.0)))
+        inside = np.asarray(sa) >= 128
+    else:
+        inside = ~(key | (rk[..., 3] < 128))
+    # clear where EITHER says clear: the scan (a gap Recraft filled) or
+    # Recraft (a sliver of backing the scan's wider outline kept — it
+    # snapped to a brown/white rim)
+    # and where Recraft drew nothing at all, nothing is filled in (a wrong
+    # answer must not be completed into a right-looking one)
+    a[..., 3] = np.where(inside & ~key & (rk[..., 3] > 128), 255, 0).astype(np.uint8)
+    rgba = Image.fromarray(a, "RGBA")
+    if pal is not None:
+        # the band of edge blends is as wide as the enlargement (black-to-
+        # backing anti-aliasing otherwise snapped to a red-brown rim)
+        band = max(2, int(round(rgba.width / float(max(1, crop.width)))))            if crop is not None else 2
+        rgba = decals.flatten_decal(rgba, pal, s=1, band=band,
+                                    drop_orphans=True)
+    # cutout: shapes with real holes, not stacked layers — dropping the
+    # backing then exposes nothing (stacked painted a black base under the
+    # gap, and the gap came out black again)
+    svg2, _ras = decals.vectorize(rgba, target_px=w, quantize_colors=0,
+                                  presmooth=False, drop_halo=False,
+                                  filter_speckle=4, hierarchical="cutout")
+    cw, ch = sent_w / scale, sent_h / scale
+    sx = cw / float(rgba.width)
+    sy = ch / float(rgba.height)
+    return ('<svg xmlns="http://www.w3.org/2000/svg" version="1.1" '
+            f'width="{cw:.2f}" height="{ch:.2f}" viewBox="0 0 {cw:.3f} {ch:.3f}">'
+            f'<g transform="scale({sx:.6f} {sy:.6f})">{_inner(svg2)}</g></svg>')
 
 
 def _inner(svg_text):
@@ -160,7 +297,8 @@ def vectorize_decal(crop_rgba, key, timeout=180.0, session=None):
     for key / balance problems (the run then stops)."""
     import requests
     http = session or requests
-    png, scale = _prepare(crop_rgba)
+    pal = decal_palette(crop_rgba)
+    png, scale = _prepare(crop_rgba, pal)
     if len(png) >= 5 * 1024 * 1024:
         raise FalError("the decal picture is over 5 MB")
     sent_w = int(round(crop_rgba.width * scale))
@@ -213,7 +351,8 @@ def vectorize_decal(crop_rgba, key, timeout=180.0, session=None):
         svg = g.text
     if "<svg" not in svg:
         raise FalError("the result is not an SVG")
-    return clean_svg(svg, sent_w, sent_h, scale)
+    return finalize(svg, sent_w, sent_h, scale, pal, crop=crop_rgba,
+                    sent=Image.open(io.BytesIO(png)))
 
 
 def make_vector_fn(key, target_dpi, stats=None, cancelled=None, log=None,

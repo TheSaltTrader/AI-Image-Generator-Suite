@@ -1,5 +1,25 @@
 # Changelog — AI Image Generator Suite
 
+## v2.24.0 — 2026-10-02
+- **Repeated decals get the best copy.** A decal printed several times on
+  a sheet (four banners, ten DANGER!s, two orcas — straight, turned or
+  mirrored) is recognised; a few copies are redrawn, the one that matches
+  its scan best is placed at every copy's spot and size. All copies come
+  out equally good, and the vision model or Recraft is paid for at most
+  three per group. Every placement is checked against that copy's own
+  scan first, so a look-alike different word is never swapped in. Switch
+  "Reuse the best copy of repeated decals" on the Decals tab, on by
+  default.
+- **Recraft vectorize, cleaner.** The decal is flattened before it is
+  sent (its own inks only, crisp edges, no halftone mottle), so straight
+  edges come back straight; every colour Recraft returns, gradients
+  included, is snapped to the decal's own inks; and when Recraft paints a
+  clear area over ink (the orca's ring — the grey or black inside it),
+  the decal is rebuilt from Recraft's clean drawing with the clear areas
+  taken from the scan.
+- **Clean trace:** a ring that encloses clear film no longer gets a dark
+  wash inside it.
+
 ## v2.23.2 — 2026-10-02
 - **Recraft vectorize says why fal.ai refuses.** A locked fal.ai account
   ("User is locked") was reported as a rejected key, and a big upload to

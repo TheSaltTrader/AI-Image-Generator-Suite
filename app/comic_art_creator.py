@@ -108,7 +108,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.23.2"
+APP_VERSION = "2.24.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -5366,6 +5366,20 @@ class App:
                        "the film itself (white ink covers the film) are "
                        "filled — a clear window stays clear. A letter's "
                        "counter (the hole in an A, D or O) stays clear.")
+        self.decal_reuse_var = BooleanVar(value=True)
+        _rc = ttk.Checkbutton(left, text="Reuse the best copy of repeated decals",
+                              variable=self.decal_reuse_var)
+        _rc.grid(row=r, sticky=W); r += 1
+        self._tip(_rc, "A decal printed several times on a sheet (four "
+                       "banners, ten DANGER!s) is recognised as copies — "
+                       "straight, turned or mirrored. A few copies are "
+                       "redrawn, the one that matches its scan best is "
+                       "placed at every copy's spot and size, so all copies "
+                       "come out equally good — and the vision model or "
+                       "Recraft is paid for 3 per group, not every copy. "
+                       "Every placement is checked against that copy's own "
+                       "scan first, so a look-alike different word is never "
+                       "swapped in.")
         self.decal_text_var = BooleanVar(value=True)
         _tc = ttk.Checkbutton(left, text="Text sweep: re-set lettering in "
                                          "type (vision key)",
@@ -6628,6 +6642,8 @@ class App:
         keep_pal = bool(self.decal_palette_var.get())
         text_sweep = bool(getattr(self, "decal_text_var", None)
                           and self.decal_text_var.get())
+        reuse = bool(getattr(self, "decal_reuse_var", None)
+                     and self.decal_reuse_var.get())
         esrgan = (MODELS / "upscale_models" / UPSCALE_MODEL).exists()
         try:
             gap_mm = max(0.0, float(self.decal_gap_var.get()))
@@ -6853,7 +6869,8 @@ class App:
                         cancelled=CANCEL.is_set,
                         gap=pg["gap"],
                         vector_fn=vector_fn, text_fn=text_fn,
-                        limit=1 if preview else None)
+                        limit=1 if preview else None,
+                        reuse_copies=reuse, stats=stats)
                     total_done = before + pg["count"]
                     if out is not None:
                         ui_q.put(("decal_progress",
@@ -6935,6 +6952,11 @@ class App:
                              + (f" ({unsure} it could not read with "
                                 "confidence)" if unsure else "")
                              + f", ≈ ${stats['cost']:.2f} spent.")
+            if stats.get("copies"):
+                notes.append(f"Repeated decals: {stats['copies']} copy(ies) in "
+                             f"{stats.get('copy_groups', 0)} group(s) got the "
+                             "best-matching drawing of their group instead of "
+                             "being drawn again.")
             if stats.get("text") or stats.get("text_fallback"):
                 notes.append(
                     f"Text sweep: {stats.get('text', 0)} lettering decal(s) "

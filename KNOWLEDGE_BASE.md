@@ -1003,6 +1003,43 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Recraft cleaned up + repeated decals (v2.24.0).** User, after the
+  first real Recraft run: "lines are not straight for the GI JOE banner on
+  all 4, small errors on the orca symbol and some of the dangers have
+  imperfections", "the grey area in the whale was supposed to be
+  transparent", and "if a decal is repeated multiple times, take the best
+  version of it and replace it over the ones that might be imperfect".
+  Findings from the per-decal SVGs: Recraft traced the RAW scan (wobbly
+  keyed edges; one DANGER! = 1,149 shapes + 184 gradients following the
+  halftone) and paints in LAYERS — the orca's clear ellipse was a magenta
+  (or invented grey (166,170,172)) shape on top of a black ellipse, so
+  dropping the backing exposed black; MuPDF ignores SVG <mask>, so a mask
+  is no fix. Now: `decals.flatten_decal` (palette snap + edge band from
+  solid neighbours + 3x3 majority, split out of the trace) prepares what
+  is sent; `clean_svg` maps every fill (gradients → mean stop colour) to
+  the decal palette ∪ magenta and drops magenta; `finalize` renders the
+  answer with and without the backing and compares with the SENT
+  picture: if removing the backing exposes paint, or the answer paints
+  where the sent picture was backing, it re-traces Recraft's render with
+  alpha = scan outline ∧ not backing (purple blends r−g>50 ∧ b−g>50 count
+  as backing) ∧ Recraft painted, flattened with a band = the enlargement
+  and orphan slivers dropped, traced with vtracer hierarchical="cutout"
+  (stacked layers expose ink under clear areas the same way — also
+  switched for redraw_sheet's own trace). Recraft's palette: merge 60,
+  min_share 2%. Live after: banner 21 shapes, straight; whale overlap
+  0.99, colour 12, clear ring; remaining: thin brown/white contour shapes
+  Recraft itself draws along outlines (genuinely close to real inks —
+  left). COPIES: `find_copies` — same size ±6%, tight crop on mid grey,
+  48 px, blur 1.2, normalised correlation over ±1 px shifts, straight /
+  turn / mirror; star groups (no chaining). Measured: DANGER! copies
+  0.855-0.97 (exact-mask IoU only 0.60 through halftone, 32 px thumbnails
+  0.14-0.36 — both useless), mirrored orcas 0.97, different decals < 0.49
+  on p2 but different words of one size up to 0.93 on p1 → redraw_sheet
+  draws up to 3 candidates, scores each against its own scan (iou −
+  colour/400), and places the best on a copy ONLY if it fits that copy's
+  scan (iou ≥ 0.75, colour ≤ 90); else the copy is drawn itself. p1: 23
+  groups, 49 copies reused, worst placed overlap 0.82, no word swapped.
+  Tests: vector_redraw 60, recraft 12, update_ui 444.
 - **fal.ai account states (v2.23.2).** Live, with the user's real key
   (shape `fal_sk_<32hex>:<32hex>` — NOT the uuid:hex shape assumed in
   v2.23.0; the secrets gate now greps both): a tiny request returned 403

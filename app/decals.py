@@ -13,6 +13,7 @@ needs vtracer (both optional — the app installs them into the engine venv on
 first use). Importable and runnable as a CLI (see main())."""
 
 import io
+import re
 import warnings
 import json
 import sys
@@ -770,7 +771,8 @@ def trim(rgba, pad=8):
 
 # ---------------------------------------------------------------- vector
 def vectorize(rgba, target_px=2400, filter_speckle=12, color_precision=8,
-              quantize_colors=16, presmooth=True, drop_halo=True):
+              quantize_colors=16, presmooth=True, drop_halo=True,
+              hierarchical="stacked"):
     """Trace flat art to vectors and rasterise back to a crisp transparent PNG.
     Returns (svg_text, rgba_result). Needs vtracer + PyMuPDF.
 
@@ -816,7 +818,7 @@ def vectorize(rgba, target_px=2400, filter_speckle=12, color_precision=8,
         svg = Path(td) / "out.svg"
         Image.fromarray(rgb, "RGB").save(src)
         vtracer.convert_image_to_svg_py(
-            str(src), str(svg), colormode="color", hierarchical="stacked",
+            str(src), str(svg), colormode="color", hierarchical=hierarchical,
             mode="spline", filter_speckle=int(filter_speckle),
             color_precision=int(color_precision), layer_difference=16,
             corner_threshold=60, length_threshold=4.0, splice_threshold=45,
@@ -1364,12 +1366,19 @@ def _majority(lab, keep, n_labels, r=1):
     return np.where(keep, out, lab)
 
 
-def _trace_piece(rgba, pal, s, target_px, alpha_cut=160):
-    """One decal: enlarged s times, snapped to the palette, its edge
-    blends given the colour of the ink just inside, a 3x3 majority pass,
-    traced with the white kept. Returns (svg, raster) like vectorize()."""
+def flatten_decal(rgba, pal, s=1, alpha_cut=160, size=None, band=None,
+                  drop_orphans=False):
+    """A decal made clean and flat for a tracer: enlarged (s times, or to
+    `size`), every pixel snapped to the palette (the scan's own inks), the
+    edge blends given the colour of the ink just inside (a band of `band`
+    px, default s), a 3x3 majority pass against halftone mottling, the
+    alpha hard. Returns RGBA."""
     W, H = rgba.size
-    up = rgba.resize((W * s, H * s), Image.LANCZOS)
+    if size is None:
+        size = (W * s, H * s)
+    if band is None:
+        band = s
+    up = rgba.resize(size, Image.LANCZOS)
     ua = np.asarray(up)
     alpha = ua[..., 3]
     keep = alpha >= alpha_cut
@@ -1382,10 +1391,10 @@ def _trace_piece(rgba, pal, s, target_px, alpha_cut=160):
         idx = idx.reshape(alpha.shape).astype(np.int32)
         # edge blends (the outer scan pixel and soft alpha) take the index
         # of a solid neighbour; a real outline's inside is the outline
-        solid = erode_mask(keep, s) & (alpha >= 250)
+        solid = erode_mask(keep, band) & (alpha >= 250)
         edge = keep & ~solid
         have = solid.copy()
-        for _ in range(3 * s):
+        for _ in range(3 * band):
             if not (edge & ~have).any():
                 break
             grown = idx.copy()
@@ -1398,11 +1407,20 @@ def _trace_piece(rgba, pal, s, target_px, alpha_cut=160):
                 grown[take] = src_idx[take]
                 got |= take
             idx, have = grown, got
+        if drop_orphans:
+            # slivers that never touch solid ink are blends, not decal
+            keep = keep & have
         idx = _majority(idx, keep, len(pal), r=1)
         flat = np.zeros(alpha.shape + (3,), np.uint8)
         flat[keep] = np.asarray(pal, np.uint8)[np.clip(idx[keep], 0, len(pal) - 1)]
-    out = np.dstack([flat, (keep * 255).astype(np.uint8)])
-    return vectorize(Image.fromarray(out, "RGBA"), target_px=target_px,
+    return Image.fromarray(np.dstack([flat, (keep * 255).astype(np.uint8)]), "RGBA")
+
+
+def _trace_piece(rgba, pal, s, target_px, alpha_cut=160):
+    """One decal: flattened (flatten_decal) at s times and traced with the
+    white kept. Returns (svg, raster) like vectorize()."""
+    flat = flatten_decal(rgba, pal, s=s, alpha_cut=alpha_cut)
+    return vectorize(flat, target_px=target_px,
                      filter_speckle=max(4, 2 * s), quantize_colors=0,
                      presmooth=False, drop_halo=False)
 
@@ -1466,10 +1484,82 @@ def snap_palette(rgb_img, palette):
 
 
 # ---------------------------------------------------------------- AI redraw
+def _copy_sig(rgba, box, size):
+    """A decal for copy matching: cropped tight to its ink, on mid grey,
+    shrunk to `size` and blurred so halftone dots and JPEG noise wash out."""
+    c = rgba.crop(box).convert("RGBA")
+    bb = c.split()[3].point(lambda v: 255 if v > 96 else 0).getbbox()
+    if bb:
+        c = c.crop(bb)
+    bg = Image.new("RGBA", c.size, (128, 128, 128, 255))
+    bg.alpha_composite(c)
+    g = bg.convert("RGB").resize(size, Image.LANCZOS).filter(
+        ImageFilter.GaussianBlur(1.2))
+    return np.asarray(g).astype(np.float32)
+
+
+def _ncc(a, b):
+    """Best normalised correlation of a and b over 1-px shifts."""
+    best = -1.0
+    xa = a - a.mean()
+    na = float(np.sqrt((xa * xa).sum())) + 1e-6
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            bb = np.roll(np.roll(b, dy, 0), dx, 1)
+            yb = bb - bb.mean()
+            v = float((xa * yb).sum() / (na * (float(np.sqrt((yb * yb).sum())) + 1e-6)))
+            best = max(best, v)
+    return best
+
+
+def find_copies(rgba, boxes, size_tol=0.06, min_ncc=0.85, min_px=12):
+    """Groups of decals that look like the SAME design printed several
+    times on a sheet — straight, turned 180 degrees or mirrored: same size
+    within `size_tol`, and blurred pictures correlating at `min_ncc` or
+    more (measured on the user's sheets: real copies 0.86-1.0 through
+    halftone noise, different designs under 0.5 — but different words of
+    one size can reach 0.93, so redraw_sheet checks every placement
+    against the copy's own scan before using it). Groups are formed
+    around one reference (no chaining). Returns [[(index, how), ...]]
+    with how in {"", "turn", "mirror"}, reference first; 2+ members only."""
+    n = len(boxes)
+    sizes = [(b[2] - b[0], b[3] - b[1]) for b in boxes]
+    taken = [False] * n
+    groups = []
+    for i in range(n):
+        if taken[i] or min(sizes[i]) < min_px:
+            continue
+        wi, hi = sizes[i]
+        f = 48.0 / max(wi, hi)
+        size = (max(8, int(round(wi * f))), max(8, int(round(hi * f))))
+        a = None
+        group = [(i, "")]
+        for j in range(i + 1, n):
+            if taken[j] or min(sizes[j]) < min_px:
+                continue
+            wj, hj = sizes[j]
+            if abs(wi - wj) > size_tol * max(wi, wj) or \
+                    abs(hi - hj) > size_tol * max(hi, hj):
+                continue
+            if a is None:
+                a = _copy_sig(rgba, boxes[i], size)
+            b = _copy_sig(rgba, boxes[j], size)
+            v, how = max((_ncc(a, b), ""), (_ncc(a, b[::-1, ::-1].copy()), "turn"),
+                         (_ncc(a, b[:, ::-1].copy()), "mirror"))
+            if v >= min_ncc:
+                group.append((j, how))
+        if len(group) >= 2:
+            for idx, _h in group:
+                taken[idx] = True
+            groups.append(group)
+    return groups
+
+
 def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
                  keep_palette=True, palette_colors=16, work_px=1024,
                  min_work_px=640, progress=None, cancelled=None, gap=16,
-                 min_side=24, vector_fn=None, limit=None, text_fn=None):
+                 min_side=24, vector_fn=None, limit=None, text_fn=None,
+                 reuse_copies=True, stats=None):
     """AI-redraw every decal on a cleaned sheet and rebuild the sheet as
     vector art at its correct physical size.
 
@@ -1513,35 +1603,24 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
     sheet = Image.new("RGBA", (max(1, int(round(W * k))),
                                max(1, int(round(H * k)))), (0, 0, 0, 0))
     parts, items = [], []
-    for i, (x0, y0, x1, y1) in enumerate(boxes):
-        if cancelled and cancelled():
-            return None
-        if progress:
-            progress(i, len(boxes))
-        crop = rgba.crop((x0, y0, x1, y1))
-        cw, ch = crop.size
+    st = stats if stats is not None else {}
+    st.setdefault("copies", 0)
+    st.setdefault("copy_groups", 0)
+
+    def _geom(box):
+        x0, y0, x1, y1 = box
+        cw, ch = x1 - x0, y1 - y0
         w_in = cw / float(native_dpi) * size_scale
         h_in = ch / float(native_dpi) * size_scale
-        px_w = max(1, int(round(w_in * target_dpi)))
-        px_h = max(1, int(round(h_in * target_dpi)))
+        return (cw, ch, w_in, h_in, max(1, int(round(w_in * target_dpi))),
+                max(1, int(round(h_in * target_dpi))))
 
-        def _place(svg, ras, source, _x0=x0, _y0=y0, _x1=x1, _y1=y1,
-                   _w=w_in, _h=h_in, _pw=px_w, _ph=px_h):
-            # a drawing already in crop pixels (text or vision): place as is
-            if ras.size != (_pw, _ph):
-                ras = ras.resize((_pw, _ph), Image.LANCZOS)
-            items.append(dict(box=(_x0, _y0, _x1, _y1), svg=svg, rgba=ras,
-                              size_in=(_w, _h), source=source))
-            px, py = int(round(_x0 * k)), int(round(_y0 * k))
-            part = ras
-            if px + part.width > sheet.width or py + part.height > sheet.height:
-                part = part.crop((0, 0, max(1, min(part.width, sheet.width - px)),
-                                  max(1, min(part.height, sheet.height - py))))
-            if px < sheet.width and py < sheet.height:
-                sheet.alpha_composite(part, (px, py))
-            parts.append(f'<g transform="translate({_x0} {_y0})">'
-                         f'{svg_inner(svg)}</g>')
-
+    def _draw_one(box):
+        """One decal drawn by the chosen method. Returns (svg in crop-pixel
+        coordinates, raster, source) or None when cancelled."""
+        x0, y0, x1, y1 = box
+        crop = rgba.crop(box)
+        cw, ch, w_in, h_in, px_w, px_h = _geom(box)
         if text_fn is not None:
             # lettering only: read the words, set them in type
             geom = text_geometry(crop)
@@ -1551,26 +1630,24 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
                 if cancelled and cancelled():
                     return None                 # stop now, no trace fallback
                 if got is not None:
-                    _place(got[0], got[1], "text")
-                    continue
+                    return got[0], got[1], "text"
         if vector_fn is not None:
-            # a drawing from a description (vision model): already vector
+            # a drawing from a description or a vectorizing service
             got = vector_fn(crop, palette_of(crop, colors=palette_colors),
                             w_in, h_in)
             if cancelled and cancelled():
                 return None                     # stop now, no trace fallback
             if got is not None:
-                _place(got[0], got[1], "vector")
-                continue
-        # the work canvas: about 4× the scan crop, clamped to [min_work_px,
+                return got[0], got[1], "vector"
+        # the work canvas: about 4x the scan crop, clamped to [min_work_px,
         # work_px] on the long edge (diffusion models draw badly on tiny
         # canvases and invent on huge ones), both sides multiples of 8,
         # aspect kept. The enlargement itself happens in refine (engine-side
         # RealESRGAN when available), so the crop goes over at native size.
         long = float(max(cw, ch))
-        s = min(float(work_px), max(float(min_work_px), long * 4.0)) / long
-        wr = max(64, int(round(cw * s / 8)) * 8)
-        hr = max(64, int(round(ch * s / 8)) * 8)
+        sc = min(float(work_px), max(float(min_work_px), long * 4.0)) / long
+        wr = max(64, int(round(cw * sc / 8)) * 8)
+        hr = max(64, int(round(ch * sc / 8)) * 8)
         on_white = Image.alpha_composite(
             Image.new("RGBA", crop.size, (255, 255, 255, 255)), crop).convert("RGB")
         out = refine(on_white, (wr, hr)) if refine is not None \
@@ -1589,8 +1666,7 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
         sil = np.asarray(sil.point(lambda v: 255 if v >= 128 else 0)) > 0
         band_r = max(3, int(round(0.012 * max(wr, hr))))
         inner = erode_mask(sil, band_r)     # not MinFilter: see dilate_mask
-        # "light" = white-ish / light grey, i.e. the background or the faint
-        # contour some models draw around a shape (a sticker-border look)
+
         def _light(arr):
             return (arr.mean(2) >= 200) & ((arr.max(2) - arr.min(2)) < 40)
 
@@ -1608,13 +1684,51 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
         keep[(sil & ~inner) & light & ~scan_light] = False
         redrawn = out.convert("RGBA")
         redrawn.putalpha(Image.fromarray((keep * 255).astype(np.uint8)))
+        # cutout: shapes with real holes, so dropping the backing exposes
+        # no ink painted underneath (stacked layers left a dark wash over
+        # an orca whose ring encloses clear film)
         svg, ras = vectorize(redrawn, target_px=px_w, quantize_colors=0,
-                             presmooth=False, drop_halo=False)
-        svg = svg_set_physical_size(svg, w_in, h_in)
+                             presmooth=False, drop_halo=False,
+                             hierarchical="cutout")
+        # into crop-pixel coordinates like the other methods
+        svg_c = ('<svg xmlns="http://www.w3.org/2000/svg" version="1.1" '
+                 f'width="{w_in:.4f}in" height="{h_in:.4f}in" '
+                 f'viewBox="0 0 {cw} {ch}"><g transform="scale({cw / wr:.6f} '
+                 f'{ch / hr:.6f})">{svg_inner(svg)}</g></svg>')
+        return svg_c, ras, "trace"
+
+    def _fit(drawn, box, how=""):
+        """A drawing (svg in its OWN crop-pixel coordinates) made to fit
+        `box`: scaled to it, turned 180 degrees or mirrored for such a
+        copy. Returns (own svg in box pixels, inner for the sheet with
+        its scale, raster at the box's print size)."""
+        svg, ras, _src = drawn
+        cw, ch, w_in, h_in, px_w, px_h = _geom(box)
+        vb = re.search(r'viewBox="\s*[-\d.]+\s+[-\d.]+\s+([\d.]+)\s+([\d.]+)', svg)
+        bw, bh = (float(vb.group(1)), float(vb.group(2))) if vb else (cw, ch)
+        inner = svg_inner(svg)
+        if how == "turn":
+            inner = f'<g transform="rotate(180 {bw / 2:.3f} {bh / 2:.3f})">{inner}</g>'
+            ras = ras.rotate(180)
+        elif how == "mirror":
+            inner = f'<g transform="translate({bw:.3f} 0) scale(-1 1)">{inner}</g>'
+            ras = ras.transpose(Image.FLIP_LEFT_RIGHT)
         if ras.size != (px_w, px_h):
             ras = ras.resize((px_w, px_h), Image.LANCZOS)
-        items.append(dict(box=(x0, y0, x1, y1), svg=svg, rgba=ras,
-                          size_in=(w_in, h_in), source="trace"))
+        sx, sy = cw / bw, ch / bh
+        own = ('<svg xmlns="http://www.w3.org/2000/svg" version="1.1" '
+               f'width="{w_in:.4f}in" height="{h_in:.4f}in" '
+               f'viewBox="0 0 {cw} {ch}"><g transform="scale({sx:.6f} {sy:.6f})">'
+               f'{inner}</g></svg>')
+        return own, inner, ras, sx, sy
+
+    def _place(drawn, box, source, how=""):
+        """Put a drawing at `box` (see _fit) on the sheet and in the items."""
+        x0, y0, x1, y1 = box
+        cw, ch, w_in, h_in, px_w, px_h = _geom(box)
+        own, inner, ras, sx, sy = _fit(drawn, box, how)
+        items.append(dict(box=(x0, y0, x1, y1), svg=own, rgba=ras,
+                          size_in=(w_in, h_in), source=source))
         px, py = int(round(x0 * k)), int(round(y0 * k))
         part = ras
         if px + part.width > sheet.width or py + part.height > sheet.height:
@@ -1622,9 +1736,87 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
                               max(1, min(part.height, sheet.height - py))))
         if px < sheet.width and py < sheet.height:
             sheet.alpha_composite(part, (px, py))
-        parts.append(f'<g transform="translate({x0} {y0}) '
-                     f'scale({cw / wr:.6f} {ch / hr:.6f})">'
-                     f'{svg_inner(svg)}</g>')
+        parts.append(f'<g transform="translate({x0} {y0}) scale({sx:.6f} {sy:.6f})">'
+                     f'{inner}</g>')
+
+    # repeated decals: draw a few copies, keep the best, place it on all
+    groups = find_copies(rgba, boxes) if (reuse_copies and not limit) else []
+    member_of = {}
+    for g in groups:
+        for idx, rot in g:
+            member_of[idx] = g
+    done = set()
+    n_draw = len(boxes)
+    step = 0
+    for i, box in enumerate(boxes):
+        if i in done:
+            continue
+        if cancelled and cancelled():
+            return None
+        g = member_of.get(i)
+        if not g:
+            if progress:
+                progress(step, n_draw)
+            step += 1
+            drawn = _draw_one(box)
+            if drawn is None:
+                return None
+            _place(drawn, box, drawn[2])
+            done.add(i)
+            continue
+        # a group: up to 3 candidates drawn, scored against their own scan
+        import vector_redraw
+
+        def _score(svg, box):
+            try:
+                _ok, iou, col = vector_redraw.check_against_scan(svg, rgba.crop(box))
+                return iou - col / 400.0, iou, col
+            except Exception:
+                return 0.0, 0.0, 999.0
+
+        cands = {}
+        best, best_score, best_how = None, -1e9, ""
+        for idx, how in g[:3]:
+            if progress:
+                progress(step, n_draw)
+            step += 1
+            drawn = _draw_one(boxes[idx])
+            if drawn is None:
+                return None
+            cands[idx] = (drawn, how)
+            sc = _score(drawn[0], boxes[idx])[0]
+            if sc > best_score:
+                best, best_score, best_how = drawn, sc, how
+        rel = {"": {"": "", "turn": "turn", "mirror": "mirror"},
+               "turn": {"": "turn", "turn": "", "mirror": "mirror"},
+               "mirror": {"": "mirror", "turn": "mirror", "mirror": ""}}
+        reused = 0
+        for idx, how in g:
+            # the best drawing turned/mirrored from ITS orientation to this one's
+            t = rel[best_how][how] if best_how in rel and how in rel[best_how] else ""
+            own, _inner, _ras, _sx, _sy = _fit(best, boxes[idx], t)
+            _sc, iou, col = _score(own, boxes[idx])
+            # never swap in a different design: the best drawing must sit on
+            # THIS copy's scan as well as a drawing should (else its own)
+            if best is not None and iou >= 0.75 and col <= 90:
+                is_self = cands.get(idx, (None,))[0] is best
+                _place(best, boxes[idx], best[2] if is_self else "copy", how=t)
+                if not is_self:
+                    reused += 1
+            else:
+                drawn = cands.get(idx, (None,))[0]
+                if drawn is None:
+                    if progress:
+                        progress(step, n_draw)
+                    step += 1
+                    drawn = _draw_one(boxes[idx])
+                    if drawn is None:
+                        return None
+                _place(drawn, boxes[idx], drawn[2])
+            done.add(idx)
+        step += max(0, len(g) - 3)
+        st["copy_groups"] += 1
+        st["copies"] += reused
     sheet_svg = ('<?xml version="1.0" encoding="UTF-8"?>\n'
                  '<svg xmlns="http://www.w3.org/2000/svg" version="1.1" '
                  f'width="{sheet_w_in:.4f}in" height="{sheet_h_in:.4f}in" '
