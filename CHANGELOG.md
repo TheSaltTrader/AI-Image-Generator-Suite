@@ -1,5 +1,14 @@
 # Changelog — AI Image Generator Suite
 
+## v2.20.1 — 2026-10-01
+- **Pull local model shows its progress.** A bar beside the button fills
+  as the download runs, with the percentage, GB done of the total, the
+  speed and about how long is left. Every layer of the model counts
+  toward the bar, and a resumed pull measures its speed from where it
+  restarted.
+- **The 🔑 API key button greys out while a local model is chosen** (it
+  needs no key) and comes back when a Claude model is picked.
+
 ## v2.20.0 — 2026-10-01
 - **🖨 Export for print.** A new button on the Decals tab lays the decal
   results out on printable pages at their true size — the figure-scale

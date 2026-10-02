@@ -1003,6 +1003,18 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Pull progress bar (v2.20.1).** User: "next to pull local model there
+  should be progress bar to show how long its going to take". Ollama's
+  /api/pull streams one status per LAYER (digest, total, completed);
+  `ollama_pull(on_bytes=)` keeps per-digest totals and reports the sums
+  (the bar may dip slightly when a new layer appears — the big weights
+  layer comes first). `pull_eta_text(done, total, elapsed, start_done)`
+  measures the rate from the first figure seen (a resumed pull starts
+  part-way). UI: `decal_pull_bar` + `decal_local_lab` beside the button,
+  `decal_pull_progress` queue message, throttled to ~4/s. Also: "if its a
+  local model the api key next to it should be greyed out" —
+  `_refresh_vision_key_lab` follows the model (trace on
+  `decal_vision_model_var`). Tests 418/51/17.
 - **Print export, multi-sheet tiling, transparent vision output, paper
   colour key, local vision models (v2.20.0).** User: "When using vision to
   recreate the decals, add the stickers on a transparent background … make

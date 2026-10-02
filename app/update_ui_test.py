@@ -2016,6 +2016,24 @@ try:
           and any("gemma3" in m for m in _locals) and any("mistral-small" in m for m in _locals))
     ui.decal_vision_model_var.set("Qwen3-VL 8B — local, fast (6 GB)")
     check("picking one gives its Ollama id", ui._vision_model_id() == "ollama:qwen3-vl:8b")
+    root.update()
+    check("a local model greys out the API key button and says no key is needed",
+          "disabled" in ui.decal_key_btn.state()
+          and "no key needed" in str(ui.decal_key_lab.cget("text")))
+    ui.decal_vision_model_var.set(app.vector_redraw.MODELS[1][0])
+    root.update()
+    check("…and a Claude model brings it back",
+          "disabled" not in ui.decal_key_btn.state()
+          and "no key needed" not in str(ui.decal_key_lab.cget("text")))
+    ui.decal_vision_model_var.set("Qwen3-VL 8B — local, fast (6 GB)")
+    check("Pull local model has a progress bar and an ETA label beside it",
+          hasattr(ui, "decal_pull_bar")
+          and str(ui.decal_pull_bar.master) == str(ui.decal_pull_btn.master))
+    ui.ui_queue.put(("decal_pull_progress", 0.37, "37% · 7.8 / 21.0 GB · about 5 min left"))
+    ui._poll_queue(); root.update()
+    check("a pull progress message moves the bar and shows the time left",
+          int(float(ui.decal_pull_bar["value"])) == 370
+          and "min left" in str(ui.decal_local_lab.cget("text")))
     ui.decal_vision_model_var.set(app.vector_redraw.MODELS[0][0])
     app.DECALS_OUT = _old_out
     # stickers glued on green paper: the paper colour is keyed out

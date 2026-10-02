@@ -370,6 +370,52 @@ finally:
     _rq.post = _orig_post
 check("a local model costs nothing", vr.estimate_cost("ollama:gemma3:27b", None) == 0.0)
 
+print("pull progress")
+import json as _j2
+
+
+class _PullResp:
+    status_code = 200
+
+    def __init__(self, lines):
+        self._l = lines
+
+    def raise_for_status(self):
+        pass
+
+    def iter_lines(self):
+        for x in self._l:
+            yield _j2.dumps(x).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+_lines = [{"status": "pulling manifest"},
+          {"status": "pulling a", "digest": "sha:a", "total": 20_000_000_000, "completed": 5_000_000_000},
+          {"status": "pulling b", "digest": "sha:b", "total": 1_000_000_000, "completed": 0},
+          {"status": "pulling a", "digest": "sha:a", "total": 20_000_000_000, "completed": 20_000_000_000},
+          {"status": "pulling b", "digest": "sha:b", "total": 1_000_000_000, "completed": 1_000_000_000},
+          {"status": "success"}]
+_seen = []
+_orig_post2 = _rq.post
+try:
+    _rq.post = lambda url, json=None, stream=False, timeout=None, **k: _PullResp(_lines)
+    vr.ollama_pull("qwen3-vl:32b", on_bytes=lambda d, t, s: _seen.append((d, t)))
+finally:
+    _rq.post = _orig_post2
+check("pull progress sums every layer of the download",
+      _seen[0] == (5_000_000_000, 20_000_000_000) and _seen[-1] == (21_000_000_000, 21_000_000_000)
+      and _seen[1] == (5_000_000_000, 21_000_000_000), _seen)
+_eta = vr.pull_eta_text(7_800_000_000, 21_000_000_000, 100.0, 3_600_000_000)
+check("the ETA reads percent, GB, speed and time left",
+      _eta.startswith("37% · 7.8 / 21.0 GB · 42 MB/s · about 5 min left"), _eta)
+check("…and says it is measuring before it knows the speed",
+      "measuring" in vr.pull_eta_text(0, 21_000_000_000, 0.1))
+
 print("the key store")
 t = "AIImageGeneratorSuite/_test_vr"
 check("write/read/delete round trip in the Credential Manager",

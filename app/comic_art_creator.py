@@ -107,7 +107,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.20.0"
+APP_VERSION = "2.20.1"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -5509,6 +5509,8 @@ class App:
         self.decal_key_lab = ttk.Label(vrow, text="", style="Dim.TLabel")
         self.decal_key_lab.pack(side="left", padx=(6, 0))
         self._refresh_vision_key_lab()
+        self.decal_vision_model_var.trace_add(
+            "write", lambda *_a: self._refresh_vision_key_lab())
         self._tip(vrow, "Opus 5.5 draws best; Sonnet 5.5 costs about half. "
                         "Roughly 1–4 cents per decal. The key is yours, from "
                         "console.anthropic.com; it never leaves this machine "
@@ -5517,6 +5519,9 @@ class App:
         self.decal_pull_btn = ttk.Button(lrow, text="⬇ Pull local model",
                                          command=self._pull_local_vision_model)
         self.decal_pull_btn.pack(side="left")
+        self.decal_pull_bar = ttk.Progressbar(lrow, mode="determinate",
+                                              maximum=1000, length=150)
+        self.decal_pull_bar.pack(side="left", padx=(6, 0))
         self.decal_local_lab = ttk.Label(lrow, text="", style="Dim.TLabel")
         self.decal_local_lab.pack(side="left", padx=(6, 0))
         self._tip(lrow, "The 'local' models run on this PC through Ollama "
@@ -6061,7 +6066,16 @@ class App:
             "API key removed." if ok else "Could not store the key.")
 
     def _refresh_vision_key_lab(self):
+        """The key button and badge follow the chosen model: a local model
+        needs no key, so the button is greyed until a Claude model is
+        picked again."""
         try:
+            local = vector_redraw.is_local(self._vision_model_id())
+            self.decal_key_btn.state(["disabled"] if local else ["!disabled"])
+            if local:
+                self.decal_key_lab.configure(text="no key needed (local)",
+                                             style="Dim.TLabel")
+                return
             has = bool(vector_redraw.get_api_key())
             self.decal_key_lab.configure(
                 text="key: set" if has else "no key yet",
@@ -6090,7 +6104,24 @@ class App:
         tag = vector_redraw.local_tag(mid)
         ui_q = self.ui_queue
         self.decal_pull_btn.state(["disabled"])
+        self.decal_pull_bar["value"] = 0
+        self.decal_local_lab.configure(text="connecting…")
         self.decal_status_var.set(f"Pulling {tag} into Ollama…")
+        t0 = time.time()
+        seen = {"start": None, "last": 0.0}
+
+        def on_bytes(done, total, status):
+            # the first figure is where a resumed pull starts; the rate is
+            # measured from there. At most ~4 updates a second.
+            if seen["start"] is None:
+                seen["start"] = done
+            now = time.time()
+            if now - seen["last"] < 0.25 and done < total:
+                return
+            seen["last"] = now
+            ui_q.put(("decal_pull_progress", done / float(max(1, total)),
+                      vector_redraw.pull_eta_text(done, total, now - t0,
+                                                  seen["start"])))
 
         def work():
             try:
@@ -6099,7 +6130,9 @@ class App:
                                        "ollama.com and start it, then Pull again")
                 vector_redraw.ollama_pull(
                     tag, progress=lambda t: ui_q.put(
-                        ("decal_status", f"Pulling {tag}: {t}")))
+                        ("decal_status", f"Pulling {tag}: {t}")),
+                    on_bytes=on_bytes)
+                ui_q.put(("decal_pull_progress", 1.0, "done"))
                 ui_q.put(("decal_status", f"{tag} is ready — pick it and run "
                                           "Preview one decal to judge it."))
             except Exception as e:
@@ -11069,6 +11102,13 @@ class App:
                         self.decal_status_var.set(
                             "Paper colour read from the page — it becomes "
                             "transparent.")
+                elif kind == "decal_pull_progress":
+                    try:
+                        self.decal_pull_bar["value"] = int(
+                            max(0.0, min(1.0, float(msg[1]))) * 1000)
+                        self.decal_local_lab.configure(text=msg[2])
+                    except Exception:
+                        pass
                 elif kind == "decal_pull_done":
                     try:
                         self.decal_pull_btn.state(["!disabled"])

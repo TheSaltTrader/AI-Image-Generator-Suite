@@ -87,15 +87,22 @@ def ollama_vision_models(timeout=2):
         return None
 
 
-def ollama_pull(tag, progress=None, timeout=3600):
-    """`ollama pull <tag>` through the API, streaming progress lines to
-    `progress(text)`. Raises RuntimeError with Ollama's message on failure."""
+def ollama_pull(tag, progress=None, timeout=3600, on_bytes=None,
+                cancelled=None):
+    """`ollama pull <tag>` through the API. `progress(text)` gets each
+    status line; `on_bytes(done, total, status)` gets the WHOLE download
+    so far — Ollama reports each layer (digest) on its own, so the layers
+    are summed. `cancelled()` → stop. Raises RuntimeError with Ollama's
+    message on failure."""
     import json
     import requests
+    totals, dones = {}, {}
     with requests.post(f"{ollama_url()}/api/pull", json={"model": tag, "stream": True},
                        stream=True, timeout=timeout) as r:
         r.raise_for_status()
         for line in r.iter_lines():
+            if cancelled and cancelled():
+                raise RuntimeError("cancelled")
             if not line:
                 continue
             try:
@@ -106,6 +113,12 @@ def ollama_pull(tag, progress=None, timeout=3600):
                 raise RuntimeError(f"Ollama: {d['error']}")
             st = d.get("status", "")
             tot, done = d.get("total"), d.get("completed")
+            dig = d.get("digest") or st
+            if tot:
+                totals[dig] = int(tot)
+                dones[dig] = int(done or 0)
+            if on_bytes and totals:
+                on_bytes(sum(dones.values()), sum(totals.values()), st)
             if progress:
                 if tot and done is not None:
                     progress(f"{st} {100.0 * done / max(1, tot):.0f}% "
@@ -113,6 +126,29 @@ def ollama_pull(tag, progress=None, timeout=3600):
                 else:
                     progress(st)
     return True
+
+
+def pull_eta_text(done, total, elapsed_s, start_done=0):
+    """'37% · 7.8 / 21.0 GB · 42 MB/s · about 5 min left' — the rate is
+    measured over this session's bytes (a resumed pull starts part-way)."""
+    pct = 100.0 * done / max(1, total)
+    got = max(0, done - start_done)
+    rate = got / elapsed_s if elapsed_s > 0.5 else 0.0
+    txt = f"{pct:.0f}% · {done / 1e9:.1f} / {total / 1e9:.1f} GB"
+    if rate > 0:
+        txt += f" · {rate / 1e6:.0f} MB/s"
+        left = (total - done) / rate
+        if done >= total:
+            txt += " · verifying…"
+        elif left < 60:
+            txt += f" · about {max(1, int(left))} s left"
+        elif left < 3600:
+            txt += f" · about {int(round(left / 60))} min left"
+        else:
+            txt += f" · about {left / 3600:.1f} h left"
+    else:
+        txt += " · measuring speed…"
+    return txt
 
 
 class _Block:
