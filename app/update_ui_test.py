@@ -1963,6 +1963,76 @@ except Exception as _e:
     check("photo mode runs headless", False, repr(_e))
 
 # ---- taskbar identity (v2.16.1) -------------------------------------------
+# ---- redraw only the chosen pages (v2.22.6) ---------------------------------
+print("pages to redraw")
+try:
+    import time as _t12, pymupdf as _mu12, io as _io12
+    check("page lists are read: all, one, a list, a range",
+          _dec.parse_pages("all") is None and _dec.parse_pages("") is None
+          and _dec.parse_pages("2") == {2} and _dec.parse_pages("1, 3") == {1, 3}
+          and _dec.parse_pages("2-4") == {2, 3, 4} and _dec.parse_pages("1,3-4") == {1, 3, 4})
+    _bad = 0
+    for _t in ("0", "x", "3-1"):
+        try:
+            _dec.parse_pages(_t)
+        except ValueError:
+            _bad += 1
+    check("…and nonsense is refused", _bad == 3)
+    check("the Decals tab has the Pages box, 'all' by default",
+          hasattr(ui, "decal_pages_var") and ui.decal_pages_var.get() == "all")
+    # a 3-page PDF, a decal on every page
+    _pdf3 = app.Path(str(_fs_tmp)) / "three_pages.pdf"
+    _d3 = _mu12.open()
+    for _k in range(3):
+        _pg = _d3.new_page(width=144, height=144)
+        _im = app.Image.new("RGB", (300, 300), (222, 253, 255))
+        app.ImageDraw.Draw(_im).rectangle([60 + 20 * _k, 60, 200, 200], fill=(200, 20, 30))
+        _b = _io12.BytesIO(); _im.save(_b, format="PNG")
+        _pg.insert_image(_pg.rect, stream=_b.getvalue())
+    _d3.save(str(_pdf3)); _d3.close()
+    _old_out12 = app.DECALS_OUT
+    app.DECALS_OUT = app.Path(str(_fs_tmp)) / "pages_out"
+    _old_eng = app.engine_alive
+    app.engine_alive = lambda *a, **k: False       # plain enlargement, no engine
+    ui.decal_sources = [str(_pdf3)]
+    ui.decal_method_var.set("trace")
+    ui.decal_text_var.set(False)
+    ui.decal_pages_var.set("2")
+    _n0 = len(ui.session)
+    ui._redraw_decals()
+    for _ in range(600):
+        ui._poll_queue(); root.update()
+        if not ui._decals_busy:
+            break
+        _t12.sleep(0.05)
+    _new = [p for _i, p, _s in ui.session[_n0:] if isinstance(p, dict)]
+    check("Redraw with Pages = 2 makes page 2 only",
+          len(_new) == 1 and str(_new[0].get("page", "")).endswith("_p2"),
+          [p.get("page") for p in _new])
+    ui.decal_pages_var.set("7")
+    ui._redraw_decals()
+    for _ in range(200):
+        ui._poll_queue(); root.update()
+        if not ui._decals_busy:
+            break
+        _t12.sleep(0.05)
+    check("a page that is not in the file is reported, not silently skipped",
+          "none of the pages asked for (7)" in ui.decal_status_var.get(), ui.decal_status_var.get())
+    ui.decal_pages_var.set("x")
+    ui._redraw_decals()
+    check("a bad page list is explained before anything runs",
+          "Pages to redraw" in ui.decal_status_var.get() and not ui._decals_busy)
+    ui.decal_pages_var.set("all")
+    ui.decal_text_var.set(True)
+    ui.decal_sources = []
+    ui._compare_win = None
+    app.engine_alive = _old_eng
+    app.DECALS_OUT = _old_out12
+except Exception as _e:
+    import traceback
+    traceback.print_exc()
+    check("pages to redraw runs headless", False, repr(_e))
+
 # ---- freeze recorder + upscale graph (v2.22.4) ------------------------------
 print("freeze recorder")
 try:

@@ -1003,6 +1003,14 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Pages to redraw (v2.22.6).** User: "When rewriting to vector, allow
+  to select a specific page and not do all the pages from the pdf."
+  `decals.parse_pages` ('all'/'' → None, '2', '1,3', '2-4', mixes;
+  ValueError on 0, words, reversed ranges); `decal_pages_var` read on
+  the UI thread in `_redraw_decals`; pass 1 enumerates
+  `iter_sources` from 1 and skips unpicked pages BEFORE any work; no
+  matching page → err "none of the pages asked for (…) is in the
+  file(s)". Process decals is unchanged (all pages). Tests 437/54/20.
 - **Cancel clears the Decals figures (v2.22.5).** User: "Cancel on top
   appears to stop the model, but does not clear the progress bar and
   number of decals or the cost." `_cancel_decals` resets the bar and both

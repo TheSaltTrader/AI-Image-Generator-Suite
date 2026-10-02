@@ -100,6 +100,33 @@ def iter_sources(path):
         yield path.stem, im.convert("RGB"), dpi
 
 
+def parse_pages(text):
+    """'all' / '' → None (every page); '2' → {2}; '1,3' → {1, 3};
+    '2-4' → {2, 3, 4}; mixes like '1, 3-5' work. Page numbers start at 1.
+    Raises ValueError on anything else, so the user is told."""
+    t = (text or "").strip().lower()
+    if t in ("", "all", "*"):
+        return None
+    out = set()
+    for part in t.replace(";", ",").replace(" ", "").split(","):
+        if not part:
+            continue
+        if "-" in part:
+            a, b = part.split("-", 1)
+            a, b = int(a), int(b)
+            if a < 1 or b < a:
+                raise ValueError(part)
+            out.update(range(a, b + 1))
+        else:
+            n = int(part)
+            if n < 1:
+                raise ValueError(part)
+            out.add(n)
+    if not out:
+        return None
+    return out
+
+
 def iter_source_images(path):
     """(label, image) pairs — iter_sources without the resolution."""
     for label, img, _dpi in iter_sources(path):

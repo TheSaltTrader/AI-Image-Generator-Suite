@@ -107,7 +107,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.22.5"
+APP_VERSION = "2.22.6"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -5578,6 +5578,17 @@ class App:
                        "in your scan, so the SVG uses the original colours "
                        "exactly and traces as clean flat fills. OFF: keeps "
                        "whatever colours the AI painted.")
+        pgrow = ttk.Frame(left); pgrow.grid(row=r, sticky="ew", pady=(4, 0)); r += 1
+        ttk.Label(pgrow, text="Pages to redraw",
+                  style="Dim.TLabel").pack(side="left")
+        self.decal_pages_var = StringVar(value="all")
+        ttk.Entry(pgrow, textvariable=self.decal_pages_var, width=10).pack(
+            side="left", padx=(6, 6))
+        ttk.Label(pgrow, text="e.g. 2   or   1,3   or   2-3",
+                  style="Dim.TLabel").pack(side="left")
+        self._tip(pgrow, "Which pages of each PDF Redraw to vector and "
+                         "Preview one decal work on. 'all' = every page. "
+                         "Page 1 is the first page of the file.")
         self.decal_preview_btn = ttk.Button(
             left, text="👁 Preview one decal",
             command=lambda: self._redraw_decals(preview=True))
@@ -6574,6 +6585,14 @@ class App:
                     solidify=self.decal_solid_var.get(),
                     smooth=self.decal_smooth_var.get(),
                     fill_holes=self.decal_holes_var.get())
+        try:
+            page_sel = decals.parse_pages(self.decal_pages_var.get()
+                                          if hasattr(self, "decal_pages_var")
+                                          else "all")
+        except ValueError:
+            self.decal_status_var.set("Pages to redraw: write 'all', a page "
+                                      "number, a list (1,3) or a range (2-3).")
+            return
         srcs = [only] if only else list(self.decal_sources)
         prep = self._decal_source_prep()
         self._decals_busy = True
@@ -6680,7 +6699,10 @@ class App:
                 # request has a known number of decals for the bar
                 pages = []
                 for src in srcs:
-                    for label, raw, file_dpi in decals.iter_sources(src):
+                    for page_no, (label, raw, file_dpi) in enumerate(
+                            decals.iter_sources(src), start=1):
+                        if page_sel is not None and page_no not in page_sel:
+                            continue            # not a page the user picked
                         if CANCEL.is_set():
                             err = "cancelled"
                             break
@@ -6713,6 +6735,10 @@ class App:
                             break
                     if err or (preview and pages and pages[-1]["count"]):
                         break
+                if page_sel is not None and not pages and not err:
+                    err = ("none of the pages asked for ("
+                           + ", ".join(str(n) for n in sorted(page_sel))
+                           + ") is in the file(s)")
                 total = sum(pg["count"] for pg in pages)
                 total_done = 0
 

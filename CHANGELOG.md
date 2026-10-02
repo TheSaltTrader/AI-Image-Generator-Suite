@@ -1,5 +1,11 @@
 # Changelog — AI Image Generator Suite
 
+## v2.22.6 — 2026-10-02
+- **Redraw only the pages you pick.** A "Pages to redraw" box beside the
+  redraw buttons: 'all', a page number (2), a list (1,3) or a range
+  (2-3). Redraw to vector and Preview one decal work on those pages of
+  each PDF only; a page that is not in the file is reported.
+
 ## v2.22.5 — 2026-10-01
 - **Cancel clears the Decals progress.** The bar, the green decal count
   and the red cost are cleared the moment Cancel is pressed and stay
