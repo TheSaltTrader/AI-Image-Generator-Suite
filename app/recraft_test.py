@@ -54,6 +54,12 @@ class _Session:
         self.posts.append((url, json, headers))
         if self.delay:
             time.sleep(self.delay)
+        if self.code == "drop":
+            if len(json["image_url"]) > 3000:
+                raise ConnectionError("EOF occurred in violation of protocol")
+            return _Resp(403, {"detail": "User is locked. Reason: ADMIN."}, "")
+        if self.code == "locked":
+            return _Resp(403, {"detail": "User is locked. Reason: ADMIN."}, "")
         if self.code != 200:
             return _Resp(self.code, None, "insufficient balance" if self.code == 402 else "boom")
         W, H = Image.open(__import__("io").BytesIO(
@@ -97,13 +103,21 @@ try:
     stop = ""
 except RuntimeError as e:
     stop = str(e)
-check("a rejected key stops the run with a clear message", "key was rejected" in stop, stop)
+check("a rejected key stops the run and gives fal.ai's reason", "refused the key" in stop, stop)
 try:
     rv.make_vector_fn("k", 300, stats={}, session=_Session(code=402))(crop, None, 0.4, 0.27)
     stop2 = ""
 except RuntimeError as e:
     stop2 = str(e)
 check("used-up credits stop the run and say where to top up", "top up" in stop2, stop2)
+for _mode in ("locked", "drop"):
+    try:
+        rv.make_vector_fn("k", 300, stats={}, session=_Session(code=_mode))(crop, None, 0.4, 0.27)
+        _m = ""
+    except RuntimeError as e:
+        _m = str(e)
+    check(f"a locked fal.ai account is named as such ({_mode})",
+          "account is locked" in _m and "Reason: ADMIN" in _m, _m)
 st3 = {}
 check("a server error falls back to the trace",
       rv.make_vector_fn("k", 300, stats=st3, session=_Session(code=500))(crop, None, 0.4, 0.27) is None

@@ -143,6 +143,17 @@ class FalError(RuntimeError):
     pass
 
 
+def _detail(r):
+    """fal.ai's own reason ({"detail": ...}), short."""
+    try:
+        d = r.json().get("detail")
+        if d:
+            return str(d)[:160]
+    except Exception:
+        pass
+    return (r.text or f"HTTP {r.status_code}")[:160]
+
+
 def vectorize_decal(crop_rgba, key, timeout=180.0, session=None):
     """One decal through Recraft Vectorize. Returns the SVG in crop-pixel
     coordinates. Raises FalError with an 'account' flag in the message
@@ -155,13 +166,33 @@ def vectorize_decal(crop_rgba, key, timeout=180.0, session=None):
     sent_w = int(round(crop_rgba.width * scale))
     sent_h = int(round(crop_rgba.height * scale))
     data_uri = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
-    r = http.post(ENDPOINT, json={"image_url": data_uri},
-                  headers={"Authorization": f"Key {key}",
-                           "Content-Type": "application/json"},
-                  timeout=timeout)
+    headers = {"Authorization": f"Key {key}",
+               "Content-Type": "application/json"}
+    try:
+        r = http.post(ENDPOINT, json={"image_url": data_uri}, headers=headers,
+                      timeout=timeout)
+    except Exception as e:
+        # fal.ai refuses an account straight away and drops the connection
+        # while a big picture is still uploading (seen as an SSL EOF):
+        # ask again with a tiny picture to learn the real answer
+        try:
+            tiny = io.BytesIO()
+            Image.new("RGB", (300, 300), KEY_RGB).save(tiny, format="PNG")
+            r = http.post(ENDPOINT, headers=headers, timeout=60, json={
+                "image_url": "data:image/png;base64,"
+                + base64.b64encode(tiny.getvalue()).decode("ascii")})
+        except Exception:
+            raise FalError(f"could not reach fal.ai: {e.__class__.__name__}")
+        if r.status_code == 200:
+            raise FalError(f"the upload was cut off ({e.__class__.__name__})")
     if r.status_code in (401, 403):
-        raise FalError("account: the fal.ai key was rejected — check it with "
-                       "🔑 fal key…")
+        detail = _detail(r)
+        if "lock" in detail.lower():
+            raise FalError("account: fal.ai says the account is locked ("
+                           + detail + ") — open fal.ai/dashboard: add credits "
+                           "or finish the account check there, then retry")
+        raise FalError("account: fal.ai refused the key (" + detail + ") — "
+                       "check it with 🔑 fal key…")
     if r.status_code in (402,) or (r.status_code >= 400 and any(
             w in (r.text or "").lower() for w in ("balance", "credit",
                                                   "insufficient", "billing"))):

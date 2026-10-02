@@ -224,7 +224,7 @@ venv\Scripts\python.exe app\update_ui_test.py     # MAIN gate — builds the rea
                                                   # App (engine/net stubbed), 444 checks
 venv\Scripts\python.exe app\vector_redraw_test.py # vision redraw, fake client (56)
 venv\Scripts\python.exe app\print_export_test.py  # print layout + PDF/PNG/SVG + printing (20)
-venv\Scripts\python.exe app\recraft_test.py         # Recraft vectorize client, fake fal.ai (10)
+venv\Scripts\python.exe app\recraft_test.py         # Recraft vectorize client, fake fal.ai (12)
 venv\Scripts\python.exe app\swap_test.py          # face-swap two-step (22)
 venv\Scripts\python.exe app\variations_test.py    # clones store (18)
 # others: self_update_test, ragmap_test, engine_files_test, startup_test, applog_test, …
@@ -289,7 +289,8 @@ venv\Scripts\python.exe -m PyInstaller build_app\ComicArtCreator.spec ^
    sources and the assembled `release/` must list nothing — the API key lives
    only in the Credential Manager. A hit means stop and clean, never ship.
    Since v2.23 the gate also greps the fal.ai key shape
-   (`[0-9a-f]{8}-…-[0-9a-f]{12}:[0-9a-f]{32}`).
+   (`[0-9a-f]{8}-…-[0-9a-f]{12}:[0-9a-f]{32}` and, since v2.23.2,
+   `fal_sk_<hex>:<hex>` — the shape fal.ai actually issues).
 8. `git add` the **source** files (CHANGELOG, KNOWLEDGE_BASE, app/*.py,
    version_app.txt) — **not** `build_app/` (gitignored) and not the exes/zip
    (gitignored). Commit, `git tag vX.Y.Z`, push `main` + the tag.
@@ -354,7 +355,7 @@ on GitHub).
 
 ## 10. State at handoff
 
-- All test suites green (update_ui 444, vector_redraw 56, print_export 20, recraft 10). Frozen build
+- All test suites green (update_ui 444, vector_redraw 56, print_export 20, recraft 12). Frozen build
   self-test passes (incl. the SDK, fontTools and text outlining frozen).
 - Latest release published to GitHub; dev tree clean (only gitignored build
   artifacts untracked). `Stickers/_final/` holds the user's cleaned sample

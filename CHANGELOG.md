@@ -1,5 +1,12 @@
 # Changelog — AI Image Generator Suite
 
+## v2.23.2 — 2026-10-02
+- **Recraft vectorize says why fal.ai refuses.** A locked fal.ai account
+  ("User is locked") was reported as a rejected key, and a big upload to
+  a locked account ended in a dropped connection. The app now shows
+  fal.ai's own reason and what to do (add credits or finish the account
+  check on the fal.ai dashboard).
+
 ## v2.23.1 — 2026-10-02
 - **Text sweep fixes.** A logo with a solid banner (the white GI JOE
   banners) was taken for plain lettering and replaced by "G.I.JOE" in

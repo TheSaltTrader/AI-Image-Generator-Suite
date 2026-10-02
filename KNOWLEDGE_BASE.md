@@ -1003,6 +1003,18 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **fal.ai account states (v2.23.2).** Live, with the user's real key
+  (shape `fal_sk_<32hex>:<32hex>` — NOT the uuid:hex shape assumed in
+  v2.23.0; the secrets gate now greps both): a tiny request returned 403
+  {"detail":"User is locked. Reason: ADMIN."} = the key is VALID but the
+  account is locked by fal.ai (new account, no credits/verification yet);
+  the whale-sized upload got `SSLEOFError` because fal closes the
+  connection on a refused account while the body is still uploading.
+  `vectorize_decal`: on a connection error it re-asks with a 300 px
+  probe to learn the real status; 401/403 messages carry fal's `detail`;
+  "lock" → "the account is locked … add credits or finish the account
+  check". The key was saved to the Credential Manager for the user. Live
+  Recraft QUALITY still unmeasured until fal unlocks the account.
 - **Text sweep: banners and condensed words (v2.23.1).** User compared a
   run (it was the VISION method — settings decal_method "vision", every
   decal_NN.svg a Claude/text-sweep drawing; Recraft had not run): "danger
