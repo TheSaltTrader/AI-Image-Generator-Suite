@@ -1003,6 +1003,44 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Print export, multi-sheet tiling, transparent vision output, paper
+  colour key, local vision models (v2.20.0).** User: "When using vision to
+  recreate the decals, add the stickers on a transparent background … make
+  sure the bigger decals can now be exported to multiple sheets … Add an
+  export button to multiple formats ready for printing" / "add the best
+  local models for decals in the list" / "select a sheet of paper to glue
+  the stickers on and select the color paper as the transparent color" /
+  "Option should be simple and next to the browse button".
+  `app/print_export.py` (17 checks in print_export_test.py): `Piece`
+  (label, w_in, h_in, svg text, png RGBA) with `crop()` by fractions —
+  the SVG is cropped by viewBox so a tile stays vector;
+  `pieces_from_entry` (redraw → its decal_NN.svg/png files; preview → one
+  piece; processed sheet → `segment_decals` on the PNG, each piece's SVG a
+  viewBox crop of the sheet SVG); `layout` (shelf packing, taller first,
+  tiles anything over the printable area with a 0.2 in overlap); writers:
+  PDF via pymupdf (`open("svg").convert_to_pdf()` + `show_pdf_page` keeps
+  vector; PNG via `insert_image`), PNG pages (RGBA transparent, dpi tag),
+  SVG pages (nested `<svg viewBox>` + embedded PNG). Sizes already include
+  size_scale (every decal entry's size_in does). Vision transparency:
+  `strip_background` drops rects covering ≥ 95% of the viewBox when the
+  scan's corners are clear (`_corners_clear`). Paper colour: one button
+  beside Add files (`decal_paper_swatch`, `_choose_decal_paper` → sample
+  `_sample_decal_paper` → colorchooser on that colour; Cancel = auto);
+  `prep["paper"]` reaches `process_image(carrier=)`, the film colour, and
+  `assess_source(carrier=)`; `prepare_photo(normalize=False)` so the
+  flattening does not turn the paper white. GOTCHA: a page whose border is
+  coloured paper looks like a PHOTO to `looks_like_photo` and the sheet
+  finder crops down to the stickers — when the border already is the
+  picked paper, no crop; the sampler picks the candidate colour covering
+  most of the page (a table only shows at the border). Local models:
+  `MODELS` entries `ollama:<tag>`, `OllamaVision` mimics
+  `client.messages.create` / `client.beta.messages.create` over
+  `/api/chat` (system + images, think false, temperature 0); errors raise
+  "Ollama: …" which `_account_stop` / the vector_fn turn into a run stop;
+  cost 0; `ollama_pull` streams progress. GOTCHA fixed on the way: the
+  orientation helper read the Tk dropdown from a worker thread ("main
+  thread is not in main loop") — the model is now captured on the UI
+  thread. Tests update_ui 414, vector_redraw 48, print_export 17.
 - **Text sweep, enclosed holes, Cancel (v2.19.0).** User: "Can Jev AI be
   used to do a quick sweep with AI vision to analyse that decals use
   letters or numbers and have IA recreate those with the correct font

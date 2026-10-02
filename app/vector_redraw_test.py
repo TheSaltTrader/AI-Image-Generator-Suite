@@ -305,6 +305,71 @@ except RuntimeError as _e:
     _stopped = "usage limit" in str(_e).lower() or "stopped the calls" in str(_e).lower()
 check("a usage-limit error stops the text sweep too", _stopped)
 
+print("transparent background")
+_bg_svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 100">'
+           '<rect x="0" y="0" width="200" height="100" fill="#aab9c3"/>'
+           '<rect width="100%" height="100%" fill="#ffffff"></rect>'
+           '<rect x="20" y="20" width="60" height="60" fill="#cc1020"/></svg>')
+_nobg = vr.strip_background(_bg_svg, 200, 100)
+check("full-canvas backdrops are removed, the decal's own shapes stay",
+      _nobg.count("<rect") == 1 and 'fill="#cc1020"' in _nobg, _nobg)
+_clear = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+_clear.paste((200, 20, 30, 255), (20, 20, 80, 80))
+_panel = Image.new("RGBA", (100, 100), (20, 20, 20, 255))
+check("a decal with clear corners is stripped; a filled panel is not",
+      vr._corners_clear(_clear) and not vr._corners_clear(_panel))
+
+print("local models (Ollama)")
+import requests as _rq
+_posted = []
+
+
+class _OResp:
+    status_code = 200
+
+    def __init__(self, text):
+        self._t = text
+
+    def json(self):
+        return {"message": {"content": self._t}, "prompt_eval_count": 900, "eval_count": 120}
+
+
+_orig_post = _rq.post
+try:
+    _rq.post = lambda url, json=None, timeout=None, **k: (_posted.append((url, json)), _OResp(_json.dumps(_read)))[1]
+    _ov = vr.OllamaVision(base_url="http://127.0.0.1:11434")
+    _rr = vr.read_text_decal(_tcrop, 2, palette=[(206, 22, 30)], model="ollama:qwen3-vl:8b", client=_ov)
+    _u, _b = _posted[-1]
+    check("the Ollama client sends the same ask: model tag, system, the image, no thinking",
+          _u.endswith("/api/chat") and _b["model"] == "qwen3-vl:8b" and _b["messages"][0]["role"] == "system"
+          and _b["messages"][1].get("images") and _b["think"] is False
+          and _rr["lines"][0]["text"] == "DANGER" and _rr["cost_usd"] == 0.0, _b.get("model"))
+    _rq.post = lambda url, json=None, timeout=None, **k: (_posted.append((url, json)), _OResp(
+        '<svg viewBox="0 0 100 100" width="1in" height="1in"><rect x="20" y="20" width="60" height="60" fill="#c8141e"/></svg>'))[1]
+    _st3 = {}
+    _vfn = vr.make_vector_fn(_ov, "ollama:qwen3-vl:8b", 300, stats=_st3)
+    _gotv = _vfn(_clear, [(200, 20, 30)], 1.0, 1.0)
+    check("a local model draws through the same vector_fn, at no cost",
+          _gotv is not None and _st3["ok"] == 1 and _st3["cost"] == 0.0, _st3)
+
+    class _Missing:
+        status_code = 404
+
+        def json(self):
+            return {"error": "model 'qwen3-vl:32b' not found"}
+        text = "not found"
+    _rq.post = lambda url, json=None, timeout=None, **k: _Missing()
+    try:
+        vr.make_vector_fn(vr.OllamaVision(), "ollama:qwen3-vl:32b", 300, stats={})(_clear, None, 1.0, 1.0)
+        _stop = ""
+    except RuntimeError as _e:
+        _stop = str(_e)
+    check("a model that is not pulled stops the run and says how to get it",
+          "not installed" in _stop and "Pull" in _stop, _stop)
+finally:
+    _rq.post = _orig_post
+check("a local model costs nothing", vr.estimate_cost("ollama:gemma3:27b", None) == 0.0)
+
 print("the key store")
 t = "AIImageGeneratorSuite/_test_vr"
 check("write/read/delete round trip in the Credential Manager",

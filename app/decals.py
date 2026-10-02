@@ -256,7 +256,7 @@ def normalize_photo(img, white=250):
     return Image.fromarray(out.astype(np.uint8), "RGB"), tuple(int(v) for v in mode)
 
 
-def prepare_photo(img, rotate=0, auto_crop=True):
+def prepare_photo(img, rotate=0, auto_crop=True, normalize=True):
     """A photographed sheet made scan-like: the sheet found and straightened
     (when the border is not the sheet), its lighting flattened and the sheet
     set to white, then rotated by `rotate` degrees (0/90/180/270, counter-
@@ -277,7 +277,9 @@ def prepare_photo(img, rotate=0, auto_crop=True):
                          "table showing all round it")
         else:
             note = "photo: no sheet found — using the whole picture"
-        out, sheet = normalize_photo(out)
+        # normalize=False when the user named the paper colour to key:
+        # flattening would turn that paper white
+        out, sheet = normalize_photo(out) if normalize else (out, None)
         if sheet is not None:
             note += "; lighting flattened, sheet set to white"
     r = int(rotate) % 360
@@ -300,7 +302,7 @@ def _blockiness(gray):
 
 
 def assess_source(img, native_dpi=300, gap_px=None, raw=None, kind=None,
-                  photo=False, orientation=None, dpi_known=True):
+                  photo=False, orientation=None, dpi_known=True, carrier=None):
     """Judge a page BEFORE converting: what it is (scan or photo), how
     much detail it holds, how clean, and how each redraw method is likely
     to fare — with a plain recommendation. `img` is the prepared page
@@ -316,7 +318,9 @@ def assess_source(img, native_dpi=300, gap_px=None, raw=None, kind=None,
     if kind is None:
         kind = "photo" if (photo or looks_like_photo(rgb)) else "scan"
     photo = photo or kind == "photo"
-    carrier = PHOTO_WHITE if photo else detect_carrier(rgb)
+    paper = carrier                         # a colour the user named
+    if carrier is None:
+        carrier = PHOTO_WHITE if photo else detect_carrier(rgb)
     neutral = is_neutral_carrier(carrier)
     g = np.asarray(rgb.convert("L")).astype(np.float32)
     lap = (-4 * g[1:-1, 1:-1] + g[:-2, 1:-1] + g[2:, 1:-1]
@@ -341,7 +345,8 @@ def assess_source(img, native_dpi=300, gap_px=None, raw=None, kind=None,
         gap_px = max(4, int(round(native_dpi / 25.4)))      # 1 mm
     res = process_image(rgb, mode="cleanup", remove_bg=True, denoise=0,
                         tol=52, target_dpi=native_dpi, native_dpi=native_dpi,
-                        exact=True, tidy_matte=True, photo=photo)
+                        exact=True, tidy_matte=True, photo=photo,
+                        carrier=paper)
     rgba = res["rgba"]
     al = np.asarray(rgba)[..., 3] > 96
     opaque_share = float(al.mean())
@@ -405,15 +410,19 @@ def assess_source(img, native_dpi=300, gap_px=None, raw=None, kind=None,
     if block >= 1.6:
         lines.append(f"Compression: heavy JPEG blocking ({block:.2f}) — "
                      "transfer the picture at full quality")
+    if paper is not None:
+        lines.append("Backing: the paper colour you picked (#%02x%02x%02x) "
+                     "is keyed to transparent" % tuple(int(v) for v in paper))
     if photo:
         lines.append("Lighting: " + ("even" if light_std < 10 else
                                      "uneven" if light_std < 25 else
                                      "glare / strong gradient — the "
                                      "background cannot be keyed cleanly")
                      + f" (σ {light_std:.0f}, after flattening)")
-        lines.append("Backing: a photographed sheet is keyed as white — "
-                     "white-ink decals cannot be separated and are left out")
-    else:
+        if paper is None:
+            lines.append("Backing: a photographed sheet is keyed as white — "
+                         "white-ink decals cannot be separated and are left out")
+    elif paper is None:
         lines.append("Backing: " + ("white paper — white-ink decals cannot be "
                                     "separated and are left out" if neutral else
                                     "tinted film — white ink is kept"))

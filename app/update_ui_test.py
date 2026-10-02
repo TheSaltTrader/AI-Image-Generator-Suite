@@ -1963,6 +1963,99 @@ except Exception as _e:
     check("photo mode runs headless", False, repr(_e))
 
 # ---- taskbar identity (v2.16.1) -------------------------------------------
+# ---- print export + local vision models (v2.20) -----------------------------
+print("print export, local models")
+try:
+    _old_out = app.DECALS_OUT
+    _pe_root = app.Path(str(_fs_tmp)) / "print_root"
+    app.DECALS_OUT = _pe_root
+    ui._no_open_folders = True
+    check("the Decals tab has Export for print and Pull local model",
+          hasattr(ui, "decal_export_btn") and hasattr(ui, "decal_pull_btn"))
+    # a decal result: a 2 x 1 in sheet with two decals
+    _pe_png = app.Path(str(_fs_tmp)) / "pe_sheet.png"
+    _pe_img = app.Image.new("RGBA", (600, 300), (0, 0, 0, 0))
+    app.ImageDraw.Draw(_pe_img).rectangle([20, 20, 220, 120], fill=(204, 16, 32, 255))
+    app.ImageDraw.Draw(_pe_img).ellipse([300, 40, 560, 280], fill=(16, 64, 204, 255))
+    _pe_img.save(_pe_png)
+    _pe_prm = {"model": "decal", "seed": "pe_sheet", "user_prompt": "pe_sheet",
+               "png": str(_pe_png), "film": (205, 215, 225), "size_in": (2.0, 1.0),
+               "src": "x.pdf", "page": "pe_sheet", "kind": "process", "src_dpi": 300}
+    ui.ui_queue.put(("decal_add", _pe_img.convert("RGB"), _pe_prm, str(_pe_png)))
+    ui._poll_queue(); root.update()
+    _ents = ui._print_export_entries("all")
+    check("every decal result in the gallery is offered for print",
+          any(e.get("seed") == "pe_sheet" for e in _ents)
+          and ui._print_export_entries("selected")[-1].get("seed") == "pe_sheet")
+    _dlg = ui._open_print_export()
+    root.update()
+    check("the Export dialog opens", _dlg is not None and _dlg.winfo_exists())
+    _dlg.destroy()
+    ui._run_print_export([_pe_prm], dict(paper="Letter 8.5 × 11 in", landscape=False,
+                                         margin_mm=10.0, gap_mm=3.0, formats=("pdf", "png"),
+                                         dpi=100), sync=True)
+    ui._poll_queue(); root.update()
+    _pres = getattr(ui, "_last_print_export", None)
+    check("Export writes a PDF and PNG pages and reports it",
+          _pres is not None and _pres["pieces"] == 2 and _pres["pages"] == 1
+          and any(f.endswith(".pdf") for f in _pres["files"])
+          and "Exported 2 decal(s)" in ui.decal_status_var.get(), ui.decal_status_var.get())
+    # a figure-scale enlargement bigger than the page is tiled, not shrunk
+    _big_prm = dict(_pe_prm, seed="pe_big", kind="preview", size_in=(14.0, 7.0))
+    ui._run_print_export([_big_prm], dict(paper="Letter 8.5 × 11 in", landscape=False,
+                                          margin_mm=10.0, gap_mm=3.0, formats=("pdf",),
+                                          dpi=100), sync=True)
+    ui._poll_queue(); root.update()
+    _pres2 = ui._last_print_export
+    check("a decal bigger than the page is split across pages at full size",
+          _pres2["pieces"] == 1 and _pres2["tiles"] >= 2 and _pres2["pages"] >= 2, _pres2)
+    # local models: listed, no key needed, the client is Ollama's
+    _locals = [m for _l, m in app.vector_redraw.MODELS if app.vector_redraw.is_local(m)]
+    check("local vision models are in the list (Qwen3-VL, Gemma 3, Mistral Small)",
+          "ollama:qwen3-vl:32b" in _locals and "ollama:qwen3-vl:8b" in _locals
+          and any("gemma3" in m for m in _locals) and any("mistral-small" in m for m in _locals))
+    ui.decal_vision_model_var.set("Qwen3-VL 8B — local, fast (6 GB)")
+    check("picking one gives its Ollama id", ui._vision_model_id() == "ollama:qwen3-vl:8b")
+    ui.decal_vision_model_var.set(app.vector_redraw.MODELS[0][0])
+    app.DECALS_OUT = _old_out
+    # stickers glued on green paper: the paper colour is keyed out
+    check("the paper-colour button sits beside Add files, auto by default",
+          hasattr(ui, "decal_paper_swatch") and ui._decal_paper_rgb() is None
+          and "auto" in str(ui.decal_paper_swatch.cget("text"))
+          and str(ui.decal_paper_swatch.master) == str(ui.decal_count_var and ui.decal_paper_swatch.master))
+    _gp = app.Image.new("RGB", (300, 200), (40, 170, 70))
+    _gd = app.ImageDraw.Draw(_gp)
+    _gd.rectangle([30, 30, 130, 130], fill=(200, 20, 30))
+    _gd.rectangle([160, 40, 260, 140], fill=(250, 250, 250))       # a white-ink sticker
+    _gpath = app.Path(str(_fs_tmp)) / "green_paper.png"
+    _gp.save(_gpath)
+    ui.decal_sources = [str(_gpath)]
+    ui._sample_decal_paper(sync=True)
+    ui._poll_queue(); root.update()
+    check("💧 reads the paper colour off the page and shows it",
+          ui._decal_paper_rgb() is not None
+          and sum(abs(a - b) for a, b in zip(ui._decal_paper_rgb(), (40, 170, 70))) < 12
+          and "#" in str(ui.decal_paper_swatch.cget("text")), ui._decal_paper_rgb())
+    _prepg = ui._decal_source_prep()
+    _imgp, _dpip, _np_, _php = ui._prepare_source(_gp, _prepg, 300)
+    _resg = _dec.process_image(_imgp, mode="cleanup", remove_bg=True, denoise=0, tol=52,
+                               target_dpi=300, native_dpi=300, exact=True, tidy_matte=True,
+                               photo=_php, carrier=_prepg["paper"])
+    _ga = _np6.asarray(_resg["rgba"])
+    check("the green paper becomes transparent; the red AND the white stickers stay",
+          _ga[10, 10, 3] == 0 and _ga[80, 80, 3] == 255 and _ga[90, 210, 3] == 255
+          and _ga[90, 210, 0] > 240, (_ga[10, 10], _ga[80, 80], _ga[90, 210]))
+    _rg = _dec.assess_source(_imgp, native_dpi=300, carrier=_prepg["paper"])
+    check("the quality report names the picked paper colour",
+          any("paper colour you picked" in ln for ln in _rg["report"]), _rg["report"])
+    ui._set_decal_paper(None)
+    check("Auto clears it", ui._decal_paper_rgb() is None and "auto" in str(ui.decal_paper_swatch.cget("text")))
+    ui.decal_sources = []
+except Exception as _e:
+    import traceback
+    traceback.print_exc()
+    check("print export / local models run headless", False, repr(_e))
+
 # ---- enclosed holes + text sweep + cancel (v2.19) --------------------------
 print("holes, text sweep, cancel")
 try:

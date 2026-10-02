@@ -99,6 +99,7 @@ from PIL.PngImagePlugin import PngInfo
 import self_update
 import vector_redraw
 import compare_view
+import print_export
 import engine_files
 import applog
 import decals
@@ -106,7 +107,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.19.0"
+APP_VERSION = "2.20.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -5222,6 +5223,19 @@ class App:
                    command=self._add_decal_sources).pack(side="left")
         ttk.Button(srow, text="🗑 Clear",
                    command=self._clear_decal_sources).pack(side="left", padx=(6, 0))
+        # stickers glued on coloured paper: that colour becomes transparent
+        self.decal_paper_var = StringVar(value="")
+        self.decal_paper_swatch = ttk.Button(srow, text="🎨 Paper: auto",
+                                             command=self._choose_decal_paper)
+        self.decal_paper_swatch.pack(side="left", padx=(6, 0))
+        self._tip(self.decal_paper_swatch,
+                  "Stickers glued on a sheet of coloured paper? Click: the "
+                  "paper's colour is read off the first file and shown in "
+                  "the colour picker — OK makes that colour TRANSPARENT in "
+                  "everything made from the page; Cancel = auto (the "
+                  "sheet's own film / white paper). Pick a paper colour that "
+                  "is in none of the stickers (bright green or blue for "
+                  "red/black/white decals) and white ink survives too.")
         self.decal_count_var = StringVar(value="no files added")
         ttk.Label(srow, textvariable=self.decal_count_var,
                   style="Dim.TLabel").pack(side="left", padx=(8, 0))
@@ -5486,7 +5500,7 @@ class App:
         ttk.Label(vrow, text="Vision model", style="Dim.TLabel").pack(side="left")
         self.decal_vision_model_var = StringVar(value=vector_redraw.MODELS[0][0])
         ttk.Combobox(vrow, textvariable=self.decal_vision_model_var,
-                     state="readonly", exportselection=False, width=26,
+                     state="readonly", exportselection=False, width=34,
                      values=[lab for lab, _m in vector_redraw.MODELS]).pack(
             side="left", padx=(6, 6))
         self.decal_key_btn = ttk.Button(vrow, text="🔑 API key…",
@@ -5499,6 +5513,21 @@ class App:
                         "Roughly 1–4 cents per decal. The key is yours, from "
                         "console.anthropic.com; it never leaves this machine "
                         "except to call the API.")
+        lrow = ttk.Frame(left); lrow.grid(row=r, sticky="ew", pady=(0, 2)); r += 1
+        self.decal_pull_btn = ttk.Button(lrow, text="⬇ Pull local model",
+                                         command=self._pull_local_vision_model)
+        self.decal_pull_btn.pack(side="left")
+        self.decal_local_lab = ttk.Label(lrow, text="", style="Dim.TLabel")
+        self.decal_local_lab.pack(side="left", padx=(6, 0))
+        self._tip(lrow, "The 'local' models run on this PC through Ollama "
+                        "(ollama.com): free and private, no key. They read "
+                        "lettering well (the text sweep, which way is up) but "
+                        "draw decals as SVG far less reliably than Claude — "
+                        "more decals fall back to the clean trace. Use the ⇄ "
+                        "Compare window to judge them side by side. Pull "
+                        "downloads the chosen one; it needs about its size "
+                        "in free VRAM, so don't run Re-imagine at the same "
+                        "time.")
         grow = ttk.Frame(left); grow.grid(row=r, sticky="ew", pady=(2, 2)); r += 1
         ttk.Label(grow, text="Group nearby pieces within",
                   style="Dim.TLabel").pack(side="left")
@@ -5541,6 +5570,16 @@ class App:
             left, text="⇄ Compare with the original",
             command=self._open_decal_compare)
         self.decal_compare_btn.grid(row=r, sticky="ew", pady=(0, 2)); r += 1
+        self.decal_export_btn = ttk.Button(
+            left, text="🖨 Export for print…", command=self._open_print_export)
+        self.decal_export_btn.grid(row=r, sticky="ew", pady=(0, 2)); r += 1
+        self._tip(self.decal_export_btn,
+                  "Lay the decal results out on printable pages at their true "
+                  "size — the figure-scale conversion included — as a PDF "
+                  "(vector where the decal is vector), transparent PNG pages "
+                  "and/or SVG pages. A decal bigger than the page is split "
+                  "across pages with a small overlap. Print at 100% "
+                  "('actual size'), never 'fit to page'.")
         self._tip(self.decal_compare_btn,
                   "The decal result picked in the gallery beside the original "
                   "it came from (the page, or that decal's own region), on "
@@ -5651,7 +5690,89 @@ class App:
             mm = float(self.decal_width_mm_var.get() or 0)
         except Exception:
             mm = 0.0
-        return {"width_mm": mm if mm > 0 else None}
+        return {"width_mm": mm if mm > 0 else None,
+                "paper": self._decal_paper_rgb()}
+
+    def _decal_paper_rgb(self):
+        """The paper colour the user picked to key out, as (r, g, b), or
+        None for automatic."""
+        v = (self.decal_paper_var.get() if hasattr(self, "decal_paper_var")
+             else "").strip()
+        m = re.fullmatch(r"#?([0-9a-fA-F]{6})", v)
+        if not m:
+            return None
+        h = m.group(1)
+        return tuple(int(h[k:k + 2], 16) for k in (0, 2, 4))
+
+    def _set_decal_paper(self, rgb):
+        """Show a picked paper colour (None = automatic) on the button."""
+        if rgb is None:
+            self.decal_paper_var.set("")
+            self.decal_paper_swatch.configure(text="🎨 Paper: auto")
+        else:
+            hx = "#%02x%02x%02x" % tuple(int(v) for v in rgb)
+            self.decal_paper_var.set(hx)
+            self.decal_paper_swatch.configure(text=f"🎨 Paper: {hx} ■")
+
+    def _choose_decal_paper(self):
+        """🎨 Paper: read the paper colour off the first file, open the
+        colour picker on it; OK keys that colour out, Cancel = auto."""
+        if self.decal_sources and not self.decal_paper_var.get():
+            self._sample_decal_paper(then_pick=True)
+        else:
+            self._pick_decal_paper()
+
+    def _pick_decal_paper(self, start=None):
+        from tkinter import colorchooser
+        cur = start or self.decal_paper_var.get() or "#2e8b57"
+        got = colorchooser.askcolor(color=cur, parent=self.root,
+                                    title="Colour of the paper to make "
+                                          "transparent (Cancel = auto)")
+        if got and got[0]:
+            self._set_decal_paper(tuple(int(v) for v in got[0]))
+            self.decal_status_var.set("Paper colour set — it becomes "
+                                      "transparent when you Process or Redraw.")
+        else:
+            self._set_decal_paper(None)
+            self.decal_status_var.set("Paper colour: auto.")
+
+    def _sample_decal_paper(self, sync=False, then_pick=False):
+        """💧: read the paper colour off the first queued page (a photo is
+        cropped to its sheet first), so it can be fine-tuned with 🎨."""
+        if not self.decal_sources:
+            self.decal_status_var.set("Add the photo or scan of the paper "
+                                      "first, then 💧 From the page.")
+            return
+        src = self.decal_sources[0]
+        ui_q = self.ui_queue
+
+        def work():
+            try:
+                import numpy as np
+                for _label, raw, _dpi in decals.iter_sources(src):
+                    cands = [decals.detect_carrier(raw)]
+                    if decals.looks_like_photo(raw):
+                        img, _n = decals.prepare_photo(raw, auto_crop=True,
+                                                       normalize=False)
+                        cands.append(decals.detect_carrier(img))
+                    # the paper is the candidate that covers most of the
+                    # page (a table only shows at the border)
+                    a = np.asarray(raw.convert("RGB").resize(
+                        (max(1, raw.width // 4), max(1, raw.height // 4)))).astype(np.int32)
+
+                    def share(c):
+                        d = np.sqrt(((a - np.array(c, np.int32)) ** 2).sum(2))
+                        return float((d < 60).mean())
+                    ui_q.put(("decal_paper", max(cands, key=share), then_pick))
+                    break
+            except Exception as e:
+                applog.exception("paper sample failed")
+                ui_q.put(("decal_status", f"Could not read the paper colour: {e}"))
+
+        if sync:
+            work()
+        else:
+            threading.Thread(target=work, daemon=True).start()
 
     @staticmethod
     def _prepare_source(img, prep, file_dpi, rotate=0):
@@ -5663,8 +5784,16 @@ class App:
         the image header) — a photo has none, so there it comes from the
         sheet width, and without either 300 is assumed and said so.
         Returns (image, dpi, note, is_photo)."""
+        paper = prep.get("paper")
         photo = decals.looks_like_photo(img)
-        img, note = decals.prepare_photo(img, rotate=rotate, auto_crop=True)
+        if paper is not None and photo:
+            # the border IS the picked paper: a scan/photo filling the frame
+            # with that paper — nothing to crop
+            b = decals.detect_carrier(img)
+            if sum((int(b[k]) - int(paper[k])) ** 2 for k in range(3)) ** 0.5 < 60:
+                photo = False
+        img, note = decals.prepare_photo(img, rotate=rotate, auto_crop=photo,
+                                         normalize=paper is None)
         dpi = None
         if prep.get("width_mm"):
             d = decals.dpi_from_width(img.width, prep["width_mm"])
@@ -5678,7 +5807,7 @@ class App:
             note = (note + "; " if note else "") + (
                 "no resolution in the file — 300 dpi assumed"
                 + (" (type the sheet width in mm for true sizes)" if photo else ""))
-        return img, dpi, note, photo
+        return img, dpi, note, (photo and paper is None)
 
     def _decal_orientation(self, src, label, img, client=None, model=None):
         """The counter-clockwise rotation (0/90/180/270) that makes the
@@ -5690,11 +5819,14 @@ class App:
         if key in cache:
             return cache[key]
         rot = 0
+        model = model or vector_redraw.DEFAULT_MODEL   # never read Tk here
         try:
+            if client is None and vector_redraw.is_local(model):
+                client = vector_redraw.OllamaVision(timeout=180.0)
             if client is not None or vector_redraw.get_api_key():
                 probe, _n = decals.prepare_photo(img, rotate=0, auto_crop=True)
-                rot = vector_redraw.ask_orientation(
-                    probe, model=model or self._vision_model_id(), client=client)
+                rot = vector_redraw.ask_orientation(probe, model=model,
+                                                    client=client)
         except Exception:
             applog.exception("orientation ask failed; the page is left as is")
             rot = 0
@@ -5706,6 +5838,7 @@ class App:
         headline per page in the status, the full text behind the
         📋 Quality report button. Runs automatically on Add files."""
         prep = self._decal_source_prep()
+        vmodel = self._vision_model_id()
         ui_q = self.ui_queue
 
         def work():
@@ -5713,12 +5846,14 @@ class App:
             for p in paths:
                 try:
                     for label, raw, file_dpi in decals.iter_sources(p):
-                        rot = self._decal_orientation(p, label, raw)
+                        rot = self._decal_orientation(p, label, raw,
+                                                      model=vmodel)
                         img, dpi, note, photo = self._prepare_source(
                             raw, prep, file_dpi, rotate=rot)
                         r = decals.assess_source(img, native_dpi=dpi, raw=raw,
                                                  kind="photo" if photo else "scan",
-                                                 photo=photo, orientation=rot)
+                                                 photo=photo, orientation=rot,
+                                                 carrier=prep.get("paper"))
                         lines = [f"— {label} —"] + ([note] if note else []) + r["report"]
                         reports.append((label, r, lines))
                 except Exception as e:
@@ -5819,6 +5954,7 @@ class App:
                     fill_holes=self.decal_holes_var.get())
         srcs = [only] if only else list(self.decal_sources)
         prep = self._decal_source_prep()
+        vmodel_p = self._vision_model_id()
         vector = opts["mode"] == "vector"
         ai_warn = ai and not engine_alive()
         self._decals_busy = True
@@ -5847,7 +5983,8 @@ class App:
                         if CANCEL.is_set():
                             err = "cancelled"
                             break
-                        rot = self._decal_orientation(src, label, raw)
+                        rot = self._decal_orientation(src, label, raw,
+                                                      model=vmodel_p)
                         img, src_dpi, pnote, photo = self._prepare_source(
                             raw, prep, file_dpi, rotate=rot)
                         if pnote:
@@ -5858,7 +5995,7 @@ class App:
                         final_factor = size_scale * max(1.0, tgt_dpi / float(src_dpi))
                         o = dict(opts, native_dpi=src_dpi,
                                  target_dpi=(src_dpi if ai else tgt_dpi),
-                                 photo=photo)
+                                 photo=photo, carrier=prep.get("paper"))
                         res = decals.process_image(img, **o)
                         rgba = res["rgba"]
                         dpi_out = tgt_dpi
@@ -5869,8 +6006,9 @@ class App:
                             if up is rgba:
                                 dpi_out = src_dpi   # the AI step was skipped
                             rgba = up
-                        film = (decals.PHOTO_WHITE if photo
-                                else decals.detect_carrier(img))
+                        film = (prep.get("paper") or
+                                (decals.PHOTO_WHITE if photo
+                                 else decals.detect_carrier(img)))
                         out_png = DECALS_OUT / f"{label}.png"
                         # the PNG carries its print resolution, so it opens
                         # and prints at the right physical size
@@ -5938,6 +6076,172 @@ class App:
             if name == lab:
                 return mid
         return vector_redraw.DEFAULT_MODEL
+
+    # ---- local vision models (Ollama) ------------------------------------
+    def _pull_local_vision_model(self):
+        """⬇ Pull: download the chosen local model into Ollama, with the
+        progress in the Decals status line."""
+        mid = self._vision_model_id()
+        if not vector_redraw.is_local(mid):
+            self.decal_status_var.set("Pick one of the 'local' models in the "
+                                      "Vision model list first — the Claude "
+                                      "models need no download.")
+            return
+        tag = vector_redraw.local_tag(mid)
+        ui_q = self.ui_queue
+        self.decal_pull_btn.state(["disabled"])
+        self.decal_status_var.set(f"Pulling {tag} into Ollama…")
+
+        def work():
+            try:
+                if vector_redraw.ollama_vision_models() is None:
+                    raise RuntimeError("Ollama is not running — install it from "
+                                       "ollama.com and start it, then Pull again")
+                vector_redraw.ollama_pull(
+                    tag, progress=lambda t: ui_q.put(
+                        ("decal_status", f"Pulling {tag}: {t}")))
+                ui_q.put(("decal_status", f"{tag} is ready — pick it and run "
+                                          "Preview one decal to judge it."))
+            except Exception as e:
+                applog.exception("ollama pull failed")
+                ui_q.put(("decal_status", f"Pull failed: {e}"))
+            ui_q.put(("decal_pull_done",))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # ---- export for print ------------------------------------------------
+    def _print_export_entries(self, which="all"):
+        """The decal results to print: the one picked in the gallery, or
+        every decal result in this session (newest last)."""
+        out = []
+        rows = self.session if which == "all" else (
+            [self.session[self.current]] if self.current is not None
+            and self.session else [])
+        seen = set()
+        for _img, params, _path in rows:
+            if (isinstance(params, dict) and params.get("model") == "decal"
+                    and params.get("png")
+                    and Path(str(params["png"])).exists()):
+                key = str(params.get("svg") or params["png"])
+                if key not in seen:
+                    seen.add(key)
+                    out.append(params)
+        return out
+
+    def _open_print_export(self):
+        """The Export for print dialog."""
+        win = Toplevel(self.root)
+        win.title("Export decals for print")
+        win.configure(bg=BG)
+        win.transient(self.root)
+        f = ttk.Frame(win, padding=12)
+        f.pack(fill="both", expand=True)
+        r = 0
+        n_all = len(self._print_export_entries("all"))
+        n_sel = len(self._print_export_entries("selected"))
+        which = StringVar(value="all" if n_all else "selected")
+        ttk.Label(f, text="Decals to print", style="Head.TLabel").grid(
+            row=r, column=0, columnspan=3, sticky=W); r += 1
+        ttk.Radiobutton(f, text=f"Every decal result in the gallery ({n_all})",
+                        variable=which, value="all").grid(
+            row=r, column=0, columnspan=3, sticky=W); r += 1
+        ttk.Radiobutton(f, text=f"Only the one picked in the gallery ({n_sel})",
+                        variable=which, value="selected").grid(
+            row=r, column=0, columnspan=3, sticky=W); r += 1
+        ttk.Label(f, text="Paper").grid(row=r, column=0, sticky=W, pady=(8, 0))
+        paper = StringVar(value=getattr(self, "_print_paper", print_export.PAPERS[0][0]))
+        ttk.Combobox(f, textvariable=paper, state="readonly", width=22,
+                     values=[p[0] for p in print_export.PAPERS]).grid(
+            row=r, column=1, sticky=W, pady=(8, 0))
+        landscape = BooleanVar(value=False)
+        ttk.Checkbutton(f, text="Landscape", variable=landscape).grid(
+            row=r, column=2, sticky=W, padx=(8, 0), pady=(8, 0)); r += 1
+        ttk.Label(f, text="Margin (mm)").grid(row=r, column=0, sticky=W)
+        margin = DoubleVar(value=10.0)
+        ttk.Spinbox(f, from_=3.0, to=30.0, increment=1.0, width=6,
+                    textvariable=margin).grid(row=r, column=1, sticky=W); r += 1
+        ttk.Label(f, text="Gap between decals (mm)").grid(row=r, column=0, sticky=W)
+        gap = DoubleVar(value=3.0)
+        ttk.Spinbox(f, from_=1.0, to=15.0, increment=0.5, width=6,
+                    textvariable=gap).grid(row=r, column=1, sticky=W); r += 1
+        ttk.Label(f, text="Formats", style="Head.TLabel").grid(
+            row=r, column=0, columnspan=3, sticky=W, pady=(8, 0)); r += 1
+        fmt_pdf = BooleanVar(value=True)
+        fmt_png = BooleanVar(value=True)
+        fmt_svg = BooleanVar(value=False)
+        ttk.Checkbutton(f, text="PDF (one document, vector where possible)",
+                        variable=fmt_pdf).grid(row=r, column=0, columnspan=3,
+                                               sticky=W); r += 1
+        prow = ttk.Frame(f); prow.grid(row=r, column=0, columnspan=3, sticky=W); r += 1
+        ttk.Checkbutton(prow, text="PNG pages (transparent) at",
+                        variable=fmt_png).pack(side="left")
+        dpi = StringVar(value="600")
+        ttk.Combobox(prow, textvariable=dpi, state="readonly", width=6,
+                     values=["300", "600", "1200"]).pack(side="left", padx=(6, 4))
+        ttk.Label(prow, text="dpi").pack(side="left")
+        ttk.Checkbutton(f, text="SVG pages (for a cutter / Inkscape)",
+                        variable=fmt_svg).grid(row=r, column=0, columnspan=3,
+                                               sticky=W); r += 1
+        ttk.Label(f, text="Every decal is printed at its true size — the "
+                          "figure-scale conversion included. One bigger than "
+                          "the page is split across pages with a 0.2 in "
+                          "overlap. Print at 100% ('actual size').",
+                  style="Dim.TLabel", wraplength=380, justify="left").grid(
+            row=r, column=0, columnspan=3, sticky=W, pady=(8, 4)); r += 1
+        brow = ttk.Frame(f); brow.grid(row=r, column=0, columnspan=3, sticky="e",
+                                       pady=(6, 0))
+
+        def go():
+            fmts = tuple(k for k, v in (("pdf", fmt_pdf), ("png", fmt_png),
+                                        ("svg", fmt_svg)) if v.get())
+            if not fmts:
+                self.decal_status_var.set("Pick at least one format.")
+                return
+            entries = self._print_export_entries(which.get())
+            if not entries:
+                self.decal_status_var.set(
+                    "No decal result to print — Process, Preview or Redraw a "
+                    "sheet first (or pick one in the gallery).")
+                return
+            self._print_paper = paper.get()
+            try:
+                opts = dict(paper=paper.get(), landscape=landscape.get(),
+                            margin_mm=float(margin.get()), gap_mm=float(gap.get()),
+                            formats=fmts, dpi=int(dpi.get()))
+            except Exception:
+                self.decal_status_var.set("Check the margin and gap numbers.")
+                return
+            win.destroy()
+            self._run_print_export(entries, opts)
+
+        ttk.Button(brow, text="Cancel", command=win.destroy).pack(side="right")
+        ttk.Button(brow, text="🖨 Export", style="Go.TButton",
+                   command=go).pack(side="right", padx=(0, 6))
+        self._print_dialog = win
+        return win
+
+    def _run_print_export(self, entries, opts, sync=False):
+        """Write the print files off the UI thread (sync=True for tests);
+        the result is reported in the Decals status and the folder opened."""
+        ui_q = self.ui_queue
+        out_root = DECALS_OUT / "print"
+
+        def work():
+            try:
+                res = print_export.export(
+                    entries, out_root,
+                    progress=lambda t: ui_q.put(("decal_status", "Export — " + t)),
+                    **opts)
+                ui_q.put(("decal_print_done", res, None))
+            except Exception as e:
+                applog.exception("print export failed")
+                ui_q.put(("decal_print_done", None, str(e)))
+
+        self.decal_status_var.set("Export — laying the decals out…")
+        if sync:
+            work()
+        else:
+            threading.Thread(target=work, daemon=True).start()
 
     # ---- Compare with the original -------------------------------------
     def _open_decal_compare(self):
@@ -6150,7 +6454,7 @@ class App:
                                           "tab first — Re-imagine draws with it.")
                 return
         vmodel = self._vision_model_id()
-        if method == "vision":
+        if method == "vision" and not vector_redraw.is_local(vmodel):
             if not vector_redraw.have_sdk():
                 self.decal_status_var.set("This build has no Anthropic SDK — "
                                           "the vision method is unavailable.")
@@ -6260,20 +6564,27 @@ class App:
             vector_fn = None
             client = None
             if method == "vision":
-                import anthropic
-                client = anthropic.Anthropic(api_key=vector_redraw.get_api_key(),
-                                             timeout=180.0)
+                if vector_redraw.is_local(vmodel):
+                    client = vector_redraw.OllamaVision(timeout=900.0)
+                else:
+                    import anthropic
+                    client = anthropic.Anthropic(
+                        api_key=vector_redraw.get_api_key(), timeout=180.0)
                 vector_fn = vector_redraw.make_vector_fn(
                     client, vmodel, tgt_dpi, hint=hint, stats=stats,
                     cancelled=CANCEL.is_set, log=applog.log)
             text_fn = None
-            if text_sweep and vector_redraw.get_api_key():
+            if text_sweep and (vector_redraw.is_local(vmodel)
+                               or vector_redraw.get_api_key()):
                 # lettering-only decals: read the words, set them in type
                 # (any method — the trace has no text handling of its own)
                 if client is None:
-                    import anthropic
-                    client = anthropic.Anthropic(
-                        api_key=vector_redraw.get_api_key(), timeout=120.0)
+                    if vector_redraw.is_local(vmodel):
+                        client = vector_redraw.OllamaVision(timeout=600.0)
+                    else:
+                        import anthropic
+                        client = anthropic.Anthropic(
+                            api_key=vector_redraw.get_api_key(), timeout=120.0)
                 text_fn = vector_redraw.make_text_fn(
                     client, vmodel, tgt_dpi, stats=stats,
                     cancelled=CANCEL.is_set, log=applog.log)
@@ -6298,12 +6609,13 @@ class App:
                                   + (pnote + "; " if pnote else "")
                                   + "cleaning the scan and cutting the "
                                     "decals out…"))
-                        carrier = (decals.PHOTO_WHITE if photo
-                                   else decals.detect_carrier(img))
+                        carrier = (prep.get("paper") or
+                                   (decals.PHOTO_WHITE if photo
+                                    else decals.detect_carrier(img)))
                         if decals.is_neutral_carrier(carrier):
                             white_paper.append(label)
                         o = dict(opts, native_dpi=src_dpi, target_dpi=src_dpi,
-                                 photo=photo)
+                                 photo=photo, carrier=prep.get("paper"))
                         res = decals.process_image(img, **o)
                         gap = int(round(gap_mm / 25.4 * src_dpi))
                         count = len(decals.segment_decals(res["rgba"], gap=gap))
@@ -10747,6 +11059,40 @@ class App:
                     self._add_thumb(len(self.session) - 1)
                     self._update_editor_btn()
                     self._compare_refresh(params)
+                elif kind == "decal_paper":
+                    rgb = tuple(int(v) for v in msg[1])
+                    if len(msg) > 2 and msg[2]:
+                        self._pick_decal_paper(
+                            start="#%02x%02x%02x" % rgb)
+                    else:
+                        self._set_decal_paper(rgb)
+                        self.decal_status_var.set(
+                            "Paper colour read from the page — it becomes "
+                            "transparent.")
+                elif kind == "decal_pull_done":
+                    try:
+                        self.decal_pull_btn.state(["!disabled"])
+                    except Exception:
+                        pass
+                elif kind == "decal_print_done":
+                    res, perr = msg[1], msg[2]
+                    if perr:
+                        self.decal_status_var.set(f"Export failed: {perr}")
+                    else:
+                        self._last_print_export = res
+                        tiles = (f", {res['tiles']} of them tiles of decals "
+                                 "bigger than the page" if res["tiles"] else "")
+                        self.decal_status_var.set(
+                            f"Exported {res['pieces']} decal(s) on "
+                            f"{res['pages']} page(s){tiles} — "
+                            f"{len(res['files'])} file(s) in "
+                            f"{Path(res['folder']).name}. Print at 100% "
+                            "('actual size').")
+                        if not getattr(self, "_no_open_folders", False):
+                            try:
+                                os.startfile(res["folder"])
+                            except Exception:
+                                pass
                 elif kind == "decal_compare_ready":
                     left, right, params, box = msg[1], msg[2], msg[3], msg[4]
                     self._compare_open(left, right, params, box)

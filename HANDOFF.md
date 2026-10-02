@@ -149,7 +149,13 @@ exe** via the spec (`collect_all`). Verify in a frozen build with
   → `typeset_lines` → `check_against_scan`) tried first in
   `redraw_sheet(text_fn=)`; enclosed holes: `decals.fill_enclosed_holes`
   via `process_image(fill_holes=)` on white-keyed sources; Cancel:
-  `_cancel_decals` (shared `cancel_all`), `edit_cancel_btn`. Run figures (v2.17.1): the
+  `_cancel_decals` (shared `cancel_all`), `edit_cancel_btn`. Print
+  (v2.20, `app/print_export.py`): `🖨 Export for print…` →
+  `_open_print_export` → `_run_print_export` → `print_export.export`
+  (pieces at true size, shelf layout, tiling over the page, PDF/PNG/SVG
+  into decals\print\print_<stamp>); paper colour (`🎨 Paper` beside Add
+  files → `prep["paper"]` → `process_image(carrier=)`); local vision
+  models (`ollama:` ids, `vector_redraw.OllamaVision`). Run figures (v2.17.1): the
   `decal_progress` queue message (fraction, green text, red text) drives
   `decal_count_badge` / `decal_cost_badge` / `decal_progress`; the redraw
   worker cuts every page out first (pass 1) so the bar covers the whole
@@ -215,8 +221,9 @@ global across installs, and both share the one engine/GPU. `tasklist` for
 ### Run tests (use the **venv python** — system python lacks pymupdf/vtracer)
 ```
 venv\Scripts\python.exe app\update_ui_test.py     # MAIN gate — builds the real
-                                                  # App (engine/net stubbed), 402 checks
-venv\Scripts\python.exe app\vector_redraw_test.py # vision redraw, fake client (42)
+                                                  # App (engine/net stubbed), 414 checks
+venv\Scripts\python.exe app\vector_redraw_test.py # vision redraw, fake client (48)
+venv\Scripts\python.exe app\print_export_test.py  # print layout + PDF/PNG/SVG (17)
 venv\Scripts\python.exe app\swap_test.py          # face-swap two-step (22)
 venv\Scripts\python.exe app\variations_test.py    # clones store (18)
 # others: self_update_test, ragmap_test, engine_files_test, startup_test, applog_test, …
@@ -338,7 +345,7 @@ on GitHub).
 
 ## 10. State at handoff
 
-- All test suites green (update_ui 402, vector_redraw 42). Frozen build
+- All test suites green (update_ui 414, vector_redraw 48, print_export 17). Frozen build
   self-test passes (incl. the SDK, fontTools and text outlining frozen).
 - Latest release published to GitHub; dev tree clean (only gitignored build
   artifacts untracked). `Stickers/_final/` holds the user's cleaned sample

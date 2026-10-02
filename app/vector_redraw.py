@@ -38,8 +38,167 @@ from PIL import Image
 MODELS = [
     ("Claude Opus 5.5 — best quality", "claude-opus-5-5"),
     ("Claude Sonnet 5.5 — cheaper", "claude-sonnet-5-5"),
+    # local, through Ollama (free, private; the tag after 'ollama:' is what
+    # `ollama pull` takes). Sizes are the download; they need that much VRAM.
+    ("Qwen3-VL 32B — local, best (21 GB)", "ollama:qwen3-vl:32b"),
+    ("Qwen3-VL 8B — local, fast (6 GB)", "ollama:qwen3-vl:8b"),
+    ("Gemma 3 27B — local (17 GB)", "ollama:gemma3:27b"),
+    ("Mistral Small 3.2 — local (15 GB)", "ollama:mistral-small3.2"),
+    ("Qwen2.5-VL 7B — local (6 GB)", "ollama:qwen2.5vl:7b"),
 ]
 DEFAULT_MODEL = "claude-opus-5-5"
+LOCAL_PREFIX = "ollama:"
+
+
+def is_local(model_id):
+    return str(model_id or "").startswith(LOCAL_PREFIX)
+
+
+def local_tag(model_id):
+    """'ollama:qwen3-vl:8b' → 'qwen3-vl:8b'."""
+    m = str(model_id or "")
+    return m[len(LOCAL_PREFIX):] if m.startswith(LOCAL_PREFIX) else m
+
+
+def ollama_url():
+    """Ollama's endpoint, honouring OLLAMA_HOST (often a bare host:port)."""
+    h = (os.environ.get("OLLAMA_HOST") or "127.0.0.1:11434").strip()
+    if not h.startswith(("http://", "https://")):
+        h = "http://" + h
+    return h.rstrip("/")
+
+
+def ollama_vision_models(timeout=2):
+    """Tags of the installed Ollama models that take images, or None when
+    Ollama is not running (a plain [] means running, none installed)."""
+    import requests
+    try:
+        r = requests.get(f"{ollama_url()}/api/tags", timeout=timeout)
+        r.raise_for_status()
+        out = []
+        for m in r.json().get("models", []):
+            caps = m.get("capabilities") or []
+            name = m.get("name") or m.get("model") or ""
+            fam = str((m.get("details") or {}).get("family", "")).lower()
+            if "vision" in caps or "vl" in fam or "llava" in name or "vision" in name:
+                out.append(name)
+        return sorted(out)
+    except Exception:
+        return None
+
+
+def ollama_pull(tag, progress=None, timeout=3600):
+    """`ollama pull <tag>` through the API, streaming progress lines to
+    `progress(text)`. Raises RuntimeError with Ollama's message on failure."""
+    import json
+    import requests
+    with requests.post(f"{ollama_url()}/api/pull", json={"model": tag, "stream": True},
+                       stream=True, timeout=timeout) as r:
+        r.raise_for_status()
+        for line in r.iter_lines():
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except Exception:
+                continue
+            if d.get("error"):
+                raise RuntimeError(f"Ollama: {d['error']}")
+            st = d.get("status", "")
+            tot, done = d.get("total"), d.get("completed")
+            if progress:
+                if tot and done is not None:
+                    progress(f"{st} {100.0 * done / max(1, tot):.0f}% "
+                             f"({done / 1e9:.1f} / {tot / 1e9:.1f} GB)")
+                else:
+                    progress(st)
+    return True
+
+
+class _Block:
+    def __init__(self, text):
+        self.type = "text"
+        self.text = text
+
+
+class _Usage:
+    def __init__(self, i, o):
+        self.input_tokens = int(i or 0)
+        self.output_tokens = int(o or 0)
+        self.cache_read_input_tokens = 0
+        self.cache_creation_input_tokens = 0
+
+
+class _Resp:
+    def __init__(self, text, model, usage):
+        self.content = [_Block(text)]
+        self.stop_reason = "end_turn"
+        self.model = model
+        self.usage = usage
+        self._request_id = None
+
+
+class OllamaVision:
+    """A stand-in for the Anthropic client that sends the same asks
+    (image + text, a system prompt) to a local Ollama vision model, so
+    draw_decal / read_text_decal / ask_orientation run unchanged. Only
+    what those use is implemented: client.messages.create(...) and
+    client.beta.messages.create(...) (betas/fallbacks ignored). A server
+    or model problem raises RuntimeError('Ollama: …') — the run stops
+    instead of silently tracing every decal."""
+
+    def __init__(self, base_url=None, timeout=600.0):
+        self.base_url = (base_url or ollama_url()).rstrip("/")
+        self.timeout = float(timeout)
+        self.messages = self
+        self.beta = self
+
+    def create(self, model=None, max_tokens=4096, system=None, messages=(),
+               **_ignored):
+        import requests
+        tag = local_tag(model)
+        msgs = []
+        if system:
+            msgs.append({"role": "system", "content": system})
+        for m in messages:
+            texts, images = [], []
+            content = m.get("content")
+            if isinstance(content, str):
+                texts.append(content)
+            else:
+                for part in content or []:
+                    if part.get("type") == "text":
+                        texts.append(part.get("text", ""))
+                    elif part.get("type") == "image":
+                        src = part.get("source") or {}
+                        if src.get("type") == "base64" and src.get("data"):
+                            images.append(src["data"])
+            entry = {"role": m.get("role", "user"), "content": "\n".join(texts)}
+            if images:
+                entry["images"] = images
+            msgs.append(entry)
+        body = {"model": tag, "messages": msgs, "stream": False, "think": False,
+                "options": {"temperature": 0, "num_predict": int(max_tokens)}}
+        try:
+            r = requests.post(f"{self.base_url}/api/chat", json=body,
+                              timeout=self.timeout)
+        except requests.RequestException as e:
+            raise RuntimeError(f"Ollama: not reachable at {self.base_url} — "
+                               f"start Ollama ({e.__class__.__name__})")
+        if r.status_code != 200:
+            try:
+                err = r.json().get("error", r.text)
+            except Exception:
+                err = r.text
+            if "not found" in str(err).lower():
+                raise RuntimeError(f"Ollama: model {tag} is not installed — "
+                                   f"press ⬇ Pull model (ollama pull {tag})")
+            raise RuntimeError(f"Ollama: {str(err)[:200]}")
+        d = r.json()
+        text = ((d.get("message") or {}).get("content") or "")
+        text = re.sub(r"(?s)<think>.*?</think>", "", text).strip()
+        return _Resp(text, LOCAL_PREFIX + tag,
+                     _Usage(d.get("prompt_eval_count"), d.get("eval_count")))
 PRICES = {
     "claude-opus-5-5": (4.00, 20.00),
     "claude-sonnet-5-5": (2.00, 10.00),
@@ -133,7 +292,10 @@ def have_sdk():
 
 # ---------------------------------------------------------------- cost
 def estimate_cost(model, usage):
-    """USD for one response's usage (input, output, cache read/write)."""
+    """USD for one response's usage (input, output, cache read/write);
+    a local model costs nothing."""
+    if is_local(model):
+        return 0.0
     pin, pout = PRICES.get(model, (4.0, 20.0))
     try:
         i = int(getattr(usage, "input_tokens", 0) or 0)
@@ -334,6 +496,8 @@ def make_vector_fn(client, model, target_dpi, hint="", stats=None,
             # the remaining 140 decals is not what the user asked for
             msg = str(e)
             low = msg.lower()
+            if low.startswith("ollama:"):
+                raise RuntimeError(msg)
             try:
                 import anthropic
                 if isinstance(e, anthropic.AuthenticationError):
@@ -360,6 +524,9 @@ def make_vector_fn(client, model, target_dpi, hint="", stats=None,
         st["calls"] += 1
         st["cost"] += float(res.get("cost_usd") or 0.0)
         svg = text_to_paths(res["svg"])
+        if _corners_clear(crop):
+            # no backdrop: the decal prints on clear film
+            svg = strip_background(svg, crop.width, crop.height)
         ok, iou, col = check_against_scan(svg, crop)
         st["checks"].append((round(iou, 3), round(col, 1), ok))
         if not ok:
@@ -520,12 +687,49 @@ def typeset_lines(read, line_boxes, W, H, w_in, h_in, palette=None):
     return out
 
 
+def strip_background(svg_text, W, H):
+    """Remove any full-canvas <rect> the model drew as a backdrop (the
+    backing colour, white, anything): a decal prints on clear film, so
+    where it has no ink there must be NOTHING. Only rects that cover at
+    least 95% of the viewBox go; a panel decal's own fill is kept by the
+    caller (it only strips when the scan's corners are clear)."""
+    def gone(m):
+        tag = m.group(0)
+        a = _attrs(tag)
+        def dim(v, full):
+            v = (v or "").strip()
+            if v.endswith("%"):
+                return full * _num(v, 0.0) / 100.0
+            return _num(v, 0.0)
+        x, y = dim(a.get("x", "0"), W), dim(a.get("y", "0"), H)
+        w, h = dim(a.get("width", "0"), W), dim(a.get("height", "0"), H)
+        if x <= 0.03 * W and y <= 0.03 * H and w >= 0.95 * W and h >= 0.95 * H:
+            return ""
+        return tag
+    return re.sub(r"<rect\b[^>]*?/>|<rect\b[^>]*?>\s*</rect>", gone, svg_text,
+                  flags=re.S | re.I)
+
+
+def _corners_clear(crop_rgba):
+    """True when the scan crop is transparent at its corners — the decal
+    is not a filled panel, so a full-size rect in the drawing is a
+    backdrop, not the decal."""
+    a = np.asarray(crop_rgba.convert("RGBA"))
+    H, W = a.shape[:2]
+    k = max(1, min(W, H) // 20)
+    corners = (a[:k, :k, 3], a[:k, -k:, 3], a[-k:, :k, 3], a[-k:, -k:, 3])
+    return sum(1 for c in corners if c.mean() < 40) >= 3
+
+
 def _account_stop(e):
     """Raise a clear RuntimeError for an account-level API failure (bad
-    key, model not allowed, usage limit, no credit) so a run stops instead
-    of silently falling back decal after decal; return quietly otherwise."""
+    key, model not allowed, usage limit, no credit) or a local server /
+    model problem, so a run stops instead of silently falling back decal
+    after decal; return quietly otherwise."""
     msg = str(e)
     low = msg.lower()
+    if low.startswith("ollama:"):
+        raise RuntimeError(msg)
     try:
         import anthropic
         if isinstance(e, anthropic.AuthenticationError):

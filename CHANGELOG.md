@@ -1,5 +1,31 @@
 # Changelog — AI Image Generator Suite
 
+## v2.20.0 — 2026-10-01
+- **🖨 Export for print.** A new button on the Decals tab lays the decal
+  results out on printable pages at their true size — the figure-scale
+  conversion included — on Letter, Legal, Tabloid, A3, A4 or A5, portrait
+  or landscape, with your margin and gap. It writes one PDF (vector where
+  the decal is vector), transparent PNG pages at 300/600/1200 dpi, and/or
+  SVG pages for a cutter. Every decal result in the gallery, or only the
+  one picked. Print at 100% ("actual size").
+- **Bigger decals span several sheets.** A decal enlarged for a bigger
+  figure that no longer fits the page is split across pages at full size,
+  with a 0.2 in overlap to trim and butt — never shrunk to fit.
+- **Transparent backgrounds from the vision model.** A backdrop the model
+  draws behind a decal (the grey-blue stand-in, white, anything filling the
+  canvas) is removed, so the drawn decals print on clear film; a decal that
+  is itself a filled panel keeps its panel.
+- **Paper colour to remove.** For stickers glued on a sheet of coloured
+  paper: the 🎨 Paper button beside Add files reads the paper's colour off
+  the page and opens the colour picker on it; OK makes that colour
+  transparent in everything made from the page (Cancel = automatic). A
+  paper colour none of the stickers use keeps white ink too.
+- **Local vision models.** The Vision model list now also has Qwen3-VL 32B
+  and 8B, Gemma 3 27B, Mistral Small 3.2 and Qwen2.5-VL 7B, run on this PC
+  through Ollama — free, private, no key; ⬇ Pull local model downloads the
+  chosen one. They read lettering well (text sweep, orientation) and draw
+  less reliably than Claude; compare them with ⇄ Compare.
+
 ## v2.19.0 — 2026-10-01
 - **Text sweep.** During Redraw / Preview, a decal that is lettering only
   (rows of letters, no graphic) has its words read by the vision model and
