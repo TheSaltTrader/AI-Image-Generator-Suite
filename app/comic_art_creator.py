@@ -107,7 +107,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.22.4"
+APP_VERSION = "2.22.5"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -5660,8 +5660,10 @@ class App:
                   "Green = decals done, red = what the vision model has cost "
                   "so far.")
 
-    def _decal_progress_reset(self, count_text=""):
-        """A new run: empty bar, fresh figures."""
+    def _decal_progress_reset(self, count_text="", new_run=False):
+        """Empty bar, fresh figures (a new run, or a cancelled one)."""
+        if new_run:
+            self._decal_cancelled = False
         try:
             self.decal_progress["value"] = 0
             self.decal_count_badge.configure(text=count_text)
@@ -5983,7 +5985,7 @@ class App:
         self.decal_status_var.set("Processing…"
                                   + (" (first vectorize can take a moment)"
                                      if vector else ""))
-        self._decal_progress_reset()
+        self._decal_progress_reset(new_run=True)
         CANCEL.clear()
         DECALS_OUT.mkdir(parents=True, exist_ok=True)
 
@@ -6494,6 +6496,8 @@ class App:
         if not getattr(self, "_decals_busy", False):
             return
         cancel_all()
+        self._decal_cancelled = True        # late progress updates are ignored
+        self._decal_progress_reset()        # bar, decal count and cost cleared
         self.decal_status_var.set("Cancelling…")
 
     def _redraw_decals(self, preview=False, only=None):
@@ -6578,7 +6582,7 @@ class App:
         self.decal_status_var.set(("Preview — " if preview else "Redraw — ")
                                   + "cleaning the scan and cutting the "
                                     "decals out…")
-        self._decal_progress_reset("counting the decals…")
+        self._decal_progress_reset("counting the decals…", new_run=True)
         out_dir = (DECALS_OUT / "_preview") if preview else DECALS_OUT
         out_dir.mkdir(parents=True, exist_ok=True)
         ui_q = self.ui_queue
@@ -9801,7 +9805,9 @@ class App:
     def _cancel_generation(self):
         """The ✕ Cancel next to each progress bar — stops the running job
         (image, border or animation), the rest of a Variations set, and
-        anything left in the batch queue."""
+        anything left in the batch queue — and a running Decals job."""
+        if getattr(self, "_decals_busy", False):
+            self._cancel_decals()
         if not self.busy:
             return
         cancel_all()
@@ -11205,10 +11211,12 @@ class App:
                     # (fraction of the whole request, green text, red text)
                     frac, count_text, cost_text = msg[1], msg[2], msg[3]
                     try:
-                        self.decal_progress["value"] = int(
-                            max(0.0, min(1.0, float(frac))) * 1000)
-                        self.decal_count_badge.configure(text=count_text or "")
-                        self.decal_cost_badge.configure(text=cost_text or "")
+                        # a cancelled run stays cleared
+                        if not getattr(self, "_decal_cancelled", False):
+                            self.decal_progress["value"] = int(
+                                max(0.0, min(1.0, float(frac))) * 1000)
+                            self.decal_count_badge.configure(text=count_text or "")
+                            self.decal_cost_badge.configure(text=cost_text or "")
                     except Exception:
                         pass
                 elif kind == "decal_done":
@@ -11216,11 +11224,14 @@ class App:
                     what = msg[4] if len(msg) > 4 else "process"
                     self._decals_busy = False
                     self._set_decal_buttons(True)
-                    if not err:
+                    if err == "cancelled" or getattr(self, "_decal_cancelled", False):
+                        self._decal_progress_reset()
+                    elif not err:
                         try:
                             self.decal_progress["value"] = 1000
                         except Exception:
                             pass
+                    self._decal_cancelled = False
                     # the engine wait leaves "Loading the model…" on the main
                     # status line; the job is over, say so there too
                     try:

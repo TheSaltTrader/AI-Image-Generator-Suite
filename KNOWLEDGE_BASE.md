@@ -1003,6 +1003,15 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Cancel clears the Decals figures (v2.22.5).** User: "Cancel on top
+  appears to stop the model, but does not clear the progress bar and
+  number of decals or the cost." `_cancel_decals` resets the bar and both
+  badges and sets `_decal_cancelled`, so late `decal_progress` messages
+  from the stopping worker are ignored; `decal_done` with "cancelled"
+  resets again; a new run (`_decal_progress_reset(new_run=True)`) clears
+  the flag. `_cancel_generation` (the main ✕) now also calls
+  `_cancel_decals` — it returned early for Decals jobs (self.busy is only
+  set by image jobs). Tests 431/54/20.
 - **Freeze recorder + decal upscale graph (v2.22.4).** User: "API model
   do not seems to work and then app crashes" / "shows currently as not
   responding" / "App returned, sees it was just stalled, can we verify

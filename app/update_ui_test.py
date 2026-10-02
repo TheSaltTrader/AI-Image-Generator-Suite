@@ -2334,6 +2334,34 @@ try:
     ui._poll_queue()
     root.update()
     check("a finished run fills the bar", int(float(ui.decal_progress["value"])) == 1000)
+    # Cancel clears the bar, the decal count and the cost at once, and keeps
+    # them cleared against late updates from the stopping job
+    ui._decals_busy = True
+    ui._set_decal_buttons(False)
+    ui.ui_queue.put(("decal_progress", 0.4, "4 / 10 decals (3 drawn)", "$0.21"))
+    ui._poll_queue(); root.update()
+    ui._cancel_decals()
+    root.update()
+    _cleared = (int(float(ui.decal_progress["value"])) == 0
+                and str(ui.decal_count_badge.cget("text")) == ""
+                and str(ui.decal_cost_badge.cget("text")) == "")
+    ui.ui_queue.put(("decal_progress", 0.5, "5 / 10 decals", "$0.25"))
+    ui.ui_queue.put(("decal_done", 4, "cancelled", False, "redraw"))
+    ui._poll_queue(); root.update()
+    check("Cancel clears the progress bar, the decal count and the cost — and they stay cleared",
+          _cleared and int(float(ui.decal_progress["value"])) == 0
+          and str(ui.decal_cost_badge.cget("text")) == ""
+          and str(ui.decal_count_badge.cget("text")) == "",
+          (ui.decal_progress["value"], ui.decal_count_badge.cget("text"), ui.decal_cost_badge.cget("text")))
+    app.CANCEL.clear()
+    ui._decal_progress_reset("counting the decals…", new_run=True)
+    ui.ui_queue.put(("decal_progress", 0.2, "2 / 10 decals", "$0.05"))
+    ui._poll_queue(); root.update()
+    check("the next run shows its progress again", int(float(ui.decal_progress["value"])) == 200)
+    _src11 = open(app.__file__, encoding="utf-8").read()
+    _j = _src11.index("def _cancel_generation")
+    check("the main ✕ Cancel also stops a running Decals job",
+          "self._cancel_decals()" in _src11[_j:_j + 600])
     ui._decal_progress_reset("counting the decals…")
     check("a new run empties the bar and the cost",
           int(float(ui.decal_progress["value"])) == 0

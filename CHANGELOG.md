@@ -1,5 +1,11 @@
 # Changelog — AI Image Generator Suite
 
+## v2.22.5 — 2026-10-01
+- **Cancel clears the Decals progress.** The bar, the green decal count
+  and the red cost are cleared the moment Cancel is pressed and stay
+  cleared while the job stops. The ✕ Cancel beside the main progress bar
+  now stops a running Decals job too.
+
 ## v2.22.4 — 2026-10-01
 - **Fixed: "AI upscale" in Process decals never worked.** The engine
   rejected the upscale request (its save step had no file name), so every
