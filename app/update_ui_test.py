@@ -2125,6 +2125,23 @@ try:
                                 target_dpi=300, native_dpi=300, exact=True, tidy_matte=True,
                                 fill_holes=False)
     check("…and stays a hole when the rule is off", _np6.asarray(_res_n["rgba"])[100, 100, 3] == 0)
+    # the whale sheets: pale-blue film, white ink that picks up some film tint
+    _film = (223, 254, 255)
+    _wp = app.Image.new("RGB", (400, 220), _film)
+    _wd = app.ImageDraw.Draw(_wp)
+    _wd.ellipse([20, 20, 180, 180], fill=(20, 20, 30))
+    _wd.ellipse([50, 50, 150, 150], fill=(232, 252, 253))        # white ink, tinted
+    _wd.ellipse([220, 20, 380, 180], fill=(20, 20, 30))
+    _wd.ellipse([250, 50, 350, 150], fill=_film)                  # a clear window
+    _wd.rectangle([30, 195, 370, 205], fill=(239, 255, 254))      # thin white text stroke
+    _rw = _np6.asarray(_dec.process_image(_wp, mode="cleanup", remove_bg=True, denoise=0, tol=52,
+                                          target_dpi=300, native_dpi=300, exact=True,
+                                          tidy_matte=True, fill_holes=True)["rgba"])
+    check("tinted film: white ink inside a decal stays white, a clear window stays clear",
+          _rw[100, 100, 3] == 255 and _rw[100, 300, 3] == 0 and _rw[5, 5, 3] == 0,
+          (_rw[100, 100], _rw[100, 300], _rw[5, 5]))
+    check("tinted film: thin white ink on the film is kept",
+          _rw[200, 200, 3] == 255, _rw[200, 200].tolist())
     check("the Decals tab has the hole-fill and text-sweep switches, on by default",
           hasattr(ui, "decal_holes_var") and ui.decal_holes_var.get()
           and hasattr(ui, "decal_text_var") and ui.decal_text_var.get())

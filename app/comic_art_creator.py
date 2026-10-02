@@ -107,7 +107,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.22.1"
+APP_VERSION = "2.22.2"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -5350,19 +5350,18 @@ class App:
                         variable=self.decal_trim_var).grid(row=r, sticky=W)
         r += 1
         self.decal_holes_var = BooleanVar(value=True)
-        _hc = ttk.Checkbutton(left, text="Fill enclosed holes white "
-                                         "(white-keyed sheets)",
+        _hc = ttk.Checkbutton(left, text="Keep white ink inside decals",
                               variable=self.decal_holes_var)
         _hc.grid(row=r, sticky=W); r += 1
         self._tip(_hc, "On a sheet keyed on white (white paper, a photo) "
                        "white ink shut inside a decal — the disc of a "
                        "gauge, its digits and dashes, the centre of a ring "
                        "— was keyed away with the background. This makes "
-                       "it white again, down to 0.3 mm. A letter's counter "
-                       "(the hole in an A, D or O) is told apart by its "
-                       "size against the letter and stays clear. A tinted "
-                       "film keeps its white ink anyway, so nothing changes "
-                       "there.")
+                       "it white again, down to 0.3 mm. On a tinted film, "
+                       "only areas that show less of the film's tint than "
+                       "the film itself (white ink covers the film) are "
+                       "filled — a clear window stays clear. A letter's "
+                       "counter (the hole in an A, D or O) stays clear.")
         self.decal_text_var = BooleanVar(value=True)
         _tc = ttk.Checkbutton(left, text="Text sweep: re-set lettering in "
                                          "type (vision key)",

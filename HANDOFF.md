@@ -221,7 +221,7 @@ global across installs, and both share the one engine/GPU. `tasklist` for
 ### Run tests (use the **venv python** — system python lacks pymupdf/vtracer)
 ```
 venv\Scripts\python.exe app\update_ui_test.py     # MAIN gate — builds the real
-                                                  # App (engine/net stubbed), 422 checks
+                                                  # App (engine/net stubbed), 424 checks
 venv\Scripts\python.exe app\vector_redraw_test.py # vision redraw, fake client (54)
 venv\Scripts\python.exe app\print_export_test.py  # print layout + PDF/PNG/SVG + printing (20)
 venv\Scripts\python.exe app\swap_test.py          # face-swap two-step (22)
@@ -345,7 +345,7 @@ on GitHub).
 
 ## 10. State at handoff
 
-- All test suites green (update_ui 422, vector_redraw 54, print_export 20). Frozen build
+- All test suites green (update_ui 424, vector_redraw 54, print_export 20). Frozen build
   self-test passes (incl. the SDK, fontTools and text outlining frozen).
 - Latest release published to GitHub; dev tree clean (only gitignored build
   artifacts untracked). `Stickers/_final/` holds the user's cleaned sample

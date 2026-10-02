@@ -1,5 +1,16 @@
 # Changelog — AI Image Generator Suite
 
+## v2.22.2 — 2026-10-01
+- **White ink on a pale-blue film is kept.** On the Killer Whale sheets
+  the white of the whale, the panels inside the M, B and 11 boxes, the
+  fan discs and parts of thin white lettering came out transparent: white
+  ink scanned through the film picks up a little of its blue, and the
+  background key took it for film. White is now judged against the film's
+  own tint — film shows its full tint, white ink much less — so it stays
+  white, while the film and a clear window inside a decal stay
+  transparent. Letter counters stay clear. The switch is now called "Keep
+  white ink inside decals".
+
 ## v2.22.1 — 2026-10-01
 - **Cancel stops a vision redraw at once.** A model call can run 20–60
   seconds; Cancel used to wait for it to finish (and then trace that

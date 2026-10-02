@@ -1003,6 +1003,28 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **White ink on tinted film (v2.22.2).** User: "In the whale image the
+  white color gets replaced by transparent, even when the pale blue the
+  whale's white gets replaced as transparent". Measured on KW p1-p3 (film
+  (222,253,255)): white ink scans as e.g. (225,244,238)-(239,255,254),
+  distance 18-20 from the film (< tol 52), and the old `is_white` cut
+  (|tint| sum < 24) lost the bluer white pixels. Projection onto the
+  film's tint: film 1.0 (5th pct 0.84 per pixel), white ink 0.3-0.85.
+  `_carrier_alpha` (tinted, |tintC| ≥ 12): white = light > gray−12 and
+  ((3x3-mean proj < 0.7 and 3x3-mean cosine > 0.9) or 3x3-mean |tint| <
+  0.25 of the film's), opened 3x3. The COSINE matters: film blended with
+  a red edge also loses film tint but turns toward red — without it the
+  DANGER letters got 2-4 px white blobs (sweep: proj<0.7 & cos>0.9 →
+  rim 0.3%, REMOVAL ink kept 97%; proj<0.6 lost the whale belly).
+  Enclosed areas are judged as REGIONS: `fill_enclosed_holes(carrier=)`
+  on tinted film fills a hole only if its mean proj < 0.9 (clear windows
+  read 1.00, white ink 0.58-0.89) — process_image now always runs it
+  (photo/white paper without the tint test). Counter rule rewritten: a
+  hole is a counter when compact (aspect ≤ 3), ≥ 25% of the host's SHORT
+  side (vertical words!) and the host is letter-sized (short side ≤
+  15 mm) — a big printed block's discs are windows. Re-checked: the
+  photo's gauges (211 holes) still white, the DANGER counters clear.
+  Tests 424/54/20.
 - **Immediate cancel of model calls (v2.22.1).** User: "cancel the
   running job takes some time … when cancelling an llm redraw it is not
   immediate". The SDK / Ollama call blocks for the whole request and the

@@ -531,6 +531,27 @@ def _carrier_alpha(a_rgb, carrier, tol=52, soft=18):
         carrier_like = dist < tol
     else:
         is_white = (np.abs(tintP).sum(2) < 24) & (light > 210)   # neutral & bright
+        if ntC >= 12:
+            # white ink on a tinted film still picks up some of the film's
+            # tint in the scan — (225,244,238) on a (223,254,255) film — so
+            # a fixed "no tint" cut keys it away. Relative to the film it
+            # is clear: the film reads 1.0 on its own tint (5th pct 0.84),
+            # white ink 0.3-0.45 (it covers the film). Smoothed over 3x3
+            # against scan noise; an opening drops 1-px leftovers.
+            # (v2.22.2 — the whale sheets)
+            # direction matters: film blended with a coloured edge also loses
+            # film tint, but turns toward that colour — white ink keeps the
+            # film's direction (cosine ~0.99) at 0.3-0.45 of its size
+            pb = _box_mean(proj.astype(np.float32), 1)
+            tn = np.sqrt((tintP * tintP).sum(2))
+            cos = (tintP * tintC).sum(2) / (tn * ntC + 1e-6)
+            cb = _box_mean(cos.astype(np.float32), 1)
+            tb = _box_mean((tn / ntC).astype(np.float32), 1)
+            rel = (light > grayC - 12) & (((pb < 0.7) & (cb > 0.9)) | (tb < 0.25))
+            rel_img = Image.fromarray((rel * 255).astype(np.uint8))
+            rel = np.asarray(rel_img.filter(ImageFilter.MinFilter(3))
+                             .filter(ImageFilter.MaxFilter(3))) > 0
+            is_white = is_white | rel
         carrier_like = ((dist < tol) | ((proj > 0.55) & (proj < 1.8)
                         & (np.abs(light - grayC) < 40))) & (~is_white)
     # soft edge: ramp alpha over `soft` units of distance past the hard cut
@@ -966,7 +987,8 @@ def _label_runs(mask, diag=True):
     return labels, stats
 
 
-def fill_enclosed_holes(rgba, min_side=14, min_area=120):
+def fill_enclosed_holes(rgba, min_side=14, min_area=120, carrier=None,
+                        letter_max_px=None):
     """Turn transparent regions that lie INSIDE a decal — not joined to the
     outside — opaque white: the window of a gauge, the digits and dashes
     on a black block, the centre of a ring. On a white-keyed sheet (white
@@ -974,8 +996,19 @@ def fill_enclosed_holes(rgba, min_side=14, min_area=120):
     with the background. A hole below `min_side` px on its short side or
     `min_area` px² is left alone (speckle), and so is a letter's counter
     (a hole a quarter or more of its host piece's height).
+    With `carrier` (a TINTED film), a hole is filled only when it is white
+    ink: its average colour shows clearly less of the film's tint than the
+    film itself (under 0.9 of it) — a clear window shows the film at full
+    tint (1.0) and stays clear; white ink covering the film reads 0.6-0.85.
     Returns (rgba, holes_filled)."""
     a = np.asarray(rgba).copy()
+    tC = n2 = None
+    if carrier is not None:
+        C = np.array(carrier, np.float32)
+        tC = C - C.mean()
+        n2 = float((tC * tC).sum())
+        if n2 < 144:                    # barely tinted: no reliable test
+            tC = None
     clear = a[..., 3] <= 96
     H, W = clear.shape
     labels, stats = _label_runs(clear, diag=False)
@@ -1007,9 +1040,21 @@ def fill_enclosed_holes(rgba, min_side=14, min_area=120):
             # letters make the host a whole word, so judge by height only.
             # The digits, dashes and discs inside a printed block are a few
             # percent of it and come back.
-            if hh >= 0.25 * ph:
+            # judged against the host's SHORT side = the letter height for a
+            # word in either orientation (a vertical word is tall); a long
+            # thin hole (a stripe in a panel) is never a counter
+            compact = max(hw, hh) <= 3 * min(hw, hh)
+            letter_sized = (letter_max_px is None
+                            or min(pw, ph) <= letter_max_px)
+            if (letter_sized and compact
+                    and max(hw, hh) >= 0.25 * min(pw, ph)):
                 continue                      # a counter, not a window
         sub = labels[y0:y1 + 1, x0:x1 + 1] == lab
+        if tC is not None:
+            rgb = a[y0:y1 + 1, x0:x1 + 1, :3][sub].astype(np.float32).mean(0)
+            t = rgb - rgb.mean()
+            if float((t * tC).sum()) / n2 >= 0.9:
+                continue                      # clear film: stays clear
         a[y0:y1 + 1, x0:x1 + 1][sub] = (255, 255, 255, 255)
         n += 1
     if not n:
@@ -1537,14 +1582,21 @@ def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
             np.dstack([np.asarray(cleaned.convert("RGB")), alpha]), "RGBA")
         if tidy_matte:
             rgba = clean_matte(rgba)   # drop the faint carrier halo + speckle
-        if fill_holes and (photo or is_neutral_carrier(carrier)):
+        if fill_holes:
             # on a white-keyed sheet, a clear region shut inside a decal
             # was white ink/backing: make it white again (down to 0.3 mm —
             # the dashes on a gauge; letter counters are told apart by
             # their size against the letter)
             side = max(4, int(round(0.3 / 25.4 * max(72, native_dpi))))
+            tinted = None if (photo or is_neutral_carrier(carrier)) else carrier
             rgba, holes = fill_enclosed_holes(rgba, min_side=side,
-                                              min_area=int(1.5 * side * side))
+                                              min_area=int(1.5 * side * side),
+                                              carrier=tinted,
+                                              # a piece wider than 15 mm both
+                                              # ways is no letter: its holes
+                                              # are windows
+                                              letter_max_px=int(round(
+                                                  15 / 25.4 * max(72, native_dpi))))
     else:
         rgba = cleaned.convert("RGBA")
     if do_trim:
