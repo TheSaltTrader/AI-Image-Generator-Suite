@@ -1,5 +1,14 @@
 # Changelog — AI Image Generator Suite
 
+## v2.22.4 — 2026-10-01
+- **Fixed: "AI upscale" in Process decals never worked.** The engine
+  rejected the upscale request (its save step had no file name), so every
+  decal was saved without the AI enlargement.
+- **The app now records why the window freezes.** If the window stops
+  answering for 5 seconds ("Not responding"), every thread's stack is
+  written to stall.log next to app.log, and app.log notes how long the
+  freeze lasted — so the cause can be pinned down instead of guessed.
+
 ## v2.22.3 — 2026-10-01
 - **Redraw to vector no longer opens Compare by itself** when it finishes;
   open it with ⇄ Compare on the decal you want. Preview one decal and

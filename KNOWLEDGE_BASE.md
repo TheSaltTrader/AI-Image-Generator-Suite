@@ -1003,6 +1003,25 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Freeze recorder + decal upscale graph (v2.22.4).** User: "API model
+  do not seems to work and then app crashes" / "shows currently as not
+  responding" / "App returned, sees it was just stalled, can we verify
+  what caused this?". app.log: every Process-with-AI-upscale since the
+  graph was written was rejected — node 13 SaveImage had no
+  filename_prefix (fixed); the vision model answered UNSURE (honest
+  fallback to the trace, not a failure); the log stops at 22:19:43 with
+  the job unfinished and NO Windows crash/hang event. The cause of the
+  freeze could not be proven from the log. Measured with a ticker thread
+  (how long a native call starves other threads): process_image 0.03 s,
+  vtracer per decal 0.19 s, vtracer whole page 0.54 s, pymupdf render of
+  a 20 MB SVG 1.08 s — none reaches the ~5 s Windows needs for "Not
+  responding" on these sheets. Instrument: `StallWatch` =
+  faulthandler.dump_traceback_later re-armed by a 1 s Tk heartbeat; the
+  C watchdog thread needs no GIL, so a native call holding the lock is
+  caught too; dumps go to stall.log beside app.log, and the next beat
+  logs "the window was frozen for X s". Test blocks the Tk thread 1.2 s
+  with a 0.6 s timeout and finds "Timeout", "Thread 0x" and "answered
+  again". Tests 428/54/20. NEXT TIME it freezes: read stall.log.
 - **No auto-Compare after Redraw (v2.22.3).** User: "when the redraw
   completes do not auto compare the last decal, leave to the user to open
   the compare." `_auto_compare_after_job(n, err, what)` returns for

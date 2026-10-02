@@ -1963,6 +1963,33 @@ except Exception as _e:
     check("photo mode runs headless", False, repr(_e))
 
 # ---- taskbar identity (v2.16.1) -------------------------------------------
+# ---- freeze recorder + upscale graph (v2.22.4) ------------------------------
+print("freeze recorder")
+try:
+    import time as _t10
+    _sp = app.Path(str(_fs_tmp)) / "stall_test.log"
+    _sw = app.StallWatch(root, _sp, timeout=0.6, beat_ms=100).start()
+    root.update()
+    _t10.sleep(1.2)                 # the window thread is blocked: no beats
+    for _ in range(5):
+        root.update(); _t10.sleep(0.12)
+    _sw.stop()
+    _txt = _sp.read_text(encoding="utf-8", errors="replace")
+    check("a frozen window is recorded: every thread's stack, then when it answered again",
+          "Timeout" in _txt and "Thread 0x" in _txt and "answered again" in _txt
+          and _sw.stalls and _sw.stalls[0] >= 0.6, _txt[-400:])
+    check("the app arms the recorder at start", getattr(ui, "_stall", None) is not None)
+    if getattr(ui, "_stall", None) is not None:
+        ui._stall.stop()            # the test blocks on purpose below; keep it quiet
+    _src = open(app.__file__, encoding="utf-8").read()
+    _i = _src.index("def _decal_ai_upscale")
+    check("the decal AI upscale graph's save node has its filename prefix",
+          '"filename_prefix": "cbac_decal_up"' in _src[_i:_i + 3000])
+except Exception as _e:
+    import traceback
+    traceback.print_exc()
+    check("freeze recorder runs headless", False, repr(_e))
+
 # ---- print export + local vision models (v2.20) -----------------------------
 print("print export, local models")
 try:

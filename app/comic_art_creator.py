@@ -107,7 +107,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.22.3"
+APP_VERSION = "2.22.4"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -3563,6 +3563,7 @@ class App:
                 root.after(500, _tag)
 
         root.after(0, _tag)
+        self._start_stall_watch()
         root.title(f"AI Image Generator Suite v{APP_VERSION}")
         root.geometry("1500x940")
         root.minsize(1200, 780)
@@ -6107,6 +6108,15 @@ class App:
         return vector_redraw.DEFAULT_MODEL
 
     # ---- local vision models (Ollama) ------------------------------------
+    def _start_stall_watch(self):
+        """Arm the freeze recorder (StallWatch) beside app.log."""
+        try:
+            lp = applog.path()
+            folder = Path(lp).parent if lp else APP_DIR
+            self._stall = StallWatch(self.root, folder / "stall.log").start()
+        except Exception:
+            self._stall = None
+
     def _pull_local_vision_model(self):
         """⬇ Pull: download the chosen local model into Ollama, with the
         progress in the Decals status line."""
@@ -6867,7 +6877,8 @@ class App:
                        "inputs": {"upscale_model": ["11", 0],
                                   "image": ["10", 0]}},
                 "13": {"class_type": "SaveImage",
-                       "inputs": {"images": ["12", 0]}},
+                       "inputs": {"filename_prefix": "cbac_decal_up",
+                                  "images": ["12", 0]}},
             }
             ws = websocket.WebSocket()
             ws.connect(f"ws://{ENGINE_HOST}:{ENGINE_PORT}/ws"
@@ -13016,6 +13027,70 @@ def get_window_aumid(hwnd):
         return out or ""
     except Exception:
         return ""
+
+
+class StallWatch:
+    """Records WHY the window froze. faulthandler's watchdog is a C thread
+    that needs no Python lock: the window thread re-arms it every second;
+    if it is not re-armed for `timeout` seconds (the window is frozen —
+    'Not responding'), it writes every thread's stack to stall.log, even
+    while a native call holds the interpreter lock. The next heartbeat
+    notes the stall's length in app.log."""
+
+    def __init__(self, root, path, timeout=5.0, beat_ms=1000):
+        import faulthandler
+        self.fh = faulthandler
+        self.root = root
+        self.path = Path(path)
+        self.timeout = float(timeout)
+        self.beat_ms = int(beat_ms)
+        self.last = time.monotonic()
+        self.stalls = []
+        self.f = open(self.path, "a", encoding="utf-8", buffering=1)
+
+    def start(self):
+        self._beat()
+        return self
+
+    def _beat(self):
+        now = time.monotonic()
+        gap = now - self.last
+        self.last = now
+        if gap >= self.timeout:
+            self.stalls.append(round(gap, 1))
+            try:
+                applog.log(f"the window was frozen for {gap:.1f} s — thread "
+                           f"stacks are in {self.path.name}", "ERROR")
+            except Exception:
+                pass
+        try:
+            self.fh.cancel_dump_traceback_later()
+            if gap >= self.timeout:
+                # close off the dump just written with when it ended
+                self.f.write("=== the window answered again at %s after "
+                             "%.1f s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"),
+                                           gap))
+            if not self.stalls or gap >= self.timeout:
+                # a header the watchdog's dump will follow, if one comes
+                self.f.write("\n=== watching from %s — a 'Timeout' dump "
+                             "below means the window froze for %g s+; it "
+                             "lists every thread's stack at that moment\n"
+                             % (time.strftime("%Y-%m-%d %H:%M:%S"),
+                                self.timeout))
+            self.fh.dump_traceback_later(self.timeout, repeat=False,
+                                         file=self.f, exit=False)
+        except Exception:
+            pass
+        try:
+            self.root.after(self.beat_ms, self._beat)
+        except Exception:
+            pass
+
+    def stop(self):
+        try:
+            self.fh.cancel_dump_traceback_later()
+        except Exception:
+            pass
 
 
 def tag_window_identity(root):
