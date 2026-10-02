@@ -2212,6 +2212,24 @@ try:
               _w8.right is not _old_right and ui._compare_wait is None
               and "new picture" in _w8.msg_var.get(), (ui.decal_status_var.get(), _w8.msg_var.get()))
         _w8.destroy()
+        # a finished job opens Compare by itself on its last result
+        ui._compare_win = None
+        ui._last_run_entry = None
+        ui.ui_queue.put(("decal_add", _hi, dict(_prm8), str(_png8)))
+        ui.ui_queue.put(("decal_done", 1, None, False, "process"))
+        for _ in range(200):
+            ui._poll_queue(); root.update()
+            if getattr(ui, "_compare_win", None) is not None:
+                break
+            _time8.sleep(0.05)
+        _w9 = getattr(ui, "_compare_win", None)
+        check("Process / Preview / Redraw open Compare on their result by themselves, "
+              "and the job's Done line stays",
+              _w9 is not None and _w9.left.image is not None
+              and ui.decal_status_var.get().startswith("Done"), ui.decal_status_var.get())
+        if _w9 is not None:
+            _w9.destroy()
+        ui._compare_win = None
     ui.decal_sources = [s for s in ui.decal_sources if s != str(_pdf)]
     ui.decal_list.delete(0, "end")
 except Exception as _e:

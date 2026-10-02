@@ -107,7 +107,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.20.1"
+APP_VERSION = "2.21.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -6277,17 +6277,19 @@ class App:
             threading.Thread(target=work, daemon=True).start()
 
     # ---- Compare with the original -------------------------------------
-    def _open_decal_compare(self):
-        """The decal result picked in the gallery beside the original it
-        came from — the page, or that decal's own region — on one inch
-        grid (compare_view.CompareWindow). The original is loaded on a
-        worker thread exactly as the pipeline saw it (photo crop,
-        flattening, orientation)."""
-        if self.current is None or not self.session:
-            self.decal_status_var.set("Pick a decal result in the gallery "
-                                      "first, then Compare.")
-            return
-        _img, params, _path = self.session[self.current]
+    def _open_decal_compare(self, params=None, auto=False):
+        """The decal result picked in the gallery (or `params`) beside the
+        original it came from — the page, or that decal's own region — on
+        one inch grid (compare_view.CompareWindow). The original is loaded
+        on a worker thread exactly as the pipeline saw it (photo crop,
+        flattening, orientation). auto=True: opened by itself at the end
+        of a job, so the job's own 'Done' line stays in the status."""
+        if params is None:
+            if self.current is None or not self.session:
+                self.decal_status_var.set("Pick a decal result in the gallery "
+                                          "first, then Compare.")
+                return
+            _img, params, _path = self.session[self.current]
         if (not isinstance(params, dict) or params.get("model") != "decal"
                 or not params.get("src") or not params.get("png")):
             self.decal_status_var.set(
@@ -6299,7 +6301,8 @@ class App:
         src, page = str(params["src"]), params.get("page")
         rot = self.__dict__.setdefault("_decal_orient", {}).get((src, page), 0)
         ui_q = self.ui_queue
-        self.decal_status_var.set("Compare — loading the original…")
+        if not auto:
+            self.decal_status_var.set("Compare — loading the original…")
 
         def work():
             try:
@@ -6324,7 +6327,8 @@ class App:
                 left = compare_view.Pane("Original (as scanned)", image=orig,
                                          ppi=src_dpi)
                 right = self._compare_result_pane(params, left, box)
-                ui_q.put(("decal_compare_ready", left, right, params, box))
+                ui_q.put(("decal_compare_ready", left, right, params, box,
+                          auto))
             except Exception as e:
                 applog.exception("compare failed")
                 ui_q.put(("decal_status", f"Compare failed: {e}"))
@@ -6358,7 +6362,7 @@ class App:
                                  backing=tuple(film), svg=svg if svg
                                  and Path(svg).exists() else None)
 
-    def _compare_open(self, left, right, params, box):
+    def _compare_open(self, left, right, params, box, auto=False):
         old = getattr(self, "_compare_win", None)
         if old is not None:
             try:
@@ -6373,9 +6377,26 @@ class App:
         win.params = params
         win.crop_box = box
         self._compare_win = win
-        self.decal_status_var.set(
-            "Compare — wheel to zoom, drag to pan, both sides together; "
-            "tweak a setting and press Re-run in the window.")
+        if not auto:
+            self.decal_status_var.set(
+                "Compare — wheel to zoom, drag to pan, both sides together; "
+                "tweak a setting and press Re-run in the window.")
+
+    def _auto_compare_after_job(self, n, err):
+        """Preview / Process / Redraw changed the original: show the result
+        beside it without being asked. A Compare window that already shows
+        this result (its Re-run just landed) is left as it is."""
+        p = getattr(self, "_last_run_entry", None)
+        self._last_run_entry = None
+        if err or not n or not p or not getattr(self, "_auto_compare", True):
+            return
+        win = getattr(self, "_compare_win", None)
+        try:
+            if win is not None and win.winfo_exists() and win.params is p:
+                return
+        except Exception:
+            pass
+        self._open_decal_compare(params=p, auto=True)
 
     def _compare_rerun(self, params):
         """Re-run the job a compared result came from, on its sheet only,
@@ -11092,6 +11113,8 @@ class App:
                     self._add_thumb(len(self.session) - 1)
                     self._update_editor_btn()
                     self._compare_refresh(params)
+                    if isinstance(params, dict) and params.get("src"):
+                        self._last_run_entry = params
                 elif kind == "decal_paper":
                     rgb = tuple(int(v) for v in msg[1])
                     if len(msg) > 2 and msg[2]:
@@ -11135,7 +11158,8 @@ class App:
                                 pass
                 elif kind == "decal_compare_ready":
                     left, right, params, box = msg[1], msg[2], msg[3], msg[4]
-                    self._compare_open(left, right, params, box)
+                    self._compare_open(left, right, params, box,
+                                       auto=len(msg) > 5 and msg[5])
                 elif kind == "decal_progress":
                     # (fraction of the whole request, green text, red text)
                     frac, count_text, cost_text = msg[1], msg[2], msg[3]
@@ -11200,6 +11224,7 @@ class App:
                             f"Done — {n} decal image(s) saved (transparent PNG"
                             f"{svg}) to the decals output folder, and shown in "
                             f"the gallery.{note}")
+                    self._auto_compare_after_job(n, err)
                 elif kind == "done":
                     self.busy = False
                     self.go_btn.state(["!disabled"])

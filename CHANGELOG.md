@@ -1,5 +1,12 @@
 # Changelog — AI Image Generator Suite
 
+## v2.21.0 — 2026-10-01
+- **The result is shown beside the original by itself.** When Preview one
+  decal, Process decals or Redraw to vector finishes, the Compare window
+  opens on its result: the original on the left, the modified decal or
+  sheet on the right, zoom and pan linked, Re-run to tweak and try again.
+  The ⇄ button still opens it on any result picked in the gallery.
+
 ## v2.20.1 — 2026-10-01
 - **Pull local model shows its progress.** A bar beside the button fills
   as the download runs, with the percentage, GB done of the total, the

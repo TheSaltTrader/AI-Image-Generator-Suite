@@ -1003,6 +1003,15 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Compare opens by itself after a job (v2.21.0).** User: "preview one
+  decal and all the other process under decal that modify the original
+  image should display the original and the modified image so the user
+  can compare". `decal_add` remembers the run's last entry with a `src`
+  (`_last_run_entry`); `decal_done` without an error calls
+  `_auto_compare_after_job`, which opens Compare on it with auto=True
+  (the job's own "Done" status line is not overwritten) unless the open
+  Compare window already shows that result (a Re-run just landed there).
+  Generate → SVG has no original and is skipped. Tests 419/51/17.
 - **Pull progress bar (v2.20.1).** User: "next to pull local model there
   should be progress bar to show how long its going to take". Ollama's
   /api/pull streams one status per LAYER (digest, total, completed);
