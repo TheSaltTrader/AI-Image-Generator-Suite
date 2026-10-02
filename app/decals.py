@@ -895,6 +895,182 @@ def _components(mask):
     return [tuple(b) for b in boxes.values()]
 
 
+def _label_runs(mask, diag=True):
+    """Label the connected regions of a boolean mask by runs (union-find,
+    like _components) and return (labels int32 array with 0 = background,
+    {label: [x0, y0, x1, y1, area]}). diag=True joins diagonal neighbours
+    (ink); diag=False joins only edge neighbours (background), so a thin
+    diagonal line of ink still encloses what lies inside it."""
+    H, W = mask.shape
+    parent = []
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    runs = []
+    prev = []
+    for y in range(H):
+        row = mask[y]
+        if not row.any():
+            prev = []
+            continue
+        d = np.diff(np.concatenate(([0], row.astype(np.int8), [0])))
+        starts = np.where(d == 1)[0]
+        ends = np.where(d == -1)[0]          # half-open: [x0, x1)
+        cur = []
+        for x0, x1 in zip(starts, ends):
+            rid = len(parent)
+            parent.append(rid)
+            for px0, px1, pid in prev:
+                if diag:
+                    if px0 <= x1 and x0 <= px1:
+                        union(pid, rid)
+                elif px0 < x1 and x0 < px1:
+                    union(pid, rid)
+            cur.append((int(x0), int(x1), rid))
+            runs.append((y, int(x0), int(x1), rid))
+        prev = cur
+    labels = np.zeros((H, W), np.int32)
+    ids = {}
+    stats = {}
+    for y, x0, x1, rid in runs:
+        r = find(rid)
+        lab = ids.get(r)
+        if lab is None:
+            lab = len(ids) + 1
+            ids[r] = lab
+            stats[lab] = [x0, y, x1 - 1, y, 0]
+        labels[y, x0:x1] = lab
+        st = stats[lab]
+        st[0] = min(st[0], x0)
+        st[2] = max(st[2], x1 - 1)
+        st[3] = max(st[3], y)
+        st[4] += x1 - x0
+    return labels, stats
+
+
+def fill_enclosed_holes(rgba, min_side=14, min_area=120):
+    """Turn transparent regions that lie INSIDE a decal — not joined to the
+    outside — opaque white: the window of a gauge, the digits and dashes
+    on a black block, the centre of a ring. On a white-keyed sheet (white
+    paper, a photo) those were white ink or white backing, keyed away
+    with the background. A hole below `min_side` px on its short side or
+    `min_area` px² is left alone (speckle), and so is a letter's counter
+    (a hole a quarter or more of its host piece's height).
+    Returns (rgba, holes_filled)."""
+    a = np.asarray(rgba).copy()
+    clear = a[..., 3] <= 96
+    H, W = clear.shape
+    labels, stats = _label_runs(clear, diag=False)
+    if not stats:
+        return rgba, 0
+    edge = set(np.unique(np.concatenate([
+        labels[0, :], labels[-1, :], labels[:, 0], labels[:, -1]])).tolist())
+    # the opaque pieces, to know what each hole sits inside: a letter's
+    # counter sits in a piece hardly bigger than itself; a gauge's window
+    # sits in a block many times its size
+    ink_labels, ink_stats = _label_runs(~clear, diag=True)
+    n = 0
+    for lab, (x0, y0, x1, y1, area) in stats.items():
+        if lab in edge:
+            continue
+        hw, hh = x1 - x0 + 1, y1 - y0 + 1
+        if min(hw, hh) < min_side or area < min_area:
+            continue
+        # the piece just left of the hole's top-left run encloses it
+        row = labels[y0]
+        xs = np.nonzero(row[x0:x1 + 1] == lab)[0]
+        lx = x0 + int(xs[0]) - 1 if xs.size else x0 - 1
+        host = ink_labels[y0, lx] if lx >= 0 else 0
+        if host:
+            px0, py0, px1, py1, _pa = ink_stats[host]
+            pw, ph = px1 - px0 + 1, py1 - py0 + 1
+            # a letter's counter stands at least a quarter of the letter's
+            # height (A, R, e: ~0.3; D, B: ~0.45; O: ~0.6); touching bold
+            # letters make the host a whole word, so judge by height only.
+            # The digits, dashes and discs inside a printed block are a few
+            # percent of it and come back.
+            if hh >= 0.25 * ph:
+                continue                      # a counter, not a window
+        sub = labels[y0:y1 + 1, x0:x1 + 1] == lab
+        a[y0:y1 + 1, x0:x1 + 1][sub] = (255, 255, 255, 255)
+        n += 1
+    if not n:
+        return rgba, 0
+    return Image.fromarray(a, "RGBA"), n
+
+
+def text_geometry(crop_rgba):
+    """Is this decal lettering only? Letter- or word-like pieces (6 px to
+    70% of the crop high, no taller than 6× their width nor wider than 12×
+    their height, each under 45% of the ink) are grouped into rows by their
+    vertical centre; when the rows (two or more pieces, or one word-shaped
+    piece) hold at least 85% of the ink, the decal is text. Returns a dict:
+    text (bool), lines [(x0, y0, x1, y1) per row, top to bottom, in crop
+    px], share (ink share in rows), letter_px (median piece height)."""
+    a = np.asarray(crop_rgba.convert("RGBA"))
+    ink = a[..., 3] > 96
+    H, W = ink.shape
+    total = int(ink.sum())
+    none = {"text": False, "lines": [], "share": 0.0, "letter_px": 0}
+    if total < 20:
+        return none
+    labels, stats = _label_runs(ink, diag=True)
+    letters = []
+    for lab, (x0, y0, x1, y1, area) in stats.items():
+        w, h = x1 - x0 + 1, y1 - y0 + 1
+        if area < 4:
+            continue
+        # a letter (each well under half the ink), or a whole word when
+        # bold letters touch — wide, not tall — which may be all the ink
+        # when the decal is a single caption line
+        if h < 6:
+            continue
+        word = w >= 2.5 * h and w <= 12 * h
+        letter = h <= 6 * w and w <= 3 * h and area <= 0.45 * total
+        if word or letter:
+            letters.append((x0, y0, x1, y1, area, w, h))
+    if not letters:
+        return none
+    hs = sorted(p[6] for p in letters)
+    med_h = hs[len(hs) // 2]
+    letters.sort(key=lambda p: (p[1] + p[3]) / 2.0)
+    rows = []
+    for p in letters:
+        cy = (p[1] + p[3]) / 2.0
+        if rows and abs(cy - rows[-1]["cy"]) <= 0.6 * med_h:
+            r = rows[-1]
+            r["items"].append(p)
+            r["cy"] = sum((q[1] + q[3]) / 2.0 for q in r["items"]) / len(r["items"])
+        else:
+            rows.append({"cy": cy, "items": [p]})
+    # a row is two or more pieces (letters, words) or one word-shaped
+    # piece (at least 2.5× as wide as high: touching bold letters)
+    rows = [r for r in rows
+            if len(r["items"]) >= 2
+            or (r["items"][0][5] >= 2.5 * r["items"][0][6])]
+    if not rows:
+        return none
+    in_rows = sum(p[4] for r in rows for p in r["items"])
+    share = in_rows / float(total)
+    lines = []
+    for r in rows:
+        it = r["items"]
+        lines.append((min(p[0] for p in it), min(p[1] for p in it),
+                      max(p[2] for p in it) + 1, max(p[3] for p in it) + 1))
+    lines.sort(key=lambda b: b[1])
+    return {"text": share >= 0.85, "lines": lines, "share": share,
+            "letter_px": med_h}
+
+
 def _group_boxes(boxes, gap, small_side, touch=6):
     """Size-aware grouping of raw pieces into decals. Two pieces join when
     they lie within `gap` px of each other AND at least one of them is
@@ -1066,7 +1242,7 @@ def snap_palette(rgb_img, palette):
 def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
                  keep_palette=True, palette_colors=16, work_px=1024,
                  min_work_px=640, progress=None, cancelled=None, gap=16,
-                 min_side=24, vector_fn=None, limit=None):
+                 min_side=24, vector_fn=None, limit=None, text_fn=None):
     """AI-redraw every decal on a cleaned sheet and rebuild the sheet as
     vector art at its correct physical size.
 
@@ -1087,6 +1263,11 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
                The svg is expected in the crop's pixel coordinates with
                width/height in inches; the raster at w_in*target_dpi wide.
     limit      redraw only the first `limit` decals (a preview)
+    text_fn    optional text_fn(crop_rgba, palette, w_in, h_in, geom) ->
+               (svg_text, raster_rgba) | None, tried FIRST on a decal that
+               text_geometry() says is lettering only: the words are read
+               and re-set in a real font instead of traced. None falls
+               through to vector_fn / the trace.
 
     Returns None when cancelled, else a dict:
       svg    the whole sheet as one SVG — every decal in its place, width/
@@ -1116,26 +1297,39 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
         h_in = ch / float(native_dpi) * size_scale
         px_w = max(1, int(round(w_in * target_dpi)))
         px_h = max(1, int(round(h_in * target_dpi)))
+
+        def _place(svg, ras, source, _x0=x0, _y0=y0, _x1=x1, _y1=y1,
+                   _w=w_in, _h=h_in, _pw=px_w, _ph=px_h):
+            # a drawing already in crop pixels (text or vision): place as is
+            if ras.size != (_pw, _ph):
+                ras = ras.resize((_pw, _ph), Image.LANCZOS)
+            items.append(dict(box=(_x0, _y0, _x1, _y1), svg=svg, rgba=ras,
+                              size_in=(_w, _h), source=source))
+            px, py = int(round(_x0 * k)), int(round(_y0 * k))
+            part = ras
+            if px + part.width > sheet.width or py + part.height > sheet.height:
+                part = part.crop((0, 0, max(1, min(part.width, sheet.width - px)),
+                                  max(1, min(part.height, sheet.height - py))))
+            if px < sheet.width and py < sheet.height:
+                sheet.alpha_composite(part, (px, py))
+            parts.append(f'<g transform="translate({_x0} {_y0})">'
+                         f'{svg_inner(svg)}</g>')
+
+        if text_fn is not None:
+            # lettering only: read the words, set them in type
+            geom = text_geometry(crop)
+            if geom["text"]:
+                got = text_fn(crop, palette_of(crop, colors=palette_colors),
+                              w_in, h_in, geom)
+                if got is not None:
+                    _place(got[0], got[1], "text")
+                    continue
         if vector_fn is not None:
             # a drawing from a description (vision model): already vector
             got = vector_fn(crop, palette_of(crop, colors=palette_colors),
                             w_in, h_in)
             if got is not None:
-                svg, ras = got
-                if ras.size != (px_w, px_h):
-                    ras = ras.resize((px_w, px_h), Image.LANCZOS)
-                items.append(dict(box=(x0, y0, x1, y1), svg=svg, rgba=ras,
-                                  size_in=(w_in, h_in), source="vector"))
-                px, py = int(round(x0 * k)), int(round(y0 * k))
-                part = ras
-                if px + part.width > sheet.width or py + part.height > sheet.height:
-                    part = part.crop((0, 0, max(1, min(part.width, sheet.width - px)),
-                                      max(1, min(part.height, sheet.height - py))))
-                if px < sheet.width and py < sheet.height:
-                    sheet.alpha_composite(part, (px, py))
-                # the drawing is in crop pixels already: place it as is
-                parts.append(f'<g transform="translate({x0} {y0})">'
-                             f'{svg_inner(svg)}</g>')
+                _place(got[0], got[1], "vector")
                 continue
         # the work canvas: about 4× the scan crop, clamped to [min_work_px,
         # work_px] on the long edge (diffusion models draw badly on tiny
@@ -1285,7 +1479,7 @@ def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
                   denoise=2, tol=52, target_dpi=600, native_dpi=300,
                   do_trim=False, size_scale=1.0, remove_lines=True,
                   balance=True, exact=False, tidy_matte=True, solidify=False,
-                  smooth=False, photo=False):
+                  smooth=False, photo=False, fill_holes=False):
     """Run one image through the pipeline. Returns a dict with 'rgba' (and
     'svg' for vector mode). size_scale rescales the result for a different
     figure scale (e.g. 1.5 to take a 3.75\" decal to 1/12 Classified).
@@ -1330,11 +1524,19 @@ def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
             np.dstack([np.asarray(cleaned.convert("RGB")), alpha]), "RGBA")
         if tidy_matte:
             rgba = clean_matte(rgba)   # drop the faint carrier halo + speckle
+        if fill_holes and (photo or is_neutral_carrier(carrier)):
+            # on a white-keyed sheet, a clear region shut inside a decal
+            # was white ink/backing: make it white again (down to 0.3 mm —
+            # the dashes on a gauge; letter counters are told apart by
+            # their size against the letter)
+            side = max(4, int(round(0.3 / 25.4 * max(72, native_dpi))))
+            rgba, holes = fill_enclosed_holes(rgba, min_side=side,
+                                              min_area=int(1.5 * side * side))
     else:
         rgba = cleaned.convert("RGBA")
     if do_trim:
         rgba = trim(rgba)
-    out = {"svg": None}
+    out = {"svg": None, "holes": locals().get("holes", 0)}
     if mode == "vector":
         # target pixels from the requested print DPI vs the scan's native DPI
         scale = max(1.0, float(target_dpi) / max(72, native_dpi))

@@ -211,6 +211,100 @@ check("ask_orientation returns the model's rotation as an int",
       and _calls[-1]["messages"][0]["content"][0]["type"] == "image"
       and _calls[-1]["output_config"]["effort"] == "low")
 
+print("text sweep")
+import json as _json
+from PIL import ImageDraw as _ID, ImageFont as _IF
+import decals as _dec
+
+# a two-line red caption as a scan would give it: letters on transparent
+_tcrop = Image.new("RGBA", (420, 160), (0, 0, 0, 0))
+_tdraw = _ID.Draw(_tcrop)
+_fnt = _IF.truetype(str(vr._find_font("Arial Bold")), 48)
+_tdraw.text((20, 15), "DANGER", font=_fnt, fill=(206, 22, 30, 255))
+_tdraw.text((20, 85), "JET BLAST", font=_fnt, fill=(206, 22, 30, 255))
+_geom = _dec.text_geometry(_tcrop)
+check("text_geometry sees two rows of lettering",
+      _geom["text"] and len(_geom["lines"]) == 2 and _geom["share"] > 0.9
+      and _geom["lines"][0][1] < _geom["lines"][1][1], (_geom["text"], len(_geom["lines"]), _geom["share"]))
+_blob = Image.new("RGBA", (200, 200), (0, 0, 0, 0))
+_ID.Draw(_blob).ellipse([20, 20, 180, 180], fill=(10, 10, 10, 255))
+check("…and a solid graphic is not text", not _dec.text_geometry(_blob)["text"])
+_read = {"lines": [{"text": "DANGER", "colour": "#cc1020", "weight": "bold", "italic": False},
+                   {"text": "JET BLAST", "colour": "#cc1020", "weight": "bold", "italic": False}],
+         "align": "left"}
+_svg = vr.typeset_lines(_read, _geom["lines"], 420, 160, 1.4, 0.533, palette=[(206, 22, 30)])
+check("typeset_lines sets the words as outlines in the scan's colour",
+      _svg is not None and "<text" not in _svg and "#ce161e" in _svg and _svg.count("<path") >= 14, (_svg or "")[:200])
+_okc, _iou, _col = vr.check_against_scan(_svg, _tcrop, min_iou=0.4)
+check("…and the typeset version overlaps the scan", _okc and _iou > 0.6, (_iou, _col))
+check("a row/line mismatch is refused (None)",
+      vr.typeset_lines({"lines": _read["lines"][:1], "align": "left"}, _geom["lines"], 420, 160, 1.4, 0.533) is None)
+check("_find_font knows the regular and italic faces",
+      vr._find_font("Arial Regular") is not None and vr._find_font("Arial Regular").name.lower() == "arial.ttf"
+      and vr._find_font("Arial Bold Italic").name.lower() == "arialbi.ttf"
+      and vr._find_font("Arial Bold").name.lower() == "arialbd.ttf"
+      and vr._find_font("Arial Black").name.lower() == "ariblk.ttf")
+
+
+class _ReadResp(_Resp):
+    class _B:
+        type = "text"
+        text = _json.dumps(_read)
+    content = [_B()]
+
+
+class _ReadClient:
+    class messages:
+        @staticmethod
+        def create(**kw):
+            _calls.append(kw)
+            return _ReadResp()
+
+
+_calls.clear()
+_st = {}
+_tfn = vr.make_text_fn(_ReadClient(), "claude-opus-5-5", 300, stats=_st)
+_got = _tfn(_tcrop, [(206, 22, 30)], 1.4, 0.533, _geom)
+check("make_text_fn reads, sets, checks and renders a lettering decal",
+      _got is not None and "<path" in _got[0] and _got[1].size[0] == 420 and _st["text"] == 1
+      and _calls[-1]["output_config"]["effort"] == "low" and _calls[-1]["max_tokens"] == 600, (_st, _calls[-1].get("max_tokens")))
+check("…the SVG carries the printed size", 'width="1.4000in"' in _got[0])
+
+
+class _UnsureReadResp(_Resp):
+    class _B:
+        type = "text"
+        text = "UNSURE"
+    content = [_B()]
+
+
+class _UnsureReadClient:
+    class messages:
+        @staticmethod
+        def create(**kw):
+            return _UnsureReadResp()
+
+
+_st2 = {}
+check("an UNSURE reading falls through (None) and is counted",
+      vr.make_text_fn(_UnsureReadClient(), "m", 300, stats=_st2)(_tcrop, None, 1.4, 0.533, _geom) is None
+      and _st2["unsure"] == 1 and _st2["text_fallback"] == 1 and _st2["text"] == 0)
+
+
+class _LimitReadClient:
+    class messages:
+        @staticmethod
+        def create(**kw):
+            raise RuntimeError("Error code: 429 - {'message': 'Your usage limit has been reached'}")
+
+
+try:
+    vr.make_text_fn(_LimitReadClient(), "m", 300, stats={})(_tcrop, None, 1.4, 0.533, _geom)
+    _stopped = False
+except RuntimeError as _e:
+    _stopped = "usage limit" in str(_e).lower() or "stopped the calls" in str(_e).lower()
+check("a usage-limit error stops the text sweep too", _stopped)
+
 print("the key store")
 t = "AIImageGeneratorSuite/_test_vr"
 check("write/read/delete round trip in the Credential Manager",

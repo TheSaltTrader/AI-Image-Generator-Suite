@@ -1003,6 +1003,56 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Text sweep, enclosed holes, Cancel (v2.19.0).** User: "Can Jev AI be
+  used to do a quick sweep with AI vision to analyse that decals use
+  letters or numbers and have IA recreate those with the correct font
+  rather than try to draw them, some stickers with letters end up
+  mangled. Also, can it check when a sticker is a graphic and has a
+  transparency inside it to use white instead of transparent, example of
+  the circle with the startr" / "Edit image and decals does not have a
+  cancel". Jev cannot see pixels (it is a text decision model) and the
+  eye OCR cannot read 24 px labels, so the sweep is the vision model's
+  reading + fontTools typesetting. `decals.text_geometry(crop)`: pieces
+  via `_label_runs` (run-based union-find that also returns a label image
+  and per-label box/area; diag=True for ink), letter-like = 6 px..70% of
+  the crop high, aspect ≤ 6, each ≤ 20% of the ink; rows by vertical
+  centre within 0.6× the median height, rows need ≥ 2 pieces; text when
+  rows hold ≥ 85% of the ink. `vector_redraw.read_text_decal` asks for
+  JSON lines {text, colour, weight, italic} + align at effort low
+  (READ_SYSTEM: never guess → UNSURE); `typeset_lines` sets each line in
+  its row: cap height = row height (÷1.22 with descenders), size = cap ×
+  upem / sCapHeight, x from align, textLength = row width clamped to
+  0.7–1.35× the face's natural width, colour snapped to the palette,
+  `<text>` → outlines through `text_to_paths`; `_find_font` now knows
+  regular / italic / bold-italic faces (arial.ttf, ariali, arialbi) —
+  the old default (bold) is unchanged. `make_text_fn` = read → typeset →
+  `check_against_scan(min_iou=0.4)` → render; stats text / text_fallback
+  / unsure / calls / cost; account-level API errors raise (`_account_stop`,
+  shared logic) so the run stops. `redraw_sheet(text_fn=)` tries it FIRST
+  on text decals, then vector_fn, then the trace (`_place` closure shares
+  the placement). The app builds text_fn for any method when the switch
+  is on and a key exists. ENCLOSED HOLES: `fill_enclosed_holes(rgba,
+  min_side, min_area)` labels the clear mask 4-connected (so a diagonal
+  ink line still encloses), drops labels touching the border, finds each
+  hole's HOST (the ink piece left of its top-left run, from an
+  8-connected labelling of the ink) and fills the hole white unless it
+  is a letter's counter = at least 25% of the host's height (A/R/e ≈
+  0.3, D/B ≈ 0.45, O ≈ 0.6; the digits, dashes and discs inside a
+  printed block are a few percent of it). Calibrated on the user's
+  photo: an absolute 1.2 mm floor filled 64 holes INCLUDING the DANGER
+  counters (touching bold letters make the host a whole word, so a
+  width test fails too) while leaving the 5 px white dashes clear; the
+  height-ratio rule with a 0.3 mm floor fills 191 holes = every white
+  mark inside the two printed blocks and the panel stripes, no counter.
+  `process_image(fill_holes=True)` applies it after clean_matte on
+  white-keyed sources only (photo or neutral carrier), side = max(4 px,
+  0.3 mm); `out["holes"]` counts. CANCEL: `_cancel_decals` →
+  `cancel_all()` (shared flag + engine /interrupt + queue clear) and the
+  Process worker now checks the flag per file and per page (it never
+  did); Generate → SVG clears the flag at start; `_set_decal_buttons`
+  keeps Cancel live only while `_decals_busy`; the Edit image tab's
+  Cancel is `_cancel_generation` (the bottom-bar ✕). update_ui 402,
+  vector_redraw 42.
 - **Compare with the original (v2.18.0).** User: "To validate stickers,
   when generating an image or apply option to clean it, it would be
   essential add a compare with the original side by side within the

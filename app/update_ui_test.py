@@ -1963,6 +1963,61 @@ except Exception as _e:
     check("photo mode runs headless", False, repr(_e))
 
 # ---- taskbar identity (v2.16.1) -------------------------------------------
+# ---- enclosed holes + text sweep + cancel (v2.19) --------------------------
+print("holes, text sweep, cancel")
+try:
+    # a black ring (window inside) and a small letter 'o' (counter) on transparent
+    _ring = app.Image.new("RGBA", (300, 200), (0, 0, 0, 0))
+    _rd = app.ImageDraw.Draw(_ring)
+    _rd.ellipse([20, 20, 180, 180], fill=(0, 0, 0, 255))
+    _rd.ellipse([84, 84, 116, 116], fill=(0, 0, 0, 0))          # 33 px window (1/5 of the disc)
+    _rd.rectangle([50, 150, 90, 156], fill=(0, 0, 0, 0))         # a 7 px dash, inside the disc
+    _rd.ellipse([220, 80, 260, 120], fill=(200, 20, 30, 255))
+    _rd.ellipse([232, 92, 248, 108], fill=(0, 0, 0, 0))         # a letter's counter (40%)
+    _filled, _nh = _dec.fill_enclosed_holes(_ring, min_side=4, min_area=24)
+    _fa = _np6.asarray(_filled)
+    check("the window and the dash inside the disc are filled white; the letter's counter stays clear",
+          _nh == 2 and tuple(_fa[100, 100]) == (255, 255, 255, 255)
+          and tuple(_fa[153, 60]) == (255, 255, 255, 255) and _fa[100, 240, 3] == 0
+          and _fa[10, 10, 3] == 0, (_nh, _fa[100, 100], _fa[153, 60], _fa[100, 240]))
+    # through the pipeline: white paper keys white away, the hole rule brings the window back
+    _page = app.Image.new("RGB", (300, 200), (252, 252, 252))
+    _pd = app.ImageDraw.Draw(_page)
+    _pd.ellipse([20, 20, 180, 180], fill=(0, 0, 0))
+    _pd.ellipse([84, 84, 116, 116], fill=(255, 255, 255))
+    _res_h = _dec.process_image(_page, mode="cleanup", remove_bg=True, denoise=0, tol=52,
+                                target_dpi=300, native_dpi=300, exact=True, tidy_matte=True,
+                                fill_holes=True)
+    _ra = _np6.asarray(_res_h["rgba"])
+    check("process_image(fill_holes=True) on white paper: the window is white, the page clear",
+          _res_h.get("holes") == 1 and _ra[100, 100, 3] == 255 and _ra[100, 100, 0] == 255
+          and _ra[10, 290, 3] == 0, (_res_h.get("holes"), _ra[100, 100]))
+    _res_n = _dec.process_image(_page, mode="cleanup", remove_bg=True, denoise=0, tol=52,
+                                target_dpi=300, native_dpi=300, exact=True, tidy_matte=True,
+                                fill_holes=False)
+    check("…and stays a hole when the rule is off", _np6.asarray(_res_n["rgba"])[100, 100, 3] == 0)
+    check("the Decals tab has the hole-fill and text-sweep switches, on by default",
+          hasattr(ui, "decal_holes_var") and ui.decal_holes_var.get()
+          and hasattr(ui, "decal_text_var") and ui.decal_text_var.get())
+    check("Decals and Edit image have a Cancel",
+          hasattr(ui, "decal_cancel_btn") and hasattr(ui, "edit_cancel_btn")
+          and callable(getattr(ui, "_cancel_decals", None)))
+    ui._decals_busy = True
+    ui._set_decal_buttons(False)
+    check("the Decals Cancel is live only while a job runs",
+          "disabled" not in ui.decal_cancel_btn.state() and "disabled" in ui.decal_btn.state())
+    ui._cancel_decals()
+    check("Cancel raises the shared flag and says so",
+          app.CANCEL.is_set() and "ancel" in ui.decal_status_var.get())
+    app.CANCEL.clear()
+    ui._decals_busy = False
+    ui._set_decal_buttons(True)
+    check("…and goes grey again when the job is over", "disabled" in ui.decal_cancel_btn.state())
+except Exception as _e:
+    import traceback
+    traceback.print_exc()
+    check("holes/text/cancel run headless", False, repr(_e))
+
 # ---- Compare with the original (v2.18) -----------------------------------
 print("compare view")
 try:

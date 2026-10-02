@@ -106,7 +106,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.18.0"
+APP_VERSION = "2.19.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -4586,6 +4586,14 @@ class App:
                    command=lambda: self._generate(edit=True)).grid(
                        row=r, sticky="ew", pady=(4, 0))
         r += 1
+        self.edit_cancel_btn = ttk.Button(left, text="✕ Cancel the edit",
+                                          command=self._cancel_generation)
+        self.edit_cancel_btn.grid(row=r, sticky="ew", pady=(2, 0))
+        r += 1
+        self._tip(self.edit_cancel_btn,
+                  "Stops the edit the engine is working on, and anything "
+                  "queued behind it — the same stop as the ✕ beside the "
+                  "progress bar.")
         self.editor_canvas_var = BooleanVar(value=True)
 
         # The GENERATE button + progress now live in the always-visible bottom
@@ -5315,6 +5323,33 @@ class App:
         ttk.Checkbutton(left, text="Trim to the artwork",
                         variable=self.decal_trim_var).grid(row=r, sticky=W)
         r += 1
+        self.decal_holes_var = BooleanVar(value=True)
+        _hc = ttk.Checkbutton(left, text="Fill enclosed holes white "
+                                         "(white-keyed sheets)",
+                              variable=self.decal_holes_var)
+        _hc.grid(row=r, sticky=W); r += 1
+        self._tip(_hc, "On a sheet keyed on white (white paper, a photo) "
+                       "white ink shut inside a decal — the disc of a "
+                       "gauge, its digits and dashes, the centre of a ring "
+                       "— was keyed away with the background. This makes "
+                       "it white again, down to 0.3 mm. A letter's counter "
+                       "(the hole in an A, D or O) is told apart by its "
+                       "size against the letter and stays clear. A tinted "
+                       "film keeps its white ink anyway, so nothing changes "
+                       "there.")
+        self.decal_text_var = BooleanVar(value=True)
+        _tc = ttk.Checkbutton(left, text="Text sweep: re-set lettering in "
+                                         "type (vision key)",
+                              variable=self.decal_text_var)
+        _tc.grid(row=r, sticky=W); r += 1
+        self._tip(_tc, "During Redraw / Preview, a decal that is lettering "
+                       "only (rows of letters, no graphic) has its words READ "
+                       "by the vision model and set again in a real font — "
+                       "Arial regular / bold / black, fitted to the rows the "
+                       "scan shows, in the scan's own colours — instead of "
+                       "tracing the pixels, so small text is no longer "
+                       "mangled. Needs the API key; a few cents per sheet. "
+                       "Unsure readings fall back to the normal path.")
 
         drow = ttk.Frame(left); drow.grid(row=r, sticky=W, pady=(4, 4)); r += 1
         ttk.Label(drow, text="Output DPI", style="Dim.TLabel").grid(row=0,
@@ -5393,6 +5428,15 @@ class App:
                                     style="Go.TButton",
                                     command=self._process_decals)
         self.decal_btn.grid(row=r, sticky="ew", pady=(8, 4)); r += 1
+        self.decal_cancel_btn = ttk.Button(left, text="✕ Cancel the running job",
+                                           command=self._cancel_decals)
+        self.decal_cancel_btn.grid(row=r, sticky="ew", pady=(0, 4)); r += 1
+        self.decal_cancel_btn.state(["disabled"])
+        self._tip(self.decal_cancel_btn,
+                  "Stops Process, Preview, Redraw or Generate → SVG: the job "
+                  "ends after the decal it is on (a model call already in "
+                  "flight cannot be interrupted; the engine step is). What "
+                  "was finished stays saved.")
         self._tip(self.decal_btn,
                   "Run the method chosen above on the queued scans: Clean up "
                   "(faithful transparent raster) or Vectorize (a plain trace "
@@ -5771,7 +5815,8 @@ class App:
                     exact=exact,
                     tidy_matte=self.decal_tidy_var.get(),
                     solidify=self.decal_solid_var.get(),
-                    smooth=self.decal_smooth_var.get())
+                    smooth=self.decal_smooth_var.get(),
+                    fill_holes=self.decal_holes_var.get())
         srcs = [only] if only else list(self.decal_sources)
         prep = self._decal_source_prep()
         vector = opts["mode"] == "vector"
@@ -5782,18 +5827,26 @@ class App:
                                   + (" (first vectorize can take a moment)"
                                      if vector else ""))
         self._decal_progress_reset()
+        CANCEL.clear()
         DECALS_OUT.mkdir(parents=True, exist_ok=True)
 
+        CANCEL.clear()
         def work():
             done, err = 0, None
             try:
                 for i, src in enumerate(srcs):
+                    if CANCEL.is_set():
+                        err = "cancelled"
+                        break
                     self.ui_queue.put(("decal_status",
                                        f"Processing {i + 1}/{len(srcs)}: "
                                        f"{Path(src).name}…"))
                     self.ui_queue.put(("decal_progress", i / float(len(srcs)),
                                        f"{i} / {len(srcs)} file(s)", ""))
                     for label, raw, file_dpi in decals.iter_sources(src):
+                        if CANCEL.is_set():
+                            err = "cancelled"
+                            break
                         rot = self._decal_orientation(src, label, raw)
                         img, src_dpi, pnote, photo = self._prepare_source(
                             raw, prep, file_dpi, rotate=rot)
@@ -5842,6 +5895,8 @@ class App:
                         prev = _on_film(rgba, film)
                         self.ui_queue.put(("decal_add", prev, entry, entry_path))
                         done += 1
+                    if err:
+                        break
             except Exception as e:
                 applog.exception("decal processing failed")
                 err = str(e)
@@ -6028,7 +6083,8 @@ class App:
 
     def _set_decal_buttons(self, enabled):
         """Grey the Decals action buttons while a job runs (one at a time:
-        they share the engine and the status line)."""
+        they share the engine and the status line); Cancel is the one
+        button live only while a job runs."""
         for name in ("decal_btn", "decal_vec_btn", "decal_gen_btn",
                      "decal_preview_btn"):
             b = getattr(self, name, None)
@@ -6037,6 +6093,23 @@ class App:
                     b.state(["!disabled"] if enabled else ["disabled"])
                 except Exception:
                     pass
+        c = getattr(self, "decal_cancel_btn", None)
+        if c is not None:
+            try:
+                c.state(["disabled"] if enabled else ["!disabled"])
+            except Exception:
+                pass
+
+    def _cancel_decals(self):
+        """✕ on the Decals tab: raise the shared cancel flag (every worker
+        loop checks it between decals/pages) and interrupt the engine step
+        it may be on. The job reports 'cancelled' when it stops."""
+        if not getattr(self, "_decals_busy", False):
+            return
+        cancel_all()
+        self.decal_status_var.set("Cancelling — the job stops after the decal "
+                                  "it is on (a model call already in flight "
+                                  "cannot be interrupted)…")
 
     def _redraw_decals(self, preview=False, only=None):
         """Redraw to vector: every decal on the queued scan(s) — or just on
@@ -6094,6 +6167,8 @@ class App:
         tgt_dpi = int(self.decal_dpi_var.get())
         size_scale = self._decal_scale_factor()
         keep_pal = bool(self.decal_palette_var.get())
+        text_sweep = bool(getattr(self, "decal_text_var", None)
+                          and self.decal_text_var.get())
         esrgan = (MODELS / "upscale_models" / UPSCALE_MODEL).exists()
         try:
             gap_mm = max(0.0, float(self.decal_gap_var.get()))
@@ -6108,7 +6183,8 @@ class App:
                     remove_lines=self.decal_lines_var.get(), balance=False,
                     exact=True, tidy_matte=self.decal_tidy_var.get(),
                     solidify=self.decal_solid_var.get(),
-                    smooth=self.decal_smooth_var.get())
+                    smooth=self.decal_smooth_var.get(),
+                    fill_holes=self.decal_holes_var.get())
         srcs = [only] if only else list(self.decal_sources)
         prep = self._decal_source_prep()
         self._decals_busy = True
@@ -6190,6 +6266,17 @@ class App:
                 vector_fn = vector_redraw.make_vector_fn(
                     client, vmodel, tgt_dpi, hint=hint, stats=stats,
                     cancelled=CANCEL.is_set, log=applog.log)
+            text_fn = None
+            if text_sweep and vector_redraw.get_api_key():
+                # lettering-only decals: read the words, set them in type
+                # (any method — the trace has no text handling of its own)
+                if client is None:
+                    import anthropic
+                    client = anthropic.Anthropic(
+                        api_key=vector_redraw.get_api_key(), timeout=120.0)
+                text_fn = vector_redraw.make_text_fn(
+                    client, vmodel, tgt_dpi, stats=stats,
+                    cancelled=CANCEL.is_set, log=applog.log)
 
             try:
                 white_paper = []
@@ -6235,15 +6322,17 @@ class App:
                 def figures(n_done):
                     """The green and red texts for the badges."""
                     count_text = f"{n_done} / {total} decals"
-                    if method == "vision":
-                        extra = []
-                        if stats["ok"]:
-                            extra.append(f"{stats['ok']} drawn")
-                        if stats["fallback"]:
-                            extra.append(f"{stats['fallback']} traced")
-                        if extra:
-                            count_text += " (" + ", ".join(extra) + ")"
-                    cost_text = (f"${stats['cost']:.2f}" if method == "vision"
+                    extra = []
+                    if stats.get("text"):
+                        extra.append(f"{stats['text']} set in type")
+                    if method == "vision" and stats["ok"]:
+                        extra.append(f"{stats['ok']} drawn")
+                    if method == "vision" and stats["fallback"]:
+                        extra.append(f"{stats['fallback']} traced")
+                    if extra:
+                        count_text += " (" + ", ".join(extra) + ")"
+                    cost_text = (f"${stats['cost']:.2f}"
+                                 if (method == "vision" or stats.get("calls"))
                                  else "")
                     return count_text, cost_text
 
@@ -6273,7 +6362,8 @@ class App:
                         keep_palette=keep_pal, progress=prog,
                         cancelled=CANCEL.is_set,
                         gap=pg["gap"],
-                        vector_fn=vector_fn, limit=1 if preview else None)
+                        vector_fn=vector_fn, text_fn=text_fn,
+                        limit=1 if preview else None)
                     total_done = before + pg["count"]
                     if out is not None:
                         ui_q.put(("decal_progress",
@@ -6354,6 +6444,14 @@ class App:
                              + (f" ({unsure} it could not read with "
                                 "confidence)" if unsure else "")
                              + f", ≈ ${stats['cost']:.2f} spent.")
+            if stats.get("text") or stats.get("text_fallback"):
+                notes.append(
+                    f"Text sweep: {stats.get('text', 0)} lettering decal(s) "
+                    "re-set in type"
+                    + (f", {stats['text_fallback']} left to the normal path"
+                       if stats.get("text_fallback") else "")
+                    + (f", ≈ ${stats['cost']:.2f} spent in all."
+                       if method != "vision" else "."))
             if notes:
                 ui_q.put(("decal_note", " ".join(notes)))
             ui_q.put(("decal_done", done, err, False,

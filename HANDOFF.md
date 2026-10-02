@@ -144,7 +144,12 @@ exe** via the spec (`collect_all`). Verify in a frozen build with
   `page`, `kind`, `src_dpi`, `box`); `_open_decal_compare` →
   `decal_compare_ready` → `CompareWindow`; its Re-run calls
   `_process_decals(only=)` / `_redraw_decals(only=)` and `_compare_refresh`
-  swaps the result pane on the matching `decal_add`. Run figures (v2.17.1): the
+  swaps the result pane on the matching `decal_add`. Text sweep (v2.19):
+  `decals.text_geometry` → `vector_redraw.make_text_fn` (read JSON lines
+  → `typeset_lines` → `check_against_scan`) tried first in
+  `redraw_sheet(text_fn=)`; enclosed holes: `decals.fill_enclosed_holes`
+  via `process_image(fill_holes=)` on white-keyed sources; Cancel:
+  `_cancel_decals` (shared `cancel_all`), `edit_cancel_btn`. Run figures (v2.17.1): the
   `decal_progress` queue message (fraction, green text, red text) drives
   `decal_count_badge` / `decal_cost_badge` / `decal_progress`; the redraw
   worker cuts every page out first (pass 1) so the bar covers the whole
@@ -210,8 +215,8 @@ global across installs, and both share the one engine/GPU. `tasklist` for
 ### Run tests (use the **venv python** — system python lacks pymupdf/vtracer)
 ```
 venv\Scripts\python.exe app\update_ui_test.py     # MAIN gate — builds the real
-                                                  # App (engine/net stubbed), 394 checks
-venv\Scripts\python.exe app\vector_redraw_test.py # vision redraw, fake client (32)
+                                                  # App (engine/net stubbed), 402 checks
+venv\Scripts\python.exe app\vector_redraw_test.py # vision redraw, fake client (42)
 venv\Scripts\python.exe app\swap_test.py          # face-swap two-step (22)
 venv\Scripts\python.exe app\variations_test.py    # clones store (18)
 # others: self_update_test, ragmap_test, engine_files_test, startup_test, applog_test, …
@@ -333,7 +338,7 @@ on GitHub).
 
 ## 10. State at handoff
 
-- All test suites green (update_ui 394, vector_redraw 32). Frozen build
+- All test suites green (update_ui 402, vector_redraw 42). Frozen build
   self-test passes (incl. the SDK, fontTools and text outlining frozen).
 - Latest release published to GitHub; dev tree clean (only gitignored build
   artifacts untracked). `Stickers/_final/` holds the user's cleaned sample

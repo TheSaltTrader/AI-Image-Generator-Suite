@@ -1,5 +1,27 @@
 # Changelog — AI Image Generator Suite
 
+## v2.19.0 — 2026-10-01
+- **Text sweep.** During Redraw / Preview, a decal that is lettering only
+  (rows of letters, no graphic) has its words read by the vision model and
+  set again in a real font — Arial regular, bold or black, italic when it
+  is — fitted to the rows the scan shows and coloured from the scan's own
+  palette, instead of tracing the pixels. Small captions stop coming out
+  mangled. Works with every method (the clean trace had no text handling
+  at all); needs the API key, a few cents per sheet; an unsure reading
+  falls back to the normal path; the result is checked against the scan.
+  The green figure counts the decals set in type; the switch is on the
+  Decals tab.
+- **White ink inside a decal comes back.** On a sheet keyed on white (white
+  paper, a photo) white shut inside a decal — the disc of a gauge, its
+  digits and dashes, the centre of a ring — was keyed away with the
+  background. It is white again, down to 0.3 mm; a letter's counter (the
+  hole in an A, D or O) is told apart by its size against the letter and
+  stays clear. A tinted film keeps its white ink anyway. Switch on the
+  Decals tab, on by default.
+- **Cancel everywhere.** The Decals tab has a Cancel that is live while a
+  job runs (Process, Preview, Redraw, Generate → SVG) and stops it after
+  the decal it is on; the Edit image tab has a Cancel next to Apply edit.
+
 ## v2.18.0 — 2026-10-01
 - **Compare with the original, inside the app.** Pick a decal result in the
   gallery and press **⇄ Compare with the original** on the Decals tab: the

@@ -376,16 +376,265 @@ def make_vector_fn(client, model, target_dpi, hint="", stats=None,
     return vector_fn
 
 
+# ---------------------------------------------------------------- text sweep
+READ_SYSTEM = """You read the lettering on one scanned decal (a sticker from a model-kit
+sheet) exactly as printed. You never guess: if any character cannot be read
+with confidence, you answer with the single word UNSURE and nothing else."""
+
+
+def read_text_decal(crop_rgba, n_lines, palette=None, model=DEFAULT_MODEL,
+                    client=None, api_key=None, timeout=120.0):
+    """Ask the model for the words on a text-only decal. Returns a dict
+    {"lines": [{"text", "colour", "weight", "italic"}], "align", "usage",
+    "cost_usd"}; raises Unsure when it would not commit, RuntimeError on
+    a refusal or an unusable answer, and the SDK's errors on API trouble."""
+    import anthropic
+    import json
+    if client is None:
+        key = api_key or get_api_key()
+        if not key:
+            raise RuntimeError("no Anthropic API key — add one with the 🔑 "
+                               "button")
+        client = anthropic.Anthropic(api_key=key, timeout=timeout)
+    b64, scale = _crop_png_b64(crop_rgba)
+    pal_hex = ["#%02x%02x%02x" % tuple(int(v) for v in c) for c in palette] \
+        if palette is not None else []
+    ask = (f"This decal is lettering only, printed on {n_lines} line(s). "
+           "Read it exactly, top line first. Reply with JSON only, no prose:\n"
+           '{"lines": [{"text": "...", "colour": "#rrggbb", '
+           '"weight": "regular|bold|black", "italic": false}], '
+           '"align": "left|center|right"}\n'
+           f"The grey-blue backing ({BACKING_HEX}) is not part of the decal."
+           + ("\nColours on this decal: " + ", ".join(pal_hex) if pal_hex else "")
+           + "\nIf any character is not certain, reply UNSURE.")
+    resp = client.messages.create(
+        model=model, max_tokens=600, system=READ_SYSTEM,
+        output_config={"effort": "low"},
+        messages=[{"role": "user", "content": [
+            {"type": "image", "source": {"type": "base64",
+                                         "media_type": "image/png", "data": b64}},
+            {"type": "text", "text": ask}]}])
+    if resp.stop_reason == "refusal":
+        raise RuntimeError("the model declined to read this decal")
+    text = "".join(b.text for b in resp.content
+                   if getattr(b, "type", "") == "text").strip()
+    if "UNSURE" in text.upper() and "{" not in text:
+        raise Unsure("the model could not read this lettering with confidence")
+    i, j = text.find("{"), text.rfind("}")
+    if i < 0 or j <= i:
+        raise RuntimeError("the model did not answer with JSON")
+    try:
+        data = json.loads(text[i:j + 1])
+    except Exception as e:
+        raise RuntimeError(f"unreadable JSON from the model: {e}")
+    lines = data.get("lines") or []
+    if not isinstance(lines, list) or not lines:
+        raise Unsure("the model returned no lines")
+    out = []
+    for ln in lines:
+        if not isinstance(ln, dict) or not str(ln.get("text", "")).strip():
+            continue
+        if "unsure" in str(ln.get("text", "")).lower():
+            raise Unsure("the model was unsure of a line")
+        out.append({"text": str(ln.get("text", "")).strip(),
+                    "colour": str(ln.get("colour", "#000000")),
+                    "weight": str(ln.get("weight", "bold")).lower(),
+                    "italic": bool(ln.get("italic", False))})
+    if not out:
+        raise Unsure("the model returned no readable line")
+    return {"lines": out, "align": str(data.get("align", "center")).lower(),
+            "usage": resp.usage,
+            "cost_usd": estimate_cost(getattr(resp, "model", model) or model,
+                                      resp.usage)}
+
+
+def _snap_hex(colour, palette):
+    """The palette colour nearest the model's #rrggbb (the scan's own
+    colour wins over the model's guess); the model's when no palette."""
+    try:
+        c = colour.lstrip("#")
+        rgb = tuple(int(c[k:k + 2], 16) for k in (0, 2, 4))
+    except Exception:
+        rgb = (0, 0, 0)
+    if palette is None or len(palette) == 0:     # may be a numpy array
+        return "#%02x%02x%02x" % rgb
+    best = min(list(palette),
+               key=lambda q: sum((int(q[k]) - rgb[k]) ** 2 for k in range(3)))
+    return "#%02x%02x%02x" % tuple(int(v) for v in best)
+
+
+def typeset_lines(read, line_boxes, W, H, w_in, h_in, palette=None):
+    """Set the words the model read into the rows the scan shows: each
+    line's cap height comes from its row box (a little less when the line
+    has descenders), its left/centre/right from the row and the align,
+    its width from the row (within 0.7–1.35× the face's natural width so
+    a misread letter cannot stretch a word absurdly), its colour snapped
+    to the scan's palette. Returns the SVG in crop pixels with glyph
+    outlines (no fonts needed), or None when the rows and the lines do
+    not match."""
+    lines = read["lines"]
+    if len(lines) != len(line_boxes):
+        return None
+    align = read.get("align", "center")
+    els = []
+    for ln, (x0, y0, x1, y1) in zip(lines, line_boxes):
+        text = ln["text"]
+        weight = ln.get("weight", "bold")
+        family = ("Arial Black" if weight == "black" else
+                  "Arial Regular" if weight == "regular" else "Arial Bold")
+        if ln.get("italic"):
+            family += " Italic"
+        fp = _find_font(family)
+        if fp is None:
+            return None
+        font, glyphset, cmap, upem, hmtx, cap = _load_font(fp)
+        box_h = max(1.0, float(y1 - y0))
+        has_desc = any(ch in "gjpqy,;()" for ch in text)
+        cap_px = box_h / 1.22 if has_desc else box_h
+        size = cap_px * upem / float(max(1, cap))
+        natural = sum(hmtx[cmap.get(ord(ch), cmap.get(ord("?")))][0]
+                      for ch in text if cmap.get(ord(ch), cmap.get(ord("?")))
+                      is not None) * size / float(upem)
+        if natural <= 0:
+            return None
+        box_w = float(x1 - x0)
+        shown = min(1.35 * natural, max(0.7 * natural, box_w))
+        if align == "left":
+            x, anchor = x0, "start"
+        elif align == "right":
+            x, anchor = x1, "end"
+        else:
+            x, anchor = (x0 + x1) / 2.0, "middle"
+        y = y0 + cap_px
+        fill = _snap_hex(ln.get("colour", "#000000"), palette)
+        safe = html.escape(text, quote=False)
+        els.append(f'<text x="{x:.2f}" y="{y:.2f}" font-size="{size:.2f}" '
+                   f'font-family="{family}" text-anchor="{anchor}" '
+                   f'textLength="{shown:.2f}" fill="{fill}">{safe}</text>')
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" version="1.1" '
+           f'width="{w_in:.4f}in" height="{h_in:.4f}in" viewBox="0 0 {W} {H}">'
+           + "".join(els) + "</svg>")
+    out = text_to_paths(svg)
+    if "<text" in out:
+        return None
+    return out
+
+
+def _account_stop(e):
+    """Raise a clear RuntimeError for an account-level API failure (bad
+    key, model not allowed, usage limit, no credit) so a run stops instead
+    of silently falling back decal after decal; return quietly otherwise."""
+    msg = str(e)
+    low = msg.lower()
+    try:
+        import anthropic
+        if isinstance(e, anthropic.AuthenticationError):
+            raise RuntimeError("the Anthropic API key was rejected — "
+                               "check it with 🔑 API key…")
+        if isinstance(e, anthropic.PermissionDeniedError):
+            raise RuntimeError("the Anthropic API key is not allowed "
+                               "to use this model: " + msg[:200])
+    except ImportError:
+        pass
+    if ("usage limit" in low or "spending limit" in low
+            or "credit balance" in low or "billing" in low
+            or "regain access" in low):
+        raise RuntimeError(
+            "Anthropic stopped the calls: " + msg.split("message")[-1]
+            .strip(" ':{}\"")[:220]
+            + " — raise the limit at console.anthropic.com → Settings "
+              "→ Limits (or wait for the reset). No decal was drawn "
+              "by the model after this point.")
+
+
+def make_text_fn(client, model, target_dpi, stats=None, cancelled=None,
+                 log=None):
+    """The `text_fn` for decals.redraw_sheet: a lettering-only decal has
+    its words read by the model and re-set in a real font at the rows the
+    scan shows, then checked against the scan. None = let the normal path
+    (vision drawing or clean trace) handle it. `stats` collects
+    text (set in type), text_fallback, calls, cost."""
+    import decals
+    st = stats if stats is not None else {}
+    for k in ("calls", "text", "text_fallback", "unsure"):
+        st.setdefault(k, 0)
+    st.setdefault("cost", 0.0)
+
+    def text_fn(crop, pal, w_in, h_in, geom):
+        if cancelled and cancelled():
+            return None
+        boxes = geom.get("lines") or []
+        if not boxes:
+            return None
+        try:
+            read = read_text_decal(crop, len(boxes), palette=pal, model=model,
+                                   client=client)
+        except Unsure:
+            st["calls"] += 1
+            st["unsure"] += 1
+            st["text_fallback"] += 1
+            if log:
+                log("text sweep: the model was unsure of this lettering; "
+                    "normal path used")
+            return None
+        except Exception as e:
+            _account_stop(e)
+            if log:
+                log("text sweep call failed; normal path used: %r" % (e,))
+            st["text_fallback"] += 1
+            return None
+        st["calls"] += 1
+        st["cost"] += float(read.get("cost_usd") or 0.0)
+        W, H = crop.size
+        svg = typeset_lines(read, boxes, W, H, w_in, h_in, palette=pal)
+        if svg is None:
+            st["text_fallback"] += 1
+            if log:
+                log("text sweep: %d line(s) read, %d row(s) on the scan; "
+                    "normal path used" % (len(read["lines"]), len(boxes)))
+            return None
+        ok, iou, col = check_against_scan(svg, crop, min_iou=0.4)
+        if not ok:
+            st["text_fallback"] += 1
+            if log:
+                log(f"text sweep rejected (overlap {iou:.2f}, colour "
+                    f"{col:.0f}); normal path used")
+            return None
+        svg = decals.svg_set_physical_size(svg, w_in, h_in)
+        ras = render_svg(svg, max(1, int(round(w_in * target_dpi))))
+        st["text"] += 1
+        return svg, ras
+
+    return text_fn
+
+
 # ---------------------------------------------------------------- text → paths
 _FONT_CANDIDATES = {
     "black": ["ariblk.ttf", "impact.ttf", "arialbd.ttf"],
     "bold": ["arialbd.ttf", "verdanab.ttf", "segoeuib.ttf", "calibrib.ttf"],
+    "bolditalic": ["arialbi.ttf", "verdanaz.ttf", "segoeuiz.ttf", "arialbd.ttf"],
+    "italic": ["ariali.ttf", "verdanai.ttf", "segoeuii.ttf", "arial.ttf"],
+    "regular": ["arial.ttf", "verdana.ttf", "segoeui.ttf", "calibri.ttf"],
 }
 
 
 def _find_font(family=""):
+    """A Windows font file for a family hint: 'Arial Black' → the black
+    face, 'Arial Italic' / 'Arial Bold Italic' → italics, 'Arial' /
+    'Arial Regular' → the regular face; anything else (the model's usual
+    'Arial Bold', 'sans-serif') → bold, as before."""
     base = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
-    kind = "black" if "black" in (family or "").lower() else "bold"
+    fam = (family or "").lower()
+    if "black" in fam:
+        kind = "black"
+    elif "italic" in fam and "bold" in fam:
+        kind = "bolditalic"
+    elif "italic" in fam:
+        kind = "italic"
+    elif "regular" in fam or "light" in fam or fam.strip() in ("arial", "verdana"):
+        kind = "regular"
+    else:
+        kind = "bold"
     for name in _FONT_CANDIDATES[kind] + _FONT_CANDIDATES["bold"]:
         p = base / name
         if p.exists():
