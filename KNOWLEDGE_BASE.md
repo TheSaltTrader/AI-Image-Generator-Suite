@@ -1003,6 +1003,26 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Recraft vectorize via fal.ai (v2.23.0).** User asked for a better
+  vector API with its own key, pay-as-you-go only. Vectorizer.AI is
+  subscription-only (monthly plans from $9.99, credits roll over 5x);
+  fal.ai is prepaid credits, no subscription, Recraft vectorize $0.01 per
+  image. `app/recraft_vectorize.py`: POST https://fal.run/fal-ai/recraft/
+  vectorize, header `Authorization: Key <FAL_KEY>`, body {"image_url":
+  data URI} (fal accepts base64 data URIs for file inputs), answer
+  image.url → the SVG (fetched, or decoded when it is a data URI). Limits
+  PNG/JPG/WEBP < 5 MB, < 16 MP, 256 < side < 4096 → each decal is sent
+  alone, scaled so its short side ≥ 320 and long side ≤ 2048 (≤ 4x), on
+  pure magenta; `clean_svg` drops shapes filled near magenta (hex,
+  3-hex, rgb(), style fill) and rewraps the drawing into crop-pixel
+  viewBox. `make_vector_fn` = same contract as the vision one; 401/403
+  → "key rejected", 402 or balance/credit text → "top up" (run stops);
+  other errors → trace fallback; `call_cancellable`; cost 0.01/call;
+  `check_against_scan` gate. Key: Credential Manager
+  'AIImageGeneratorSuite/fal', FAL_KEY env wins; the release secrets gate
+  now also greps the fal key shape (uuid:32hex). Live quality NOT yet
+  measured (no key at release time). Tests: recraft_test 10, update_ui
+  444.
 - **The freezes, proven; Vectorize rebuilt; no auto-Compare (v2.22.7).**
   stall.log (the v2.22.4 recorder) caught five freezes: 5-6.5 s with the
   worker in `vectorize` line 818 (vtracer on a WHOLE page, Process in

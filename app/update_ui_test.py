@@ -2081,6 +2081,46 @@ try:
     ui._redraw_decals()
     check("a bad page list is explained before anything runs",
           "Pages to redraw" in ui.decal_status_var.get() and not ui._decals_busy)
+    # Recraft vectorize: its method button, the key guard, a run through it
+    check("the Recraft vectorize method has its own button and fal key button",
+          hasattr(ui, "decal_fal_btn") and hasattr(ui, "decal_fal_lab"))
+    _orig_gk = app.recraft_vectorize.get_key
+    _orig_mk = app.recraft_vectorize.make_vector_fn
+    app.recraft_vectorize.get_key = lambda: None
+    ui.decal_method_var.set("recraft")
+    ui.decal_pages_var.set("1")
+    ui._redraw_decals()
+    check("Recraft without a fal key says so and does not start",
+          "fal.ai key" in ui.decal_status_var.get() and not ui._decals_busy, ui.decal_status_var.get())
+    _calls_rc = []
+
+    def _fake_mk(key, dpi, stats=None, cancelled=None, log=None, session=None):
+        def _fn(crop, pal, w_in, h_in):
+            _calls_rc.append((key, w_in))
+            stats["calls"] = stats.get("calls", 0) + 1
+            stats["cost"] = stats.get("cost", 0.0) + 0.01
+            stats["fallback"] = stats.get("fallback", 0) + 1
+            return None                         # falls back to the trace
+        return _fn
+    app.recraft_vectorize.get_key = lambda: "fal-test-key-not-real"
+    app.recraft_vectorize.make_vector_fn = _fake_mk
+    try:
+        _n1 = len(ui.session)
+        ui._redraw_decals()
+        for _ in range(600):
+            ui._poll_queue(); root.update()
+            if not ui._decals_busy:
+                break
+            _t12.sleep(0.05)
+    finally:
+        app.recraft_vectorize.get_key = _orig_gk
+        app.recraft_vectorize.make_vector_fn = _orig_mk
+    check("a Recraft run calls the service per decal with the key and finishes "
+          "(cost in red, Recraft named in the note)",
+          _calls_rc and _calls_rc[0][0] == "fal-test-key-not-real"
+          and len(ui.session) > _n1 and "Recraft" in ui.decal_status_var.get(),
+          (len(_calls_rc), ui.decal_status_var.get()))
+    ui.decal_method_var.set("trace")
     ui.decal_pages_var.set("all")
     ui.decal_text_var.set(True)
     ui.decal_sources = []

@@ -1,5 +1,17 @@
 # Changelog — AI Image Generator Suite
 
+## v2.23.0 — 2026-10-02
+- **New Redraw method: Recraft vectorize (fal.ai).** Each decal goes to
+  Recraft's dedicated bitmap-to-SVG vectorizer. Pay as you go: prepaid
+  fal.ai credits, no subscription, about $0.01 per decal. Add the key
+  with **🔑 fal key…** beside the method (it is kept in the Windows
+  Credential Manager only). The decal is sent on a backing that is
+  removed from the answer, so the result stays transparent; every result
+  is checked against the scan and falls back to the clean trace when it
+  drifts. The run stops with a clear message if the key is rejected or
+  the credits run out; Cancel abandons a call at once. Compare it with
+  Claude and the clean trace using ⇄ Compare.
+
 ## v2.22.7 — 2026-10-02
 - **Fixed: the window froze ("Not responding") during Redraw and
   Vectorize.** The freeze recorder caught it: checking the vision model's

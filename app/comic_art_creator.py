@@ -100,6 +100,7 @@ import self_update
 import vector_redraw
 import compare_view
 import print_export
+import recraft_vectorize
 import engine_files
 import applog
 import decals
@@ -107,7 +108,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.22.7"
+APP_VERSION = "2.23.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -5501,6 +5502,26 @@ class App:
                        "layout) and falls back to the clean trace when it "
                        "drifts. Cloud call, a few cents per decal; the key is "
                        "stored in the Windows Credential Manager only.")
+        rcrow = ttk.Frame(left); rcrow.grid(row=r, sticky="ew"); r += 1
+        _m4 = ttk.Radiobutton(
+            rcrow, text="Recraft vectorize (fal.ai) — about 1¢ per decal",
+            variable=self.decal_method_var, value="recraft")
+        _m4.pack(side="left")
+        self.decal_fal_btn = ttk.Button(rcrow, text="🔑 fal key…",
+                                        command=self._set_fal_key)
+        self.decal_fal_btn.pack(side="left", padx=(8, 0))
+        self.decal_fal_lab = ttk.Label(rcrow, text="", style="Dim.TLabel")
+        self.decal_fal_lab.pack(side="left", padx=(6, 0))
+        self._refresh_fal_key_lab()
+        self._tip(rcrow, "Each decal goes to Recraft's dedicated vectorizer "
+                         "(through fal.ai): a professional bitmap-to-SVG "
+                         "trace. Pay as you go — prepaid fal.ai credits, no "
+                         "subscription, about $0.01 per decal. Every result "
+                         "is checked against the scan and falls back to the "
+                         "clean trace when it drifts; the backing is removed "
+                         "so the decal stays transparent. The key "
+                         "(fal.ai/dashboard/keys) is stored in the Windows "
+                         "Credential Manager only.")
         _m3 = ttk.Radiobutton(
             left, text="Re-imagine with the image model — large logos only",
             variable=self.decal_method_var, value="diffusion")
@@ -6096,6 +6117,32 @@ class App:
             "API key saved." if (ok and key.strip()) else
             "API key removed." if ok else "Could not store the key.")
 
+    def _set_fal_key(self):
+        """The fal.ai key for Recraft vectorize — Credential Manager only."""
+        from tkinter import simpledialog
+        key = simpledialog.askstring(
+            "fal.ai key",
+            "Paste your fal.ai API key (from fal.ai/dashboard/keys). It is "
+            "stored in the Windows Credential Manager, never in a file. "
+            "Leave it empty and press OK to remove the saved key.",
+            parent=self.root, show="•")
+        if key is None:
+            return
+        ok = recraft_vectorize.set_key(key.strip())
+        self._refresh_fal_key_lab()
+        self.decal_status_var.set(
+            "fal.ai key saved." if (ok and key.strip()) else
+            "fal.ai key removed." if ok else "Could not store the key.")
+
+    def _refresh_fal_key_lab(self):
+        try:
+            has = bool(recraft_vectorize.get_key())
+            self.decal_fal_lab.configure(
+                text="key: set" if has else "no key yet",
+                style="BadgeOn.TLabel" if has else "Dim.TLabel")
+        except Exception:
+            pass
+
     def _refresh_vision_key_lab(self):
         """The key button and badge follow the chosen model: a local model
         needs no key, so the button is greyed until a Claude model is
@@ -6556,6 +6603,12 @@ class App:
                                           "tab first — Re-imagine draws with it.")
                 return
         vmodel = self._vision_model_id()
+        if method == "recraft" and not recraft_vectorize.get_key():
+            self.decal_status_var.set("Add your fal.ai key first (🔑 fal key… "
+                                      "beside Recraft vectorize), then try "
+                                      "again.")
+            return
+        fal_key = recraft_vectorize.get_key() if method == "recraft" else None
         if method == "vision" and not vector_redraw.is_local(vmodel):
             if not vector_redraw.have_sdk():
                 self.decal_status_var.set("This build has no Anthropic SDK — "
@@ -6613,7 +6666,9 @@ class App:
         ui_q = self.ui_queue
         stats = {"cost": 0.0, "calls": 0, "ok": 0, "fallback": 0}
         label_m = {"trace": "clean trace", "vision": "vision model",
+                   "recraft": "Recraft vectorize",
                    "diffusion": "re-imagine"}.get(method, method)
+        paid = method in ("vision", "recraft")
 
         def work():
             import websocket  # websocket-client
@@ -6683,6 +6738,10 @@ class App:
                 vector_fn = vector_redraw.make_vector_fn(
                     client, vmodel, tgt_dpi, hint=hint, stats=stats,
                     cancelled=CANCEL.is_set, log=applog.log)
+            elif method == "recraft":
+                vector_fn = recraft_vectorize.make_vector_fn(
+                    fal_key, tgt_dpi, stats=stats, cancelled=CANCEL.is_set,
+                    log=applog.log)
             text_fn = None
             if text_sweep and (vector_redraw.is_local(vmodel)
                                or vector_redraw.get_api_key()):
@@ -6754,14 +6813,14 @@ class App:
                     extra = []
                     if stats.get("text"):
                         extra.append(f"{stats['text']} set in type")
-                    if method == "vision" and stats["ok"]:
+                    if paid and stats["ok"]:
                         extra.append(f"{stats['ok']} drawn")
-                    if method == "vision" and stats["fallback"]:
+                    if paid and stats["fallback"]:
                         extra.append(f"{stats['fallback']} traced")
                     if extra:
                         count_text += " (" + ", ".join(extra) + ")"
                     cost_text = (f"${stats['cost']:.2f}"
-                                 if (method == "vision" or stats.get("calls"))
+                                 if (paid or stats.get("calls"))
                                  else "")
                     return count_text, cost_text
 
@@ -6781,7 +6840,7 @@ class App:
                         n_done = _before + i
                         frac = (n_done / float(total)) if total else 1.0
                         cost = (f"  ≈ ${stats['cost']:.2f} so far"
-                                if method == "vision" else "")
+                                if paid else "")
                         ui_q.put(("decal_status",
                                   f"{_lab}: {label_m}, decal {i + 1} of "
                                   f"{n}…{cost}"))
@@ -6867,9 +6926,10 @@ class App:
                              "on WHITE paper — white-ink decals cannot be "
                              "separated from white backing, so only the "
                              "coloured/dark decals were redrawn.")
-            if method == "vision" and stats["calls"] + stats["fallback"]:
+            if paid and stats["calls"] + stats["fallback"]:
                 unsure = stats.get("unsure", 0)
-                notes.append(f"Vision model: {stats['ok']} decal(s) drawn, "
+                notes.append(f"{label_m.capitalize() if method == 'recraft' else 'Vision model'}: "
+                             f"{stats['ok']} decal(s) drawn, "
                              f"{stats['fallback']} fell back to the clean "
                              f"trace"
                              + (f" ({unsure} it could not read with "
