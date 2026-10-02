@@ -1003,6 +1003,26 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Copies: ink distance, not boxes (v2.24.2).** User: "Those dangers are
+  copies, why wasn't the danger with the best value kept and rewritten
+  over those lesser copies?" Cause: the two right-hand DANGER!s (single
+  halo-joined pieces 190x63) lay INSIDE the bounding box of the orca decal
+  (1692-2405 x 516-992): `_group_boxes` judged closeness by rectangles, so
+  big+big "within touch" was true and they were cut out with the orca —
+  never in the DANGER! group. Fix: `segment_decals` labels the reduced
+  mask (`_label_runs`) and passes each raw piece's label; `_group_boxes`
+  (two steps: small+small → words first; then the rest) checks INK
+  proximity (`ink_near`: dilate cluster A's labels by g/down cells in the
+  union window, intersect B's) whenever neither side is a small piece. A
+  word (explicit flag, set when 3+ letters cluster in step 1, cleared once
+  it joins a graphic — a piece-count test let a logo+caption cluster
+  reach the next logo) still captions a graphic within `gap` if its ink
+  is that close; two original big pieces must be within `touch`. Group
+  placement of a "text" winner uses (iou 0.65, colour 110) — at (0.75,
+  90) 4 of 10 DANGER! copies refused the typeset word. Live p2: 12
+  DANGER!s separate, 11 copies reused, all typeset; $0.17. Decal counts:
+  p1 101→128, p3 62→60 (words inside a neighbour's box now separate).
+  Tests 444/60/20/12.
 - **Recraft colours, text preference (v2.24.1).** User: "Created a new
   extract and compare, still a lot of issues, svg looks worse than the
   cleaned file". Measured on their run: banner red stripe in the scan

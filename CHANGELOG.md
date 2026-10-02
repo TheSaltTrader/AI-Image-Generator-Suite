@@ -1,5 +1,16 @@
 # Changelog — AI Image Generator Suite
 
+## v2.24.2 — 2026-10-02
+- **Every copy of a repeated decal now gets the best version.** Two
+  DANGER!s sitting beside the orcas were cut out as part of the orca
+  decals — their ink is far from the orca, but they lie inside the wide
+  box its ring spans — so they never joined the DANGER! copies and kept a
+  rough trace. Decals are now told apart by how close their INK is, not
+  their boxes: all twelve DANGER!s on the whale sheet are their own decal,
+  and all get the same clean version. A typeset word is also accepted on
+  its copies at the text sweep's own level (some copies refused it before
+  because each halftone scan sits a little differently).
+
 ## v2.24.1 — 2026-10-02
 - **Recraft colours are the scan's own.** The banner's red came out a dull
   maroon and the orca's red brush brown: the colour step mixed a small or

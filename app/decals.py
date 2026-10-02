@@ -1181,39 +1181,110 @@ def text_geometry(crop_rgba):
             "letter_px": med_h}
 
 
-def _group_boxes(boxes, gap, small_side, touch=6):
-    """Size-aware grouping of raw pieces into decals. Two pieces join when
-    they lie within `gap` px of each other AND at least one of them is
-    SMALL (longest side < small_side): letters join into a word, a word
-    joins the logo it captions — but two big decals that merely sit close
-    together stay apart (the old blanket bridging cut an "M" badge and the
-    "LOAD INFO" label under it out as one). Two big pieces still join when
-    they all but touch (within `touch` px): the fragments a faint decal
-    breaks into. Repeats until nothing changes."""
-    boxes = [list(b) for b in boxes]
+def _group_boxes(boxes, gap, small_side, touch=6, word_pieces=3,
+                 lab_img=None, lab_ids=None, down=1):
+    """Size-aware grouping of raw pieces into decals, in two steps.
+
+    1. Small pieces (longest side < small_side: letters, specks) join EACH
+       OTHER within `gap` px first, so letters become their words.
+    2. Then pieces join when within `gap` and at least one of them is
+       still small — a speck or a 1-2 piece mark joins the graphic beside
+       it — while a WORD (a cluster of `word_pieces`+ letters) counts as
+       big: it joins another big piece only when they all but touch
+       (`touch` px), like two big decals (the fragments a faint decal
+       breaks into). Closeness of two non-small pieces is judged on their
+       INK (lab_img), not their rectangles: a word inside the wide box of
+       an orca's ring was "touching" it, so the two DANGER!s beside the
+       orcas were cut out as part of the orca decals and never shared in
+       the DANGER! copies (v2.24.2). A word (3+ letters) still joins the
+       graphic it captions within `gap` when its ink is that close.
+       Repeats until nothing changes."""
+    # each item: x0, y0, x1, y1, piece count, set of label ids (pixels)
+    # [6] = "a word": a cluster of letters from step 1 that has not yet
+    # joined a graphic
+    items = [[b[0], b[1], b[2], b[3], 1,
+              {lab_ids[i]} if lab_ids is not None else set(), False]
+             for i, b in enumerate(boxes)]
+
+    def ink_near(a, b, g):
+        """Do the INKS of two clusters come within g px? Two big decals
+        whose rectangles overlap — a word beside an orca whose ring spans
+        a wide box — are not touching unless their pixels are (v2.24.2)."""
+        if lab_img is None or not a[5] or not b[5]:
+            return True
+        cg = max(1, int(np.ceil(g / float(down))))
+        x0 = max(0, min(a[0], b[0]) // down - cg)
+        y0 = max(0, min(a[1], b[1]) // down - cg)
+        x1 = min(lab_img.shape[1], max(a[2], b[2]) // down + cg + 1)
+        y1 = min(lab_img.shape[0], max(a[3], b[3]) // down + cg + 1)
+        win = lab_img[y0:y1, x0:x1]
+        ma = np.isin(win, list(a[5]))
+        mb = np.isin(win, list(b[5]))
+        if not ma.any() or not mb.any():
+            return True
+        return bool((dilate_mask(ma, cg) & mb).any())
+
+    def small(it):
+        return max(it[2] - it[0], it[3] - it[1]) < small_side
+
+    def near(a, b, g):
+        return (a[0] - g <= b[2] and b[0] - g <= a[2]
+                and a[1] - g <= b[3] and b[1] - g <= a[3])
+
+    def merge(a, b, word=False):
+        return [min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]),
+                max(a[3], b[3]), a[4] + b[4], a[5] | b[5], word]
+
+    # step 1: small with small → words (a cluster keeps growing while any
+    # of its letters is near a small piece)
+    origin_small = [small(it) for it in items]
+    clusters = [it[:] for it, sm in zip(items, origin_small) if sm]
+    bigs = [it[:] for it, sm in zip(items, origin_small) if not sm]
     changed = True
-    while changed and len(boxes) > 1:
+    while changed and len(clusters) > 1:
         changed = False
-        n = len(boxes)
+        for i in range(len(clusters)):
+            if clusters[i] is None:
+                continue
+            for j in range(i + 1, len(clusters)):
+                if clusters[j] is None:
+                    continue
+                if near(clusters[i], clusters[j], gap):
+                    clusters[i] = merge(clusters[i], clusters[j], word=True)
+                    clusters[j] = None
+                    changed = True
+        clusters = [c for c in clusters if c is not None]
+    for c in clusters:
+        c[6] = c[4] >= word_pieces
+    # step 2: everything together; a word counts as big
+    allb = bigs + clusters
+
+    def is_small(it):
+        return small(it) and it[4] < word_pieces
+
+    changed = True
+    while changed and len(allb) > 1:
+        changed = False
+        n = len(allb)
         for i in range(n):
-            if boxes[i] is None:
+            if allb[i] is None:
                 continue
             for j in range(i + 1, n):
-                if boxes[j] is None:
+                if allb[j] is None:
                     continue
-                a, b = boxes[i], boxes[j]
-                small_a = max(a[2] - a[0], a[3] - a[1]) < small_side
-                small_b = max(b[2] - b[0], b[3] - b[1]) < small_side
-                g = gap if (small_a or small_b) else min(gap, touch)
-                near = (a[0] - g <= b[2] and b[0] - g <= a[2]
-                        and a[1] - g <= b[3] and b[1] - g <= a[3])
-                if near:
-                    boxes[i] = [min(a[0], b[0]), min(a[1], b[1]),
-                                max(a[2], b[2]), max(a[3], b[3])]
-                    boxes[j] = None
+                a, b = allb[i], allb[j]
+                either_small = is_small(a) or is_small(b)
+                # a word (letters clustered in step 1) still captions the
+                # graphic beside it within `gap` — but only if its INK is
+                # that close; two original big pieces must all but touch
+                wordy = a[6] or b[6]
+                g = gap if (either_small or wordy) else min(gap, touch)
+                if near(a, b, g) and (either_small or ink_near(a, b, g)):
+                    allb[i] = merge(a, b)
+                    allb[j] = None
                     changed = True
-        boxes = [b for b in boxes if b is not None]
-    return [tuple(b) for b in boxes]
+        allb = [b for b in allb if b is not None]
+    return [tuple(b[:4]) for b in allb]
 
 
 def segment_decals(rgba, gap=16, min_side=24, pad=6, down=4, small_side=48,
@@ -1243,7 +1314,8 @@ def segment_decals(rgba, gap=16, min_side=24, pad=6, down=4, small_side=48,
     r = int(bridge) // down
     md = (np.asarray(Image.fromarray(m.astype(np.uint8) * 255)
                      .filter(ImageFilter.MaxFilter(2 * r + 1))) > 0) if r >= 1 else m
-    raw = []
+    raw, raw_ids = [], []
+    lab_img, _lab_stats = _label_runs(md, diag=True)
     for x0, y0, x1, y1 in _components(md):
         X0, Y0 = x0 * down, y0 * down
         X1, Y1 = min(W, (x1 + 1) * down), min(H, (y1 + 1) * down)
@@ -1253,8 +1325,12 @@ def segment_decals(rgba, gap=16, min_side=24, pad=6, down=4, small_side=48,
         ys, xs = np.where(sub)
         raw.append((X0 + int(xs.min()), Y0 + int(ys.min()),
                     X0 + int(xs.max()) + 1, Y0 + int(ys.max()) + 1))
+        # this component's label in the reduced map
+        cy, cx = np.nonzero(md[y0:y1 + 1, x0:x1 + 1])
+        raw_ids.append(int(lab_img[y0 + int(cy[0]), x0 + int(cx[0])]) if cy.size else 0)
     if gap and gap > 0:
-        raw = _group_boxes(raw, int(gap), int(small_side))
+        raw = _group_boxes(raw, int(gap), int(small_side), lab_img=lab_img,
+                           lab_ids=raw_ids, down=down)
     out = []
     for bx0, by0, bx1, by1 in raw:
         if (bx1 - bx0) < min_side or (by1 - by0) < min_side:
@@ -1804,7 +1880,11 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
             _sc, iou, col = _score(own, boxes[idx])
             # never swap in a different design: the best drawing must sit on
             # THIS copy's scan as well as a drawing should (else its own)
-            if best is not None and iou >= 0.75 and col <= 90:
+            # a typeset word is accepted at the text sweep's own level (the
+            # same word sits a little differently on each halftone scan:
+            # 4 of 10 DANGER! copies refused it at the graphics level)
+            need_iou, max_col = (0.65, 110) if best[2] == "text" else (0.75, 90)
+            if best is not None and iou >= need_iou and col <= max_col:
                 is_self = cands.get(idx, (None,))[0] is best
                 _place(best, boxes[idx], best[2] if is_self else "copy", how=t)
                 if not is_self:
