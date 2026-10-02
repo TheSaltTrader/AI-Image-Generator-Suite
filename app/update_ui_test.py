@@ -2068,6 +2068,24 @@ try:
           any("paper colour you picked" in ln for ln in _rg["report"]), _rg["report"])
     ui._set_decal_paper(None)
     check("Auto clears it", ui._decal_paper_rgb() is None and "auto" in str(ui.decal_paper_swatch.cget("text")))
+    # 🖨 Print beside Save As: a decal at its true size, through the print dialog
+    check("a Print button sits beside Save As", hasattr(ui, "print_btn"))
+    ui.session.append((_pe_img.convert("RGB"), dict(_pe_prm, size_in=(14.0, 7.0)), str(_pe_png)))
+    ui.current = len(ui.session) - 1
+    _pargs = []
+    ui._print_current(runner=lambda a: (_pargs.append(a), "printed")[1], sync=True)
+    ui._poll_queue(); root.update()
+    check("Print sends a decal at true size (14 in wide: tiled over pages) and reports it",
+          getattr(ui, "_last_print", (None,))[0] == "printed" and ui._last_print[1] >= 2
+          and "Sent to the printer" in ui.status_var.get(),
+          (getattr(ui, "_last_print", None), ui.status_var.get()))
+    ui.session.append((_pe_img.convert("RGB"), {"model": "flux", "seed": 7}, str(_pe_png)))
+    ui.current = len(ui.session) - 1
+    ui._print_current(runner=lambda a: "cancelled", sync=True)
+    ui._poll_queue(); root.update()
+    check("an ordinary picture prints fitted on one page; Cancel is reported",
+          ui._last_print[0] == "cancelled" and ui._last_print[1] == 1
+          and "cancelled" in ui.status_var.get())
     ui.decal_sources = []
 except Exception as _e:
     import traceback

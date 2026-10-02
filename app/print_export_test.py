@@ -134,5 +134,27 @@ except RuntimeError:
     _raised = True
 check("nothing to print is an error, not an empty folder", _raised)
 
+print("printing")
+_seen_args = []
+_wd = _td / "printwd"
+_wd.mkdir()
+_pages_pr, _size_pr = pe.layout([pe.Piece("big", 12.0, 4.0, svg=_svg, png=_png)], (8.5, 11.0), landscape=True)
+_r = pe.print_pages(_pages_pr, _size_pr, dpi=50, title="t",
+                    runner=lambda a: (_seen_args.append(a), "printed")[1], work_dir=_wd)
+_a0 = _seen_args[-1]
+_pp = sorted(_wd.glob("print_page_*.png"))
+check("print_pages renders every page at the dpi on white and hands the script the true page size",
+      _r == "printed" and len(_pp) == len(_pages_pr) == 2
+      and Image.open(_pp[0]).size == (550, 425) and Image.open(_pp[0]).mode == "RGB"
+      and Image.open(_pp[0]).getpixel((2, 2)) == (255, 255, 255)
+      and "-PageW" in _a0 and _a0[_a0.index("-PageW") + 1] == "11.0000", (_r, len(_pp), _a0))
+_res2, _n2 = pe.print_piece(pe.Piece("wide", 3.0, 1.0, png=_png), (8.5, 11.0), dpi=50,
+                            runner=lambda a: (_seen_args.append(a), "printed")[1])
+check("a wider-than-tall picture prints landscape",
+      _n2 == 1 and _seen_args[-1][_seen_args[-1].index("-PageW") + 1] == "11.0000")
+_chk = pe.print_pages(_pages_pr, _size_pr, dpi=50, title="t", check_only=True)
+check("the real print script runs in PowerShell and loads the pages (check mode)",
+      _chk == "ok 2", _chk)
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

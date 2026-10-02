@@ -1,5 +1,14 @@
 # Changelog — AI Image Generator Suite
 
+## v2.22.0 — 2026-10-01
+- **🖨 Print, beside Save As.** The selected picture goes straight to a
+  printer: the Windows Print dialog opens to pick it. A decal prints at
+  its true size (figure scale included) — vector art rendered from its
+  SVG at 600 dpi, as sharp as the printer can put down — and one bigger
+  than the page is split over several pages; the page turns for a wide
+  picture. Any other picture is fitted to the page. Set the printer to
+  its best quality.
+
 ## v2.21.0 — 2026-10-01
 - **The result is shown beside the original by itself.** When Preview one
   decal, Process decals or Redraw to vector finishes, the Compare window

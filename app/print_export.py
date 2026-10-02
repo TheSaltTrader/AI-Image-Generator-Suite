@@ -410,3 +410,114 @@ def export(entries, out_root, paper="Letter 8.5 × 11 in", landscape=False,
           "PDF has no background.\n", encoding="utf-8")
     return {"folder": str(folder), "pages": len(pages), "pieces": len(pieces),
             "tiles": tiles, "files": files}
+
+
+# ---------------------------------------------------------------- printing
+PRINT_PS1 = r'''param([string]$List, [double]$PageW, [double]$PageH, [string]$Title,
+      [switch]$CheckOnly)
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Windows.Forms
+$files = @(Get-Content -LiteralPath $List -Encoding UTF8 | Where-Object { $_ })
+$imgs = @()
+foreach ($f in $files) { $imgs += [System.Drawing.Image]::FromFile($f) }
+if ($CheckOnly) { "ok " + $imgs.Count; foreach ($m in $imgs) { $m.Dispose() }; exit 0 }
+$doc = New-Object System.Drawing.Printing.PrintDocument
+$doc.DocumentName = $Title
+$doc.OriginAtMargins = $false
+$script:i = 0
+$doc.add_PrintPage({
+    param($s, $e)
+    $g = $e.Graphics
+    $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+    $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+    $g.PageUnit = [System.Drawing.GraphicsUnit]::Inch
+    # the drawing origin is the printable corner: step back over the
+    # printer's hard margin so the picture lands at its true place
+    $hx = $e.PageSettings.HardMarginX / 100.0
+    $hy = $e.PageSettings.HardMarginY / 100.0
+    $g.DrawImage($imgs[$script:i], [single](-$hx), [single](-$hy),
+                 [single]$PageW, [single]$PageH)
+    $script:i++
+    $e.HasMorePages = ($script:i -lt $imgs.Count)
+})
+$dlg = New-Object System.Windows.Forms.PrintDialog
+$dlg.Document = $doc
+$dlg.UseEXDialog = $true
+$owner = New-Object System.Windows.Forms.Form
+$owner.TopMost = $true; $owner.ShowInTaskbar = $false
+$owner.StartPosition = 'CenterScreen'; $owner.Width = 1; $owner.Height = 1
+$owner.Show(); $owner.Activate()
+if ($dlg.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
+    # the paper the layout was made for, on the printer that was chosen
+    $land = $PageW -gt $PageH
+    $w = [math]::Round([math]::Min($PageW, $PageH) * 100)
+    $h = [math]::Round([math]::Max($PageW, $PageH) * 100)
+    foreach ($ps in $doc.PrinterSettings.PaperSizes) {
+        if ([math]::Abs($ps.Width - $w) -le 6 -and [math]::Abs($ps.Height - $h) -le 6) {
+            $doc.DefaultPageSettings.PaperSize = $ps; break
+        }
+    }
+    $doc.DefaultPageSettings.Landscape = $land
+    $doc.Print()
+    "printed"
+} else { "cancelled" }
+$owner.Close()
+foreach ($m in $imgs) { $m.Dispose() }
+'''
+
+
+def run_print_script(args, timeout=1800):
+    """Run the print script; returns its last output line. Split out so a
+    test can stand in for the real printer."""
+    import subprocess
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    r = subprocess.run(["powershell.exe", "-NoProfile", "-STA",
+                        "-ExecutionPolicy", "Bypass", "-File"] + list(args),
+                       capture_output=True, text=True, timeout=timeout,
+                       creationflags=flags)
+    out = (r.stdout or "").strip().splitlines()
+    if r.returncode != 0:
+        raise RuntimeError(((r.stderr or "").strip().splitlines() or
+                            ["the print script failed"])[-1][:300])
+    return out[-1] if out else ""
+
+
+def print_pages(pages, page_in, dpi=600, title="Decals", check_only=False,
+                runner=None, work_dir=None):
+    """Send layout pages to a printer through the Windows Print dialog:
+    each page is rendered at `dpi` (vector pieces from their SVG, so the
+    edges are as sharp as the printer can put down) on white, and drawn at
+    the page's true size in inches — 100%, never fit-to-page. Returns
+    'printed', 'cancelled' or, with check_only, 'ok N'."""
+    import tempfile
+    d = Path(work_dir or tempfile.mkdtemp(prefix="cbac_print_"))
+    files = []
+    for n, page in enumerate(pages, start=1):
+        img = render_page_png(page, page_in, dpi)
+        flat = Image.new("RGB", img.size, (255, 255, 255))
+        flat.paste(img, mask=img.split()[3])
+        f = d / f"print_page_{n:02d}.png"
+        flat.save(f, dpi=(dpi, dpi))
+        files.append(str(f))
+    lst = d / "pages.txt"
+    lst.write_text("\n".join(files) + "\n", encoding="utf-8")
+    ps1 = d / "print_pages.ps1"
+    ps1.write_text(PRINT_PS1, encoding="utf-8-sig")
+    args = [str(ps1), "-List", str(lst), "-PageW", f"{page_in[0]:.4f}",
+            "-PageH", f"{page_in[1]:.4f}", "-Title", title]
+    if check_only:
+        args.append("-CheckOnly")
+    return (runner or run_print_script)(args)
+
+
+def print_piece(piece, paper_in, dpi=600, margin_in=0.4, title="Decals",
+                runner=None, check_only=False):
+    """One picture to the printer at its true size — a decal bigger than
+    the printable area is tiled over several pages; the page is turned
+    when the picture is wider than tall. Returns (result, pages)."""
+    landscape = piece.w_in > piece.h_in
+    pages, page_in = layout([piece], paper_in, margin_in=margin_in,
+                            landscape=landscape)
+    return print_pages(pages, page_in, dpi=dpi, title=title, runner=runner,
+                       check_only=check_only), len(pages)

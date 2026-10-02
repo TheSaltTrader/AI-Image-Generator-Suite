@@ -107,7 +107,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.21.0"
+APP_VERSION = "2.22.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -5089,6 +5089,18 @@ class App:
                                   "Generate with a clone selected.")
         saveas_btn = ttk.Button(brow, text="💾 Save As…", command=self._save_as)
         saveas_btn.pack(side="left")
+        self.print_btn = ttk.Button(brow, text="🖨 Print…",
+                                    command=self._print_current)
+        self.print_btn.pack(side="left", padx=(6, 0))
+        self._tip(self.print_btn,
+                  "Print the selected picture straight from here: the "
+                  "Windows Print dialog opens to pick the printer. A decal "
+                  "prints at its TRUE size (figure scale included) — "
+                  "vector art rendered from its SVG at 600 dpi, as sharp as "
+                  "the printer allows — and one bigger than the page is "
+                  "split over several pages. Any other picture is fitted "
+                  "to the page. Set the printer to its best quality and "
+                  "to 100% / actual size.")
         self._tip(saveas_btn, "Save the selected image (or GIF) somewhere of "
                               "your choosing. Every image is also auto-saved to "
                               "the output folder.")
@@ -11125,6 +11137,17 @@ class App:
                         self.decal_status_var.set(
                             "Paper colour read from the page — it becomes "
                             "transparent.")
+                elif kind == "print_done":
+                    res, n, perr = msg[1], msg[2], msg[3]
+                    self._last_print = (res, n, perr)
+                    if perr:
+                        self.status_var.set(f"Print failed: {perr}")
+                    elif res == "printed":
+                        self.status_var.set(
+                            f"Sent to the printer — {n} page(s) at true size, "
+                            "600 dpi.")
+                    else:
+                        self.status_var.set("Print cancelled.")
                 elif kind == "decal_pull_progress":
                     try:
                         self.decal_pull_bar["value"] = int(
@@ -12124,6 +12147,69 @@ class App:
         if path:
             shutil.copy2(self._save_source(params, src, path), path)
             self.status_var.set(f"Saved to {path}")
+
+    def _print_piece_for(self, img, params, src):
+        """The selected gallery entry as one print_export.Piece: a decal at
+        its true size (its SVG for crisp edges), anything else at 300 dpi
+        fitted inside the printable area."""
+        paper = print_export.PAPER_IN.get(
+            getattr(self, "_print_paper", ""), print_export.PAPERS[0][1:])
+        prm = params if isinstance(params, dict) else {}
+        svg_txt = None
+        if prm.get("svg") and Path(str(prm["svg"])).exists():
+            svg_txt = Path(str(prm["svg"])).read_text(encoding="utf-8")
+        png = None
+        if prm.get("png") and Path(str(prm["png"])).exists():
+            png = Image.open(str(prm["png"])).convert("RGBA")
+        if png is None:
+            png = (img if img is not None else Image.open(str(src))).convert("RGBA")
+        label = str(prm.get("seed") or Path(str(src)).stem)
+        size = prm.get("size_in") if prm.get("model") == "decal" else None
+        if size and size[0] and size[1]:
+            return print_export.Piece(label, size[0], size[1], svg=svg_txt,
+                                      png=png), paper
+        w_in, h_in = png.width / 300.0, png.height / 300.0
+        long_page = max(paper) - 0.8
+        short_page = min(paper) - 0.8
+        a, b = max(w_in, h_in), min(w_in, h_in)
+        k = min(1.0, long_page / a, short_page / b)
+        return print_export.Piece(label, w_in * k, h_in * k, svg=svg_txt,
+                                  png=png), paper
+
+    def _print_current(self, runner=None, sync=False):
+        """🖨 Print: the selected picture to a printer through the Windows
+        Print dialog, at true size and 600 dpi (see _print_piece_for)."""
+        if self.current is None or not self.session:
+            self.status_var.set("Pick a picture in the gallery first, then Print.")
+            return
+        img, params, src = self.session[self.current]
+        if str(src).lower().endswith(".gif"):
+            self.status_var.set("A GIF animation can't be printed — pick a "
+                                "still picture.")
+            return
+        try:
+            piece, paper = self._print_piece_for(img, params, src)
+        except Exception as e:
+            applog.exception("print: could not read the picture")
+            self.status_var.set(f"Print: could not read the picture: {e}")
+            return
+        ui_q = self.ui_queue
+        self.status_var.set("Print — preparing the page(s) at 600 dpi…")
+
+        def work():
+            try:
+                res, n = print_export.print_piece(piece, paper, dpi=600,
+                                                  title=piece.label,
+                                                  runner=runner)
+                ui_q.put(("print_done", res, n, None))
+            except Exception as e:
+                applog.exception("print failed")
+                ui_q.put(("print_done", None, 0, str(e)))
+
+        if sync:
+            work()
+        else:
+            threading.Thread(target=work, daemon=True).start()
 
     # -------------------------------------------------- border maker
     def _generate_border(self, queue=False):

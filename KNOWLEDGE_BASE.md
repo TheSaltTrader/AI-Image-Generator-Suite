@@ -1003,6 +1003,23 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Print beside Save As (v2.22.0).** User: "Add a print button next to
+  save as so it possible to print the svg in the highest quality straight
+  to the user". The default PDF handler here is Edge (ProgId MSEdgePDF),
+  which has no "print" shell verb, so `os.startfile(pdf, "print")` is not
+  a route. `print_export.print_pages` renders each layout page at 600 dpi
+  (SVG pieces through `render_svg`, so edges are vector-sharp at printer
+  resolution), flattens on white, and runs `PRINT_PS1` (powershell -STA):
+  System.Windows.Forms.PrintDialog (UseEXDialog, a TopMost 1-px owner so
+  it is not behind the app) + System.Drawing.Printing.PrintDocument; the
+  PrintPage handler draws in GraphicsUnit.Inch at the page's true size,
+  shifted by −HardMarginX/Y (OriginAtMargins=false puts the origin at the
+  printable corner); after OK the printer's PaperSize matching the layout
+  is chosen and Landscape set for a wide page. `-CheckOnly` loads the
+  pages and exits — the test runs the REAL script that way. App:
+  `print_btn` → `_print_current` → `_print_piece_for` (decal = true size
+  + its SVG; other = 300 dpi fitted to the page) → `print_piece` (layout
+  with tiling) on a worker; `print_done` reports. Tests 422/51/20.
 - **Compare opens by itself after a job (v2.21.0).** User: "preview one
   decal and all the other process under decal that modify the original
   image should display the original and the modified image so the user
