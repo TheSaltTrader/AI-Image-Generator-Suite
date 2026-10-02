@@ -229,6 +229,20 @@ check("text_geometry sees two rows of lettering",
 _blob = Image.new("RGBA", (200, 200), (0, 0, 0, 0))
 _ID.Draw(_blob).ellipse([20, 20, 180, 180], fill=(10, 10, 10, 255))
 check("…and a solid graphic is not text", not _dec.text_geometry(_blob)["text"])
+# the GI JOE banner: a logo word plus a solid bar — not lettering
+_ban = Image.new("RGBA", (600, 120), (0, 0, 0, 0))
+_bd = _ID.Draw(_ban)
+_bd.text((10, 25), "GI JOE", font=_IF.truetype(str(vr._find_font("Arial Black")), 60), fill=(255, 255, 255, 255))
+_bd.rectangle([260, 30, 590, 95], fill=(255, 255, 255, 255))
+check("a logo with a solid banner bar is not taken for lettering", not _dec.text_geometry(_ban)["text"])
+# a condensed word in a narrow box is fitted to the box, not clipped
+_cond = {"lines": [{"text": "DANGER!", "colour": "#cc1020", "weight": "bold", "italic": False}],
+         "align": "center"}
+_svgc = vr.typeset_lines(_cond, [(5, 10, 135, 50)], 140, 60, 0.47, 0.2, palette=[(206, 22, 30)])
+_rc = np.asarray(vr.render_svg(_svgc, 140))
+_cols = np.nonzero(_rc[..., 3].max(0) > 0)[0]
+check("a condensed word is squeezed to the box the scan shows (no clipping)",
+      _cols.size and _cols.min() >= 3 and _cols.max() <= 137, (_cols.min() if _cols.size else None, _cols.max() if _cols.size else None))
 _read = {"lines": [{"text": "DANGER", "colour": "#cc1020", "weight": "bold", "italic": False},
                    {"text": "JET BLAST", "colour": "#cc1020", "weight": "bold", "italic": False}],
          "align": "left"}

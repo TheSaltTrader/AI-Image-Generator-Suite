@@ -1135,7 +1135,12 @@ def text_geometry(crop_rgba):
         # when the decal is a single caption line
         if h < 6:
             continue
-        word = w >= 2.5 * h and w <= 12 * h
+        # a word of touching letters has the gaps between and inside the
+        # letters: it fills well under 3/4 of its box. A solid bar or
+        # panel (the white GI JOE banner) fills it — that is not text
+        # (v2.23.1: the banner was replaced by "G.I.JOE" in Arial)
+        fill = area / float(max(1, w * h))
+        word = w >= 2.5 * h and w <= 12 * h and fill < 0.75
         letter = h <= 6 * w and w <= 3 * h and area <= 0.45 * total
         if word or letter:
             letters.append((x0, y0, x1, y1, area, w, h))

@@ -736,7 +736,11 @@ def typeset_lines(read, line_boxes, W, H, w_in, h_in, palette=None):
         if natural <= 0:
             return None
         box_w = float(x1 - x0)
-        shown = min(1.35 * natural, max(0.7 * natural, box_w))
+        # exactly the width the scan shows: a condensed original (DANGER!)
+        # is narrower than Arial Bold, and a 70% floor let the word run
+        # past the decal and get clipped (v2.23.1); a misread can still
+        # not stretch or squash it past 0.4-1.6x
+        shown = min(1.6 * natural, max(0.4 * natural, box_w))
         if align == "left":
             x, anchor = x0, "start"
         elif align == "right":
@@ -871,7 +875,9 @@ def make_text_fn(client, model, target_dpi, stats=None, cancelled=None,
                 log("text sweep: %d line(s) read, %d row(s) on the scan; "
                     "normal path used" % (len(read["lines"]), len(boxes)))
             return None
-        ok, iou, col = check_against_scan(svg, crop, min_iou=0.4)
+        # text must sit on the scan's letters closely (0.4 let a clipped
+        # word and a banner-turned-text through)
+        ok, iou, col = check_against_scan(svg, crop, min_iou=0.65)
         if not ok:
             st["text_fallback"] += 1
             if log:

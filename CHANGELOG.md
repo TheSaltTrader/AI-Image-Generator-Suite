@@ -1,5 +1,13 @@
 # Changelog — AI Image Generator Suite
 
+## v2.23.1 — 2026-10-02
+- **Text sweep fixes.** A logo with a solid banner (the white GI JOE
+  banners) was taken for plain lettering and replaced by "G.I.JOE" in
+  Arial — a solid bar is no longer counted as a word. A condensed word
+  (DANGER!) was set wider than the original and cut off at both ends —
+  typeset text now takes exactly the width the scan shows. Typeset text
+  must also sit closer on the scan's letters before it is accepted.
+
 ## v2.23.0 — 2026-10-02
 - **New Redraw method: Recraft vectorize (fal.ai).** Each decal goes to
   Recraft's dedicated bitmap-to-SVG vectorizer. Pay as you go: prepaid

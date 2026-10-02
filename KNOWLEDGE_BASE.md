@@ -1003,6 +1003,21 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Text sweep: banners and condensed words (v2.23.1).** User compared a
+  run (it was the VISION method — settings decal_method "vision", every
+  decal_NN.svg a Claude/text-sweep drawing; Recraft had not run): "danger
+  is completely cut off, the whale design takes liberties and the banner
+  is not the same". Causes: `text_geometry`'s "word" rule (w ≥ 2.5h)
+  accepted the SOLID white banner bar as a word → the GI JOE logo+banner
+  became Arial "G.I.JOE"; fix: a word piece must fill < 0.75 of its box
+  (letters leave gaps; a bar fills ~1.0). `typeset_lines` clamped the
+  width to ≥ 0.7× Arial's natural width; the original DANGER! is
+  condensed, so the word overflowed the crop and was clipped both ends
+  (svg translate -77); fix: textLength = the row's width within 0.4-1.6×.
+  `make_text_fn` check min_iou 0.4 → 0.65. Live: one DANGER! read and set
+  complete, $0.004. On KW p2 only the 9 DANGER! decals now count as text.
+  The whale "liberties" are the vision model drawing from description —
+  for faithful logos use the clean trace or Recraft. Tests vector 56.
 - **Recraft vectorize via fal.ai (v2.23.0).** User asked for a better
   vector API with its own key, pay-as-you-go only. Vectorizer.AI is
   subscription-only (monthly plans from $9.99, credits roll over 5x);
