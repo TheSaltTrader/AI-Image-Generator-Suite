@@ -1963,6 +1963,65 @@ except Exception as _e:
     check("photo mode runs headless", False, repr(_e))
 
 # ---- taskbar identity (v2.16.1) -------------------------------------------
+# ---- no freezes: fast morphology, per-decal Vectorize (v2.22.7) ------------
+print("no window freezes")
+try:
+    import time as _t13, threading as _th13
+    from PIL import ImageFilter as _IF13
+    _rng = _np6.random.default_rng(3)
+    _m13 = _rng.random((70, 90)) > 0.7
+    _pd = _np6.asarray(app.Image.fromarray((_m13 * 255).astype(_np6.uint8)).filter(_IF13.MaxFilter(7))) > 0
+    _pe = _np6.asarray(app.Image.fromarray((_m13 * 255).astype(_np6.uint8)).filter(_IF13.MinFilter(7))) > 0
+    check("the running-sum dilation and erosion match Pillow's filters",
+          bool((_dec.dilate_mask(_m13, 3) == _pd).all())
+          and bool((_dec.erode_mask(_m13, 3)[3:-3, 3:-3] == _pe[3:-3, 3:-3]).all()))
+    _gaps = []
+    _stop = _th13.Event()
+
+    def _tick():
+        _last = _t13.perf_counter()
+        while not _stop.is_set():
+            _t13.sleep(0.01)
+            _now = _t13.perf_counter()
+            _gaps.append(_now - _last)
+            _last = _now
+    _th13.Thread(target=_tick, daemon=True).start()
+    _bigd = app.Image.new("RGBA", (2546, 1031), (0, 0, 0, 0))
+    _bigd.paste((20, 20, 30, 255), (100, 100, 2400, 900))
+    _svgb = ('<svg xmlns="http://www.w3.org/2000/svg" width="2546" height="1031" '
+             'viewBox="0 0 2546 1031"><rect x="100" y="100" width="2300" height="800" '
+             'fill="#14141e"/></svg>')
+    _gaps.clear()
+    app.vector_redraw.check_against_scan(_svgb, _bigd)
+    _g1 = max(_gaps or [0])
+    # a sheet with several decals through Vectorize
+    _sheet13 = app.Image.new("RGB", (1400, 900), (222, 253, 255))
+    _dd = app.ImageDraw.Draw(_sheet13)
+    for _q in range(6):
+        _dd.rectangle([40 + 220 * _q, 60, 200 + 220 * _q, 300], fill=(200, 20, 30))
+        _dd.ellipse([40 + 220 * _q, 400, 200 + 220 * _q, 560], fill=(20, 20, 30))
+        _dd.ellipse([80 + 220 * _q, 440, 160 + 220 * _q, 520], fill=(239, 255, 254))
+    _gaps.clear()
+    _rv = _dec.process_image(_sheet13, mode="vector", remove_bg=True, denoise=0, tol=52,
+                             target_dpi=600, native_dpi=300, exact=True, tidy_matte=True,
+                             fill_holes=True, balance=False)
+    _g2 = max(_gaps or [0])
+    _stop.set()
+    _av = _np6.asarray(_rv["rgba"])
+    check("the scan check on a big decal never starves the window (was 178 s)", _g1 < 1.0, round(_g1, 2))
+    check("Vectorize traces decal by decal: no long freeze, transparent background, "
+          "red stays red, white ink stays white",
+          _g2 < 2.0 and _av[10, 10, 3] == 0 and _av[360, 240, 3] == 255
+          and _av[360, 240, 0] > 170 and _av[360, 240, 1] < 80
+          and _av[960, 240, 3] == 255 and _av[960, 240, :3].min() > 230,
+          (round(_g2, 2), _av[10, 10].tolist(), _av[360, 240].tolist(), _av[960, 240].tolist()))
+    check("…and its SVG has no full-page background layer",
+          "#730073" not in _rv["svg"] and 'width="1400.0000in"' not in _rv["svg"])
+except Exception as _e:
+    import traceback
+    traceback.print_exc()
+    check("no-freeze checks run headless", False, repr(_e))
+
 # ---- redraw only the chosen pages (v2.22.6) ---------------------------------
 print("pages to redraw")
 try:
@@ -2355,10 +2414,9 @@ try:
                 break
             _time8.sleep(0.05)
         _w9 = getattr(ui, "_compare_win", None)
-        check("Process / Preview / Redraw open Compare on their result by themselves, "
-              "and the job's Done line stays",
-              _w9 is not None and _w9.left.image is not None
-              and ui.decal_status_var.get().startswith("Done"), ui.decal_status_var.get())
+        check("no job opens Compare by itself (the user presses ⇄); the Done line stays",
+              _w9 is None and ui.decal_status_var.get().startswith("Done"),
+              ui.decal_status_var.get())
         if _w9 is not None:
             _w9.destroy()
         ui._compare_win = None

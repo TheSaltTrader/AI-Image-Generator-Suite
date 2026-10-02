@@ -107,7 +107,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.22.6"
+APP_VERSION = "2.22.7"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -2167,10 +2167,12 @@ def swap_composite(base, swapped, feather=25, stats=None):
                           dtype=np.float32)
         mean = float(diff.mean())
         thr = min(max(16.0, 2.4 * mean), SWAP_THR_CAP)
-        hard = Image.fromarray(np.uint8((diff >= thr) * 255))
         k = max(9, (min(base.size) // 32) | 1)
-        hard = hard.filter(ImageFilter.MinFilter(k))
-        hard = hard.filter(ImageFilter.MaxFilter(k + 4))
+        # running-sum morphology (Pillow's Min/MaxFilter at this size holds
+        # Python's lock for seconds and freezes the window)
+        hm = decals.erode_mask(diff >= thr, k // 2)
+        hm = decals.dilate_mask(hm, (k + 4) // 2)
+        hard = Image.fromarray(np.uint8(hm * 255))
         mask_frac = float((np.asarray(hard) > 0).mean())
         if stats is not None:
             stats.update(mean=round(mean, 1), thr=round(thr, 1),
@@ -6428,6 +6430,10 @@ class App:
         landed) is left as it is."""
         p = getattr(self, "_last_run_entry", None)
         self._last_run_entry = None
+        # the user's rule (v2.22.7): no window opens unless they press the
+        # button — not after Redraw, Preview or Process
+        if not getattr(self, "_auto_compare", False):
+            return
         if what == "redraw":
             return
         if err or not n or not p or not getattr(self, "_auto_compare", True):

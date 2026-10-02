@@ -221,7 +221,7 @@ global across installs, and both share the one engine/GPU. `tasklist` for
 ### Run tests (use the **venv python** — system python lacks pymupdf/vtracer)
 ```
 venv\Scripts\python.exe app\update_ui_test.py     # MAIN gate — builds the real
-                                                  # App (engine/net stubbed), 437 checks
+                                                  # App (engine/net stubbed), 441 checks
 venv\Scripts\python.exe app\vector_redraw_test.py # vision redraw, fake client (54)
 venv\Scripts\python.exe app\print_export_test.py  # print layout + PDF/PNG/SVG + printing (20)
 venv\Scripts\python.exe app\swap_test.py          # face-swap two-step (22)
@@ -320,6 +320,12 @@ on GitHub).
 
 ## 9. Gotchas / standing rules
 
+- **Never block the window from a worker:** Pillow rank filters
+  (Max/Min/Mode/Median with a big size), vtracer and pymupdf hold the GIL
+  for the whole call — a long one freezes Tk ("Not responding"). Use
+  `decals.dilate_mask`/`erode_mask` for morphology and keep each native
+  call small (trace per decal). stall.log beside app.log records any
+  freeze over 5 s with every thread's stack — read it first.
 - **Taskbar identity:** the process declares `APP_AUMID`; shortcuts and
   pins must carry the same AppUserModelID or the taskbar treats the running
   window as a different app. `_ensure_shortcuts()` stamps it at every
@@ -345,7 +351,7 @@ on GitHub).
 
 ## 10. State at handoff
 
-- All test suites green (update_ui 437, vector_redraw 54, print_export 20). Frozen build
+- All test suites green (update_ui 441, vector_redraw 54, print_export 20). Frozen build
   self-test passes (incl. the SDK, fontTools and text outlining frozen).
 - Latest release published to GitHub; dev tree clean (only gitignored build
   artifacts untracked). `Stickers/_final/` holds the user's cleaned sample

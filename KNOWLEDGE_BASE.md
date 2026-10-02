@@ -1003,6 +1003,34 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **The freezes, proven; Vectorize rebuilt; no auto-Compare (v2.22.7).**
+  stall.log (the v2.22.4 recorder) caught five freezes: 5-6.5 s with the
+  worker in `vectorize` line 818 (vtracer on a WHOLE page, Process in
+  Vectorize mode) and 178.3 s in `check_against_scan` → `mask` →
+  Pillow `MaxFilter(k)` with k = 2·(2% of the crop)+1 ≈ 103 on a
+  2546 px decal. Pillow's rank filters are O(k²)/pixel and, like vtracer
+  (PyO3) and pymupdf, HOLD THE GIL for the whole call, so the Tk thread
+  cannot run. Fix the CLASS: `decals.dilate_mask` / `erode_mask`
+  (running sums via `_box_mean`, equal to Pillow's Max/MinFilter —
+  tested), used in check_against_scan, redraw_sheet's band, the
+  face-swap composite; `trace_sheet` now traces DECAL BY DECAL
+  (`segment_decals` gap 6) so each vtracer call is short; `_majority`
+  replaces ModeFilter. Measured with a 10 ms ticker: Vectorize p2 0.67 s
+  longest starvation (was the whole call), the scan check 0.01 s (was
+  minutes). Vectorize quality: the old path quantised the WHOLE page to
+  16 MEDIANCUT colours (film-dominated → red became maroon), dropped
+  light bluish fills as "halo" (= white ink on blue film) and lost thin
+  letters to filter_speckle at 1x; the base layer came out #730073 on
+  big canvases and was not recognised as background (full-page purple
+  sheet = the "blank page") — `vectorize` now drops the FIRST path when
+  it spans the padded canvas, by geometry. Per decal: palette_of (merge
+  40, min_share 0.004, erode 1), enlarge 2-3x (≤ 3600 px), snap, edge
+  band (1 scan px + soft alpha) takes the solid neighbour's index, 3x3
+  majority, trace with drop_halo=False. TRIED AND REVERTED: a 2-px band
+  and merge 70 — rings broke into dashes, letters got white holes.
+  Auto-Compare off for every job (user: "Do not pop up the screen
+  without the user pressing the button"); `_auto_compare` flag default
+  False. Tests 441/54/20 (+ swap 22).
 - **Pages to redraw (v2.22.6).** User: "When rewriting to vector, allow
   to select a specific page and not do all the pages from the pdf."
   `decals.parse_pages` ('all'/'' → None, '2', '1,3', '2-4', mixes;

@@ -1091,9 +1091,12 @@ def check_against_scan(svg_text, crop_rgba, min_iou=0.45, max_colour=110.0):
     pad = max(1, int(round(0.02 * max(W, H))))
     k = 2 * pad + 1
 
+    import decals as _dec
+
     def mask(arr):
-        m = Image.fromarray(((arr[..., 3] > 128) * 255).astype(np.uint8))
-        return np.asarray(m.filter(ImageFilter.MaxFilter(k))) > 0
+        # a running-sum dilation: Pillow's MaxFilter(k) on a big decal held
+        # Python's lock for minutes and froze the window (v2.22.7)
+        return _dec.dilate_mask(arr[..., 3] > 128, pad)
 
     ms, md = mask(a), mask(d)
     inter = (ms & md).sum()

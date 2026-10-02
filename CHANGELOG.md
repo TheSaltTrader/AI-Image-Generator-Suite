@@ -1,5 +1,21 @@
 # Changelog — AI Image Generator Suite
 
+## v2.22.7 — 2026-10-02
+- **Fixed: the window froze ("Not responding") during Redraw and
+  Vectorize.** The freeze recorder caught it: checking the vision model's
+  drawing against the scan ran a very large image filter that blocks the
+  whole app for as long as it runs — 178 seconds on a big decal — and
+  Vectorize traced a whole page in one blocking call. Both now run in
+  short steps; the window stays responsive throughout.
+- **Vectorize rebuilt.** It used to squeeze the page into 16 colours
+  (mostly film), so red came out maroon, white ink was thrown away and
+  thin letters vanished — or a full-page background layer covered
+  everything. Now each decal is traced on its own, enlarged 2-3x, in the
+  sheet's own exact ink colours, white kept, edges clean, background
+  transparent.
+- **Compare never opens by itself.** It opens only when you press ⇄
+  Compare.
+
 ## v2.22.6 — 2026-10-02
 - **Redraw only the pages you pick.** A "Pages to redraw" box beside the
   redraw buttons: 'all', a page number (2), a list (1,3) or a range

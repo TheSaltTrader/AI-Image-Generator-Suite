@@ -841,7 +841,27 @@ def vectorize(rgba, target_px=2400, filter_speckle=12, color_precision=8,
                 and (max(r, g, b) - min(r, g, b)) < 42   # light, bluish, low-sat
             return magenta or (halo and drop_halo)
 
+        Hp, Wp = rgb.shape[:2]
+        seen = {"first": True}
+
+        def _base_layer(tag):
+            # vtracer's stacked mode starts with ONE path covering the whole
+            # (padded) canvas: the background. On big canvases its colour
+            # comes out averaged (#730073, not magenta), so it is recognised
+            # by being first and spanning the canvas, not by colour.
+            if not seen["first"]:
+                return False
+            seen["first"] = False
+            d = re.search(r'd="M0 0 C([^"]*)"', tag)
+            if not d:
+                return False
+            nums = [float(v) for v in
+                    re.findall(r"-?\d+(?:\.\d+)?", d.group(1)[:400])]
+            return bool(nums) and max(nums) >= 0.95 * max(Wp, Hp)
+
         def _clean_path(m):
+            if _base_layer(m.group(0)):
+                return ""
             fill = re.search(r'fill="(#[0-9A-Fa-f]{6})"', m.group(0))
             return "" if (fill and _drop(fill.group(1))) else m.group(0)
 
@@ -1303,6 +1323,127 @@ def palette_of(rgba, colors=16, merge=40, sample=200000, min_share=0.01,
     return np.array(kept, np.uint8) if kept else None
 
 
+def dilate_mask(mask, r):
+    """Boolean dilation by a (2r+1) square — a running sum, O(1) per pixel.
+    Pillow's MaxFilter is O(r^2) per pixel AND holds Python's lock for the
+    whole call: a 103x103 one froze the window for 178 s (v2.22.7)."""
+    if r <= 0:
+        return mask.astype(bool)
+    return _box_mean(mask.astype(np.float32), int(r)) > 1e-9
+
+
+def erode_mask(mask, r):
+    """Boolean erosion by a (2r+1) square (see dilate_mask). Pixels whose
+    window runs off the picture count the outside as empty."""
+    if r <= 0:
+        return mask.astype(bool)
+    m = mask.astype(np.float32)
+    H, W = m.shape
+    pad = np.pad(m, int(r))
+    full = _box_mean(pad, int(r))[int(r):int(r) + H, int(r):int(r) + W]
+    # _box_mean divides by the clipped area; inside the padded frame the
+    # area is always full, so a mean of 1 means every pixel was set
+    return full > 1 - 1e-6
+
+
+def _majority(lab, keep, n_labels, r=1):
+    """For each kept pixel, the most frequent label in its (2r+1) square
+    among kept pixels — a mode filter by running sums (small arrays)."""
+    best = np.full(lab.shape, -1.0, np.float32)
+    out = lab.copy()
+    for i in range(n_labels):
+        cnt = _box_mean(((lab == i) & keep).astype(np.float32), r)
+        take = cnt > best
+        out[take] = i
+        best = np.maximum(best, cnt)
+    return np.where(keep, out, lab)
+
+
+def _trace_piece(rgba, pal, s, target_px, alpha_cut=160):
+    """One decal: enlarged s times, snapped to the palette, its edge
+    blends given the colour of the ink just inside, a 3x3 majority pass,
+    traced with the white kept. Returns (svg, raster) like vectorize()."""
+    W, H = rgba.size
+    up = rgba.resize((W * s, H * s), Image.LANCZOS)
+    ua = np.asarray(up)
+    alpha = ua[..., 3]
+    keep = alpha >= alpha_cut
+    if pal is None:
+        flat = ua[..., :3].copy()
+    else:
+        P = np.asarray(pal, np.int32)
+        px = ua[..., :3].astype(np.int32).reshape(-1, 3)
+        idx = ((px[:, None, :] - P[None, :, :]) ** 2).sum(2).argmin(1)
+        idx = idx.reshape(alpha.shape).astype(np.int32)
+        # edge blends (the outer scan pixel and soft alpha) take the index
+        # of a solid neighbour; a real outline's inside is the outline
+        solid = erode_mask(keep, s) & (alpha >= 250)
+        edge = keep & ~solid
+        have = solid.copy()
+        for _ in range(3 * s):
+            if not (edge & ~have).any():
+                break
+            grown = idx.copy()
+            got = have.copy()
+            for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0),
+                           (1, 1), (1, -1), (-1, 1), (-1, -1)):
+                src_have = np.roll(np.roll(have, dy, 0), dx, 1)
+                src_idx = np.roll(np.roll(idx, dy, 0), dx, 1)
+                take = edge & ~got & src_have
+                grown[take] = src_idx[take]
+                got |= take
+            idx, have = grown, got
+        idx = _majority(idx, keep, len(pal), r=1)
+        flat = np.zeros(alpha.shape + (3,), np.uint8)
+        flat[keep] = np.asarray(pal, np.uint8)[np.clip(idx[keep], 0, len(pal) - 1)]
+    out = np.dstack([flat, (keep * 255).astype(np.uint8)])
+    return vectorize(Image.fromarray(out, "RGBA"), target_px=target_px,
+                     filter_speckle=max(4, 2 * s), quantize_colors=0,
+                     presmooth=False, drop_halo=False)
+
+
+def trace_sheet(rgba, target_px, alpha_cut=160, colors=16, cancelled=None):
+    """Vectorize a whole cleaned sheet faithfully (the 'Vectorize' mode),
+    ONE DECAL AT A TIME: the tracer holds Python's lock for its whole
+    call, and a whole page at 2-3x froze the window for seconds. Per
+    decal every call stays short. The palette is the sheet's own inks
+    (palette_of, near-white = white ink); each decal is enlarged 2-3x so
+    thin strokes survive, snapped, edge blends re-coloured from inside,
+    traced with the white kept (the alpha says what is background).
+    Returns (sheet_svg in scan-pixel coordinates, raster at target_px)."""
+    rgba = rgba.convert("RGBA")
+    W, H = rgba.size
+    pal = palette_of(rgba, colors=colors, merge=40, min_share=0.004, erode=1)
+    k = float(target_px) / max(1, W)
+    sheet = Image.new("RGBA", (max(1, int(round(W * k))),
+                               max(1, int(round(H * k)))), (0, 0, 0, 0))
+    parts = []
+    boxes = segment_decals(rgba, gap=6, min_side=4, pad=4)
+    for (x0, y0, x1, y1) in boxes:
+        if cancelled and cancelled():
+            return None
+        crop = rgba.crop((x0, y0, x1, y1))
+        cw, ch = crop.size
+        s = 3 if max(cw, ch) * 3 <= 3600 else (2 if max(cw, ch) * 2 <= 3600 else 1)
+        pw = max(1, int(round(cw * k)))
+        svg, ras = _trace_piece(crop, pal, s, target_px=pw, alpha_cut=alpha_cut)
+        ph = max(1, int(round(ch * k)))
+        if ras.size != (pw, ph):
+            ras = ras.resize((pw, ph), Image.LANCZOS)
+        px, py = int(round(x0 * k)), int(round(y0 * k))
+        part = ras.crop((0, 0, max(1, min(pw, sheet.width - px)),
+                         max(1, min(ph, sheet.height - py))))
+        if px < sheet.width and py < sheet.height:
+            sheet.alpha_composite(part, (px, py))
+        parts.append(f'<g transform="translate({x0} {y0}) scale({1.0 / s:.6f})">'
+                     f'{svg_inner(svg)}</g>')
+    sheet_svg = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+                 '<svg xmlns="http://www.w3.org/2000/svg" version="1.1" '
+                 f'width="{W}" height="{H}" viewBox="0 0 {W} {H}">\n'
+                 + "\n".join(parts) + "\n</svg>\n")
+    return sheet_svg, sheet
+
+
 def snap_palette(rgb_img, palette):
     """Replace every pixel by the nearest colour of `palette` — the redrawn
     art then uses EXACTLY the scan's colours (and traces as flat fills)."""
@@ -1442,8 +1583,7 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
         sil = crop.split()[3].resize((wr, hr), Image.BILINEAR)
         sil = np.asarray(sil.point(lambda v: 255 if v >= 128 else 0)) > 0
         band_r = max(3, int(round(0.012 * max(wr, hr))))
-        inner = np.asarray(Image.fromarray(sil.astype(np.uint8) * 255)
-                           .filter(ImageFilter.MinFilter(2 * band_r + 1))) > 0
+        inner = erode_mask(sil, band_r)     # not MinFilter: see dilate_mask
         # "light" = white-ish / light grey, i.e. the background or the faint
         # contour some models draw around a shape (a sticker-border look)
         def _light(arr):
@@ -1634,7 +1774,11 @@ def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
         scale = max(1.0, float(target_dpi) / max(72, native_dpi))
         target_px = int(rgba.width * scale)
         pw, ph = rgba.size
-        out["svg"], rgba = vectorize(rgba, target_px=target_px)
+        # the faithful trace: the scan's own palette, enlarged, hard edges
+        # (the old 16-colour quantise of the whole page — mostly film —
+        # turned red to maroon, dropped white ink as "halo" and lost thin
+        # letters to the speckle filter: v2.22.7)
+        out["svg"], rgba = trace_sheet(rgba, target_px=target_px)
         # the SVG states its printed size (scan pixels / scan DPI, times the
         # figure-scale conversion), so it opens and prints at size
         ss = size_scale if size_scale and size_scale > 0 else 1.0
