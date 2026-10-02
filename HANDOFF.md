@@ -224,8 +224,7 @@ venv\Scripts\python.exe app\update_ui_test.py     # MAIN gate — builds the rea
                                                   # App (engine/net stubbed), 444 checks
 venv\Scripts\python.exe app\vector_redraw_test.py # vision redraw, fake client (54)
 venv\Scripts\python.exe app\print_export_test.py  # print layout + PDF/PNG/SVG + printing (20)
-venv\Scripts\python.exe app
-ecraft_test.py         # Recraft vectorize client, fake fal.ai (10)
+venv\Scripts\python.exe app\recraft_test.py         # Recraft vectorize client, fake fal.ai (10)
 venv\Scripts\python.exe app\swap_test.py          # face-swap two-step (22)
 venv\Scripts\python.exe app\variations_test.py    # clones store (18)
 # others: self_update_test, ragmap_test, engine_files_test, startup_test, applog_test, …
