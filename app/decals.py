@@ -579,6 +579,14 @@ def _carrier_alpha(a_rgb, carrier, tol=52, soft=18):
             rel_img = Image.fromarray((rel * 255).astype(np.uint8))
             rel = np.asarray(rel_img.filter(ImageFilter.MinFilter(3))
                              .filter(ImageFilter.MaxFilter(3))) > 0
+            # a thin light band hugging DARK ink is the blend where black
+            # letters meet the film (less film tint, so it passed as white):
+            # it drew a white rim round the sheet's black lettering
+            # (v2.24.3). Thicker white survives — its core is kept.
+            dark = light < 90
+            core = erode_mask(rel, 2)
+            rim = rel & ~dilate_mask(core, 2) & dilate_mask(dark, 2)
+            rel = rel & ~rim
             is_white = is_white | rel
         carrier_like = ((dist < tol) | ((proj > 0.55) & (proj < 1.8)
                         & (np.abs(light - grayC) < 40))) & (~is_white)
@@ -1147,7 +1155,7 @@ def text_geometry(crop_rgba):
         word = w >= 2.5 * h and w <= 12 * h and fill < 0.88
         letter = h <= 6 * w and w <= 3 * h and area <= 0.45 * total
         if word or letter:
-            letters.append((x0, y0, x1, y1, area, w, h))
+            letters.append((x0, y0, x1, y1, area, w, h, lab))
     if not letters:
         return none
     hs = sorted(p[6] for p in letters)
@@ -1167,8 +1175,26 @@ def text_geometry(crop_rgba):
     rows = [r for r in rows
             if len(r["items"]) >= 2
             or (r["items"][0][5] >= 2.5 * r["items"][0][6])]
+    # a "row" much lower than the letters is a stripe's fragments, not a
+    # line of lettering (REMOVAL's stripes beside the word)
+    rows = [r for r in rows
+            if max(p[3] for p in r["items"]) - min(p[1] for p in r["items"])
+            + 1 >= 0.5 * med_h]
     if not rows:
         return none
+    # a piece in a row whose colour is not the lettering's (REMOVAL's red
+    # triangle in line with its white word) is a graphic, not a letter
+    rgb = a[..., :3].astype(np.float32)
+    for r in rows:
+        cols = []
+        for p in r["items"]:
+            sub = labels[p[1]:p[3] + 1, p[0]:p[2] + 1] == p[7]
+            cols.append(rgb[p[1]:p[3] + 1, p[0]:p[2] + 1][sub].mean(0))
+        weights = np.array([p[4] for p in r["items"]], np.float32)
+        ref = (np.array(cols) * weights[:, None]).sum(0) / max(1.0, weights.sum())
+        keep_it = [p for p, c in zip(r["items"], cols)
+                   if float(np.sqrt(((c - ref) ** 2).sum())) <= 80]
+        r["items"] = keep_it or r["items"]
     in_rows = sum(p[4] for r in rows for p in r["items"])
     share = in_rows / float(total)
     lines = []
@@ -1177,8 +1203,36 @@ def text_geometry(crop_rgba):
         lines.append((min(p[0] for p in it), min(p[1] for p in it),
                       max(p[2] for p in it) + 1, max(p[3] for p in it) + 1))
     lines.sort(key=lambda b: b[1])
+    ids = [p[7] for r in rows for p in r["items"]]
+    # each row widened to all ink of the lettering's colour lying in it:
+    # worn letters break into bits that are not letter-shaped ("KEEP" was
+    # found as "KE"); ink of another colour in the row (REMOVAL's red
+    # triangle) stays out
+    mask = np.isin(labels, ids)
+    if mask.any():
+        tcol = rgb[mask].mean(0)
+        near = ink & (np.sqrt(((rgb - tcol) ** 2).sum(2)) <= 80)
+        wide = []
+        for (x0, y0, x1, y1) in lines:
+            band = np.zeros_like(ink)
+            band[y0:y1, :] = True
+            lab_in = np.unique(labels[near & band])
+            lab_in = lab_in[lab_in > 0]
+            add = np.zeros_like(ink)
+            for lid in lab_in.tolist():
+                st_ = stats.get(lid)
+                # a piece lying (almost) wholly inside the row's band
+                if st_ and st_[1] >= y0 - 2 and st_[3] <= y1 + 1:
+                    add |= (labels == lid)
+            mask |= add & near
+            ys, xs = np.nonzero((mask & band))
+            if xs.size:
+                wide.append((int(xs.min()), y0, int(xs.max()) + 1, y1))
+            else:
+                wide.append((x0, y0, x1, y1))
+        lines = wide
     return {"text": share >= 0.85, "lines": lines, "share": share,
-            "letter_px": med_h}
+            "letter_px": med_h, "mask": mask}
 
 
 def _group_boxes(boxes, gap, small_side, touch=6, word_pieces=3,
@@ -1278,8 +1332,29 @@ def _group_boxes(boxes, gap, small_side, touch=6, word_pieces=3,
                 # graphic beside it within `gap` — but only if its INK is
                 # that close; two original big pieces must all but touch
                 wordy = a[6] or b[6]
-                g = gap if (either_small or wordy) else min(gap, touch)
-                if near(a, b, g) and (either_small or ink_near(a, b, g)):
+                # two LINE-HIGH pieces (a line of lettering whose letters
+                # the reduced mask joined: "LGIJ1" and "84 WHALE" of one
+                # title, 8 px apart) join within `gap` too, on their ink
+                liney = (min(a[2] - a[0], a[3] - a[1]) <= 2 * small_side and
+                         min(b[2] - b[0], b[3] - b[1]) <= 2 * small_side)
+                g = gap if (either_small or wordy or liney) else min(gap, touch)
+                # a line-high piece lying mostly INSIDE another's box ("CH"
+                # under "UNLAT", inside the UNLATCH decal's box): one decal —
+                # two overlapping crops would each draw the other's ink
+                inside = False
+                ix = min(a[2], b[2]) - max(a[0], b[0])
+                iy = min(a[3], b[3]) - max(a[1], b[1])
+                if ix > 0 and iy > 0:
+                    sa = (a[2] - a[0]) * (a[3] - a[1])
+                    sb = (b[2] - b[0]) * (b[3] - b[1])
+                    inner = a if sa <= sb else b
+                    if (min(inner[2] - inner[0], inner[3] - inner[1])
+                            <= 2 * small_side
+                            and ix * iy >= 0.5 * max(1, min(sa, sb))):
+                        # …and its ink close (a DANGER! inside an orca's
+                        # ring box is far from the orca's ink: stays apart)
+                        inside = ink_near(a, b, 2 * gap)
+                if inside or (near(a, b, g) and (either_small or ink_near(a, b, g))):
                     allb[i] = merge(a, b)
                     allb[j] = None
                     changed = True
@@ -1316,6 +1391,12 @@ def segment_decals(rgba, gap=16, min_side=24, pad=6, down=4, small_side=48,
                      .filter(ImageFilter.MaxFilter(2 * r + 1))) > 0) if r >= 1 else m
     raw, raw_ids = [], []
     lab_img, _lab_stats = _label_runs(md, diag=True)
+    # each component's own label, matched by its box: the first inked
+    # pixel inside a box can belong to a NEIGHBOUR (the W of "AWAY" got
+    # the A's label, so the word's halves looked far apart and split)
+    by_box = {}
+    for lid, (lx0, ly0, lx1, ly1, _ar) in (_lab_stats or {}).items():
+        by_box.setdefault((lx0, ly0, lx1, ly1), lid)
     for x0, y0, x1, y1 in _components(md):
         X0, Y0 = x0 * down, y0 * down
         X1, Y1 = min(W, (x1 + 1) * down), min(H, (y1 + 1) * down)
@@ -1326,14 +1407,21 @@ def segment_decals(rgba, gap=16, min_side=24, pad=6, down=4, small_side=48,
         raw.append((X0 + int(xs.min()), Y0 + int(ys.min()),
                     X0 + int(xs.max()) + 1, Y0 + int(ys.max()) + 1))
         # this component's label in the reduced map
-        cy, cx = np.nonzero(md[y0:y1 + 1, x0:x1 + 1])
-        raw_ids.append(int(lab_img[y0 + int(cy[0]), x0 + int(cx[0])]) if cy.size else 0)
+        lid = by_box.get((x0, y0, x1, y1))
+        if lid is None:
+            cy, cx = np.nonzero(md[y0:y1 + 1, x0:x1 + 1])
+            lid = int(lab_img[y0 + int(cy[0]), x0 + int(cx[0])]) if cy.size else 0
+        raw_ids.append(int(lid))
     if gap and gap > 0:
         raw = _group_boxes(raw, int(gap), int(small_side), lab_img=lab_img,
                            lab_ids=raw_ids, down=down)
     out = []
     for bx0, by0, bx1, by1 in raw:
-        if (bx1 - bx0) < min_side or (by1 - by0) < min_side:
+        bw, bh = bx1 - bx0, by1 - by0
+        # a thin but LONG mark (a printed line on the sheet) is a decal;
+        # only pieces small both ways are specks
+        if max(bw, bh) < min_side or (min(bw, bh) < min_side
+                                      and max(bw, bh) < 2 * min_side):
             continue
         out.append((max(0, bx0 - pad), max(0, by0 - pad),
                     min(W, bx1 + pad), min(H, by1 + pad)))
@@ -1444,8 +1532,598 @@ def _majority(lab, keep, n_labels, r=1):
     return np.where(keep, out, lab)
 
 
+def _drop_edge_rims(idx, keep, n_labels, r, lum=None, px_mm=None):
+    """Scan blends snapped to an ink, removed. Returns (idx, keep).
+    1. Thin slivers of one colour hugging the decal's OUTER edge (thinner
+       than 2r+1 px) are made clear: the blend between the outline ink
+       and the film, snapped to white or red (the orca's broken white and
+       red rims, which Recraft then drew faithfully).
+    2. Small patches with no thick core: in the edge band they are made
+       clear; inside the decal they take the colour around them (a red
+       seam where the orca's fin overlaps its black ring — misregistered
+       print). A colour running along most of the outer edge is a real
+       border, and a long thin line (a pinstripe) is over the size limit:
+       both are kept."""
+    outside = ~keep
+    near_out = dilate_mask(outside, r + 1)
+    band = dilate_mask(outside, 3 * r + 2)
+    perim = keep & dilate_mask(outside, 1)
+    n_perim = max(1, int(perim.sum()))
+    out = keep.copy()
+    idx = idx.copy()
+    limit = (12 * r) ** 2
+    total = max(1, int(out.sum()))
+    if px_mm is None:
+        px_mm = r / 0.12            # rim_r is 0.12 mm
+    for i in range(n_labels):
+        m = (idx == i) & out
+        if not m.any():
+            continue
+        # a HALO: a lighter colour lying almost wholly in the edge band and
+        # hugging darker ink along much of its boundary (the white outline
+        # round "Bad Mother Tattoos & Customs", thicker than a rim and
+        # joined into big pieces) is film, made clear. White ink proper
+        # lies away from the edge (an orca's belly) or hugs no darker ink
+        # (REMOVAL stripes on clear film).
+        if lum is not None:
+            darker = [j for j in range(n_labels)
+                      if j != i and lum[j] < lum[i] - 40 and (idx == j).any()]
+            if darker:
+                dk = out & np.isin(idx, darker)
+                bnd = m & dilate_mask(~m, 1)
+                nb = max(1, int(bnd.sum()))
+                hug = (bnd & dilate_mask(dk, 1)).sum() / float(nb)
+                in_band = (m & band).sum() / float(max(1, int(m.sum())))
+                # mean thickness (area per boundary pixel, x2): a halo is
+                # the scan's 0.2 mm film edge; a printed outline is heavier
+                thick_mm = 2.0 * m.sum() / float(nb) / float(px_mm)
+                if hug >= 0.3 and in_band >= 0.7 and thick_mm <= 0.3:
+                    out &= ~m
+                    continue
+        if (m & perim).sum() > 0.5 * n_perim:
+            continue  # a real border all round
+        # a LIGHTER colour that is only ever small pieces (halos round black
+        # letters, a film-filled counter of an "A" or "4") and a minor share
+        # of the decal is film read as ink: all of it is made clear. White
+        # ink proper (an orca's belly, REMOVAL stripes) has large areas.
+        if lum is not None and any(lum[j] < lum[i] - 40 for j in range(n_labels)
+                                   if j != i and (idx == j).any()):
+            if m.sum() < 0.25 * total:
+                _lab0, st0 = _label_runs(m, diag=True)
+                if st0 and max(v[4] for v in st0.values()) <= limit:
+                    out &= ~m
+                    continue
+        thick = dilate_mask(erode_mask(m, r), r)
+        # a fringe HUGS another ink; a letter in a second black (two
+        # near-identical blacks in a palette) touches only the film and
+        # must stay (the title "LGIJ184" lost letters without this)
+        # …and a fringe is LIGHTER than the ink it hugs (ink fading into
+        # clear film): a thin black stroke beside a white rim is lettering
+        if lum is not None:
+            darker = [j for j in range(n_labels) if lum[j] < lum[i] - 40]
+            other = out & np.isin(idx, darker) if darker else np.zeros_like(out)
+        else:
+            other = out & (idx != i)
+        near_other = dilate_mask(other, r + 1)
+        rim = m & ~thick & near_out & near_other
+        out &= ~rim
+        m &= ~rim
+        lab, stats = _label_runs(m, diag=True)
+        for lid, (x0, y0, x1, y1, area) in (stats or {}).items():
+            if area > limit:
+                continue
+            sl = (slice(max(0, y0 - 1), y1 + 2), slice(max(0, x0 - 1), x1 + 2))
+            sub = lab[sl] == lid
+            ring = dilate_mask(sub, 1) & ~sub
+            n_ring = max(1, int(ring.sum()))
+            hugs = (ring & other[sl]).sum() >= 0.25 * n_ring
+            # wholly on the edge — or a small light patch TOUCHING the film
+            # wedged against darker ink (the white where the orca's tail
+            # and fin cross its ring): film showing through, made clear
+            if hugs and ((sub & ~band[sl]).sum() <= 0.05 * area
+                         or (lum is not None and (sub & near_out[sl]).any())):
+                out[sl][sub] = False
+                continue
+            if (sub & thick[sl]).sum() > 0.05 * area:
+                continue  # has a solid core: a real dot or mark
+            if not hugs:
+                continue  # its own mark, not a seam between inks
+            ring = ring & out[sl]
+            nb = idx[sl][ring]
+            nb = nb[nb != i]
+            if nb.size:
+                cnt = np.bincount(nb, minlength=n_labels)
+                # a STRAY: its ink is used nowhere near (the red seam where
+                # the fin crosses the ring, far from the red brush); a mark
+                # whose ink is close by is a detail (the navy wedges in a
+                # CAUTION icon, beside the icon's navy ring) and stays
+                R = 10 * r
+                wy = slice(max(0, y0 - R), y1 + R + 1)
+                wx = slice(max(0, x0 - R), x1 + R + 1)
+                same = ((idx[wy, wx] == i) & out[wy, wx]).sum() - area
+                if same < area:
+                    idx[sl][sub] = cnt.argmax()
+    # the cut leaves the vote's square steps along the outline: round them
+    if (out != keep).any():
+        rr = max(1, int(round(1.5 * r)))
+        soft = _box_mean(_box_mean(out.astype(np.float32), rr), rr) >= 0.5
+        # only where something was cut: a thin stroke elsewhere (fine
+        # lettering) must not be thinned by the rounding
+        near_cut = dilate_mask(keep & ~out, 2 * rr)
+        out = out & np.where(near_cut, soft, True)   # rounds; never brings a cut pixel back
+    return idx, out
+
+
+def _mask_polygons(mask):
+    """Outlines of a boolean mask as closed polygons [(N,2) float arrays]
+    (outer edges and holes alike; fill them even-odd), via vtracer's
+    polygon mode."""
+    import io as _io
+    import re as _re
+    import vtracer
+    im = Image.fromarray(np.where(mask, 0, 255).astype(np.uint8)).convert("RGB")
+    buf = _io.BytesIO()
+    im.save(buf, format="PNG")
+    svg = vtracer.convert_raw_image_to_svg(
+        buf.getvalue(), img_format="png", colormode="binary",
+        mode="polygon", filter_speckle=0)
+    polys = []
+    for tag in _re.findall(r"<path\b[^>]*>", svg):
+        fm = _re.search(r'fill="#([0-9a-fA-F]{6})"', tag)
+        if fm and fm.group(1).lower() != "000000":
+            continue
+        dm = _re.search(r'\bd="([^"]*)"', tag)
+        if not dm:
+            continue
+        tx = ty = 0.0
+        tm = _re.search(r"translate\(\s*([-\d.]+)[ ,]+([-\d.]+)", tag)
+        if tm:
+            tx, ty = float(tm.group(1)), float(tm.group(2))
+        for sub in _re.split(r"(?=M)", dm.group(1)):
+            pts = _re.findall(r"(-?[\d.]+)\s*,\s*(-?[\d.]+)", sub)
+            if len(pts) >= 3:
+                a = np.asarray(pts, np.float64)
+                a[:, 0] += tx
+                a[:, 1] += ty
+                polys.append(a)
+    return polys
+
+
+def _simple_shape(poly, tol, max_vertices=8, min_iou=0.93):
+    """A piece that is really a simple polygon (a flag stripe: a slanted
+    parallelogram) as that polygon: Douglas-Peucker at `tol` keeps at most
+    `max_vertices` corners and still covers the piece (IoU >= min_iou).
+    None otherwise."""
+    from PIL import ImageDraw
+    pts0 = np.asarray(poly, np.float64)
+    if len(pts0) < 4:
+        return None
+    # spikes off (a scratch poking from a stripe): the piece opened by
+    # ~tol before its corners are found — Douglas-Peucker took the spike's
+    # tip as a corner
+    gx0, gy0 = pts0.min(0) - 4
+    gx1, gy1 = pts0.max(0) + 4
+    GW, GH = int(gx1 - gx0) + 1, int(gy1 - gy0) + 1
+    gim = Image.new("1", (GW, GH), 0)
+    ImageDraw.Draw(gim).polygon([(x - gx0, y - gy0) for x, y in pts0], fill=1)
+    gm = np.asarray(gim, bool)
+    ro = max(1, int(round(tol)))
+    opened = dilate_mask(erode_mask(gm, ro), ro)
+    cand = [q for q in _mask_polygons(opened)] if opened.any() else []
+    if not cand:
+        return None
+    pts = max(cand, key=lambda q: len(q)) + np.array([gx0, gy0])
+    n = len(pts)
+    far = int(np.argmax(((pts - pts[0]) ** 2).sum(1)))
+    keys = {0, far}
+    P = np.vstack([pts, pts[:1]])
+    stack = [(0, far), (far, n)]
+    while stack:
+        i, j = stack.pop()
+        if j - i < 2:
+            continue
+        a, b = P[i], P[j]
+        d = b - a
+        L = float(np.hypot(d[0], d[1])) or 1e-9
+        seg = P[i + 1:j]
+        dist = np.abs((seg[:, 0] - a[0]) * d[1] - (seg[:, 1] - a[1]) * d[0]) / L
+        k = int(np.argmax(dist))
+        if dist[k] > tol:
+            m = i + 1 + k
+            keys.add(m)
+            stack += [(i, m), (m, j)]
+            if len(keys) > max_vertices:
+                return None
+    simple = P[sorted(keys)]
+    if len(simple) < 3:
+        return None
+    x0, y0 = pts0.min(0) - 2
+    x1, y1 = pts0.max(0) + 2
+    W, H = int(x1 - x0) + 1, int(y1 - y0) + 1
+    a_ = Image.new("1", (W, H), 0)
+    ImageDraw.Draw(a_).polygon([(x - x0, y - y0) for x, y in pts0], fill=1)
+    b_ = Image.new("1", (W, H), 0)
+    ImageDraw.Draw(b_).polygon([(x - x0, y - y0) for x, y in simple], fill=1)
+    A, B = np.asarray(a_, bool), np.asarray(b_, bool)
+    if (A & B).sum() / float(max(1, (A | B).sum())) < min_iou:
+        return None
+    return simple
+
+
+def _perfect_star(poly, min_iou=0.85):
+    """A piece shaped like a five-pointed star, rebuilt as a crisp star with
+    straight edges: its five tips (the farthest points, at least 40 degrees
+    apart) and the five notches between them (the nearest points), joined
+    by straight lines — the star keeps its own shape and place (the GI JOE
+    star is tilted, not regular). None when the piece is not a star."""
+    from PIL import ImageDraw
+    pts = np.asarray(poly, np.float64)
+    if len(pts) < 10:
+        return None
+    x0, y0 = pts.min(0) - 2
+    x1, y1 = pts.max(0) + 2
+    W, H = int(x1 - x0) + 1, int(y1 - y0) + 1
+    if W < 12 or H < 12:
+        return None
+    im = Image.new("1", (W, H), 0)
+    ImageDraw.Draw(im).polygon([(x - x0, y - y0) for x, y in pts], fill=1)
+    m = np.asarray(im, bool)
+    ys, xs = np.nonzero(m)
+    if xs.size < 50:
+        return None
+    cx, cy = xs.mean() + x0, ys.mean() + y0
+    # dense outline
+    nxt = np.roll(pts, -1, 0)
+    dense = []
+    for a, b in zip(pts, nxt):
+        k = max(1, int(np.ceil(np.hypot(*(b - a)))))
+        t = np.arange(k)[:, None] / float(k)
+        dense.append(a + (b - a) * t)
+    P = np.vstack(dense)
+    d = np.hypot(P[:, 0] - cx, P[:, 1] - cy)
+    ang = np.arctan2(P[:, 1] - cy, P[:, 0] - cx)
+    tips = []
+    avail = np.ones(len(P), bool)
+    for _ in range(5):
+        if not avail.any():
+            return None
+        j = int(np.argmax(np.where(avail, d, -1)))
+        tips.append(j)
+        avail &= np.abs(np.angle(np.exp(1j * (ang - ang[j])))) > np.radians(40)
+    tips.sort(key=lambda j: ang[j])
+    star = []
+    for t_i in range(5):
+        ja, jb = tips[t_i], tips[(t_i + 1) % 5]
+        a_a, a_b = ang[ja], ang[jb]
+        span = (a_b - a_a) % (2 * np.pi)
+        rel = (ang - a_a) % (2 * np.pi)
+        sel = (rel > 0.15 * span) & (rel < 0.85 * span)
+        if not sel.any():
+            return None
+        jn = int(np.argmin(np.where(sel, d, np.inf)))
+        star.append(tuple(P[ja]))
+        star.append(tuple(P[jn]))
+    # a star's notches sit well inside its tips
+    dt = np.array([d[j] for j in tips])
+    dn = np.array([np.hypot(x - cx, y - cy) for x, y in star[1::2]])
+    if dn.max() > 0.75 * dt.min():
+        return None
+    im2 = Image.new("1", (W, H), 0)
+    ImageDraw.Draw(im2).polygon([(x - x0, y - y0) for x, y in star], fill=1)
+    m2 = np.asarray(im2, bool)
+    iou = (m & m2).sum() / float(max(1, (m | m2).sum()))
+    if iou < min_iou:
+        return None
+    return np.asarray(star)
+
+
+def _straighten_poly(pts, tol, min_len, stats=None, force=False):
+    """Long runs of a closed outline that wobble ACROSS a straight line
+    (within tol either side, scan raggedness) become that straight line;
+    curves (deviation all to one side) and short runs are kept."""
+    if len(pts) < 6:
+        return pts
+    # resample every pixel: vtracer's stair corners alternate sides even
+    # along a curve, so only a dense outline shows a curve's one-sided bend
+    nxt = np.roll(pts, -1, 0)
+    seglen = np.hypot(*(nxt - pts).T)
+    parts = []
+    for a, b, L in zip(pts, nxt, seglen):
+        k = max(1, int(np.ceil(L)))
+        t = np.arange(k)[:, None] / float(k)
+        parts.append(a + (b - a) * t)
+    pts = np.vstack(parts)
+    n = len(pts)
+    # start at the point farthest from the first, so the loop splits well
+    far = int(np.argmax(((pts - pts[0]) ** 2).sum(1)))
+    keys = {0, far}
+    stack = [(0, far), (far, n)]
+    P = np.vstack([pts, pts[:1]])
+    while stack:
+        i, j = stack.pop()
+        if j - i < 2:
+            continue
+        a, b = P[i], P[j]
+        d = b - a
+        L = float(np.hypot(d[0], d[1])) or 1e-9
+        seg = P[i + 1:j]
+        dist = np.abs((seg[:, 0] - a[0]) * d[1] - (seg[:, 1] - a[1]) * d[0]) / L
+        k = int(np.argmax(dist))
+        if dist[k] > tol:
+            m = i + 1 + k
+            keys.add(m)
+            stack += [(i, m), (m, j)]
+    keys = sorted(keys) + [n]
+    out = []
+    for i, j in zip(keys[:-1], keys[1:]):
+        a, b = P[i], P[j]
+        d = b - a
+        L = float(np.hypot(d[0], d[1])) or 1e-9
+        seg = P[i + 1:j]
+        straight = bool(force)
+        if not force and L >= min_len and len(seg):
+            sd = ((seg[:, 0] - a[0]) * d[1] - (seg[:, 1] - a[1]) * d[0]) / L
+            # a CURVE bows: a parabola fitted along the run has a clear
+            # sagitta; scan raggedness (dents and specks, often all on one
+            # side) does not. The earlier mean-vs-RMS test called a dented
+            # straight edge a curve (GI JOE banner: 9-27% straight)
+            tt = ((seg[:, 0] - a[0]) * d[0] + (seg[:, 1] - a[1]) * d[1]) / (L * L)
+            if len(seg) >= 3:
+                coef = np.polyfit(np.clip(tt, 0.0, 1.0), sd, 2)
+                sag = abs(float(coef[0])) / 4.0
+            else:
+                sag = 0.0
+            straight = sag <= 0.25 * tol
+        out.append(P[i:i + 1])
+        if not straight:
+            out.append(seg)
+        if stats is not None:
+            stats[0] += L if straight else 0.0
+            stats[1] += max(L, float(j - i))
+    return np.vstack(out)
+
+
+def geometric_svg(crop_rgba, pal, px_per_mm, w_in, h_in, long_px=2048,
+                  tol_mm=0.4, min_mm=0.6, min_straight=0.5, min_iou=0.95,
+                  smooth_mm=0.15, speck_mm=0.45, round_mm=0.2, dp_mm=0.2,
+                  min_layer_iou=0.95):
+    """A decal drawn in straight lines (a GI JOE banner: slanted block
+    letters, a striped flag) rebuilt directly as straight-sided polygons
+    — Recraft traced the scan's ragged edges however clean the picture
+    sent was. The decal is flattened (own inks, no flecks or rims), each
+    ink's outline is straightened (runs that wobble across a line within
+    tol_mm become that line; curves stay), and when at least
+    `min_straight` of the outline length is straight runs and the result
+    still covers the scan (IoU >= min_iou), the SVG is returned (crop-
+    pixel coordinates, the dominant ink painted under the others so no
+    hairline gaps show). None = not a straight-line decal."""
+    from PIL import ImageDraw
+    crop = crop_rgba.convert("RGBA")
+    W, H = crop.size
+    if pal is None or len(pal) == 0 or min(W, H) < 8:
+        return None
+    s = max(1.0, min(4.0, long_px / float(max(W, H))))
+    nw, nh = int(round(W * s)), int(round(H * s))
+    ppm = px_per_mm * s
+    big = flatten_decal(crop, pal, size=(nw, nh), band=max(1, int(round(s))),
+                        smooth_r=max(1, int(round(smooth_mm * ppm))),
+                        rim_r=max(1, int(round(0.12 * ppm))))
+    a = np.asarray(big)
+    keep = a[..., 3] > 0
+    speck = (speck_mm * ppm) ** 2
+
+    def _area(q):
+        x, y = q[:, 0], q[:, 1]
+        return 0.5 * abs(float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))))
+    if keep.sum() < 50:
+        return None
+    P = np.asarray(pal, np.int32)
+    px = a[..., :3].astype(np.int32).reshape(-1, 3)
+    idx = ((px[:, None, :] - P[None, :, :]) ** 2).sum(2).argmin(1).reshape(keep.shape)
+    tol = max(1.0, tol_mm * ppm)
+    min_len = max(8.0, min_mm * ppm)
+    acc = [0.0, 0.0]
+    layers = []
+    areas = [int(((idx == i) & keep).sum()) for i in range(len(P))]
+    order = sorted([i for i in range(len(P)) if areas[i] > 0], key=lambda i: -areas[i])
+    redrawn = np.zeros(keep.shape, bool)
+    union_polys = []
+    layer_ious = []
+    rr = max(1, int(round(round_mm * ppm)))
+    dp = max(1.0, dp_mm * ppm)
+    for i in [None] + order[1:]:
+        mask = keep if i is None else ((idx == i) & keep)
+        # missing paint: a small CLEAR hole inside an ink (a scratch across
+        # the banner's white stripe) is filled; a hole holding another ink
+        # (the star in the white letters) is not
+        holes = ~mask
+        hl, hst = (_label_runs(holes, diag=False) if i is None
+                   else (None, None))       # the outline only: a layer's
+        # "hole" can be another ink's area (the tick came out navy)
+        if hst:
+            edge_ids = set(np.unique(np.concatenate([hl[0, :], hl[-1, :],
+                                                     hl[:, 0], hl[:, -1]])).tolist())
+            lim = (1.2 * ppm) ** 2
+            for lid, (hx0, hy0, hx1, hy1, harea) in hst.items():
+                if lid in edge_ids:
+                    continue
+                # small, or a long thin scratch (up to 0.6 mm wide, 3 mm
+                # long: the tick across the banner's white stripe)
+                long_ = max(hx1 - hx0, hy1 - hy0) + 1
+                thin = harea / float(long_) <= 1.0 * ppm and long_ <= 4.0 * ppm
+                if harea > lim and not thin:
+                    continue
+                sub = hl[hy0:hy1 + 1, hx0:hx1 + 1] == lid
+                if harea > lim:
+                    # a bigger thin hole is a scratch only when it crosses
+                    # from one ink into another; a letter's counter (the
+                    # hole of an O) sits inside one ink and stays clear
+                    sl_ = (slice(max(0, hy0 - 2), hy1 + 3), slice(max(0, hx0 - 2), hx1 + 3))
+                    sub2 = hl[sl_] == lid
+                    ring = dilate_mask(sub2, 2) & ~sub2 & keep[sl_]
+                    inks = idx[sl_][ring]
+                    if inks.size == 0:
+                        continue
+                    cnt = np.bincount(inks, minlength=len(P))
+                    if (cnt >= 0.05 * inks.size).sum() < 2:
+                        continue
+                if (sub & keep[hy0:hy1 + 1, hx0:hx1 + 1]).sum() <= 0.1 * harea:
+                    mask[hy0:hy1 + 1, hx0:hx1 + 1] |= sub
+        # rounded, not voted: a soft mask has no square steps
+        mask = _box_mean(_box_mean(mask.astype(np.float32), rr), rr) >= 0.5
+        polys = []
+        gate_polys = []
+        for poly in _mask_polygons(mask):
+            if _area(poly) < speck:
+                continue                    # a fleck of scan dust
+            # a thin dash of scan edge (white bits along the top of the
+            # banner's red stripe): under 0.25 mm thick and 1 mm2
+            per = float(np.hypot(*(np.roll(poly, -1, 0) - poly).T).sum())
+            ar = _area(poly)
+            if ar < ppm * ppm and 2.0 * ar / max(1.0, per) < 0.25 * ppm:
+                continue
+            # is it straight-line art? (curve-aware, for the decision)
+            _straighten_poly(poly, tol, min_len, stats=acc)
+            # the detail gate judges the edge-straightened outline; the
+            # exact shapes below (a stripe as its parallelogram, the star)
+            # are cleaner than the scan and would fail it for that
+            gate_polys.append(_straighten_poly(poly, dp, min_len))
+            # the drawing: straight runs straight (within 0.3 mm — notches
+            # in the banner letters' edges went), curves (a round symbol in
+            # a panel) kept on the rounded outline
+            # the fewest corners that still fit: a stripe is its 4-corner
+            # parallelogram, without a scratch's spike or a notch
+            shp = None
+            # stripes (inks) up to 8 corners; the outline's pieces — the
+            # letters of a logo, angular block capitals — up to 16, so they
+            # come out with straight edges and sharp corners like the clean
+            # logo art the user supplied as the quality target
+            for nv in ((4, 5, 6, 8) if i is not None else (4, 6, 8, 10, 12, 14, 16)):
+                for tmul in (1.0, 2.0, 4.0):
+                    shp = _simple_shape(poly, tol * tmul, max_vertices=nv,
+                                        min_iou=0.93 if i is not None else 0.92)
+                    if shp is not None:
+                        break
+                if shp is not None:
+                    break
+            if shp is None and i is not None:
+                shp = _perfect_star(poly)
+            if shp is None and i is None:
+                # the outline (letters joined to the flag): its straight runs
+                # straightened at the coarser tol, so the scan's notches in
+                # the letter edges (up to ~0.4 mm) go; curves still stay
+                shp = _straighten_poly(poly, tol, min_len * 0.5)
+            polys.append(shp if shp is not None
+                         else _straighten_poly(poly, dp, min_len))
+        if i is None:
+            union_polys = polys
+            img = Image.new("1", (nw, nh), 0)
+            acc_m = np.zeros(keep.shape, bool)
+            for q in polys:
+                im = Image.new("1", (nw, nh), 0)
+                ImageDraw.Draw(im).polygon([tuple(p) for p in q], fill=1)
+                acc_m ^= np.asarray(im, bool)
+            redrawn = acc_m
+        else:
+            layers.append((i, polys))
+            # each ink must still match the scan's: fine detail (thin
+            # lines and arrows in a panel's symbols) is rounded away by
+            # this path, so such decals go to the normal drawing
+            lm = np.zeros(keep.shape, bool)
+            for q in gate_polys:
+                im = Image.new("1", (nw, nh), 0)
+                ImageDraw.Draw(im).polygon([tuple(p) for p in q], fill=1)
+                lm ^= np.asarray(im, bool)
+            orig = (idx == i) & keep
+            u = (lm | orig).sum()
+            layer_ious.append((lm & orig).sum() / float(max(1, u)))
+    inter = (redrawn & keep).sum()
+    union = (redrawn | keep).sum()
+    geometric_svg.last = (acc[0] / max(1e-6, acc[1]), inter / max(1.0, float(union)),
+                          min(layer_ious) if layer_ious else 1.0)
+    if layer_ious and min(layer_ious) < min_layer_iou:
+        return None
+    if acc[1] <= 0 or acc[0] / acc[1] < min_straight:
+        return None
+    if union == 0 or inter / float(union) < min_iou:
+        return None
+
+    def path_d(polys):
+        out = []
+        for q in polys:
+            q = q / s
+            out.append("M" + " L".join(f"{x:.2f},{y:.2f}" for x, y in q) + " Z")
+        return " ".join(out)
+
+    def hexc(i):
+        return "#%02x%02x%02x" % tuple(int(v) for v in P[i])
+    parts = [f'<path fill="{hexc(order[0])}" fill-rule="evenodd" '
+             f'd="{path_d(union_polys)}"/>']
+    # each ink over the base gets a hairline of its own colour so the base
+    # never shows along its edges (white rims along the flag's stripes)
+    sw = dp / s
+    for i, polys in layers:
+        if polys:
+            parts.append(f'<path fill="{hexc(i)}" fill-rule="evenodd" '
+                         f'stroke="{hexc(i)}" stroke-width="{sw:.3f}" '
+                         f'stroke-linejoin="round" d="{path_d(polys)}"/>')
+    return ('<svg xmlns="http://www.w3.org/2000/svg" version="1.1" '
+            f'width="{w_in:.4f}in" height="{h_in:.4f}in" '
+            f'viewBox="0 0 {W} {H}">' + "".join(parts) + "</svg>")
+
+
+def straighten_edges(idx, keep, n_labels, px_per_mm, tol_mm=0.25,
+                     min_mm=1.5):
+    """Ragged straight edges made straight (a banner's bars and letter
+    stems wobble ~0.3 mm in the scan, and Recraft traced the wobble). Each
+    ink's outline, and the decal's outline, is redrawn with its long
+    wobbling runs replaced by straight lines; curves and corners stay.
+    Returns (idx, keep)."""
+    from PIL import ImageDraw
+    H, W = keep.shape
+    tol = max(1.0, tol_mm * px_per_mm)
+    min_len = max(8.0, min_mm * px_per_mm)
+
+    def redraw(mask):
+        acc = np.zeros((H, W), bool)
+        for poly in _mask_polygons(mask):
+            sp = _straighten_poly(poly, tol, min_len)
+            im = Image.new("1", (W, H), 0)
+            ImageDraw.Draw(im).polygon([tuple(p) for p in sp], fill=1)
+            acc ^= np.asarray(im, bool)
+        return acc
+
+    try:
+        new_keep = redraw(keep)
+        areas = [((idx == i) & keep).sum() for i in range(n_labels)]
+        out = np.full((H, W), -1, np.int32)
+        for i in sorted(range(n_labels), key=lambda i: -areas[i]):
+            if areas[i] == 0:
+                continue
+            own = (idx == i) & keep
+            # an ink claims only pixels near where it was: a thin ring (a
+            # letter's white halo) straightened cut chords across the
+            # letters and painted their tops white
+            out[redraw(own) & dilate_mask(own, int(tol) + 1)] = i
+    except Exception:
+        return idx, keep
+    # pixels no ink claims keep their old ink, or the nearest one
+    gap = new_keep & (out < 0)
+    out[gap & (idx >= 0) & keep] = idx[gap & (idx >= 0) & keep]
+    for _ in range(4):
+        gap = new_keep & (out < 0)
+        if not gap.any():
+            break
+        for dy, dx in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+            src = np.roll(np.roll(out, dy, 0), dx, 1)
+            take = gap & (out < 0) & (src >= 0)
+            out[take] = src[take]
+    new_keep &= out >= 0
+    return np.where(new_keep, out, idx), new_keep
+
+
 def flatten_decal(rgba, pal, s=1, alpha_cut=160, size=None, band=None,
-                  drop_orphans=False):
+                  drop_orphans=False, smooth_r=1, rim_r=0, straight_ppm=0):
     """A decal made clean and flat for a tracer: enlarged (s times, or to
     `size`), every pixel snapped to the palette (the scan's own inks), the
     edge blends given the colour of the ink just inside (a band of `band`
@@ -1488,7 +2166,16 @@ def flatten_decal(rgba, pal, s=1, alpha_cut=160, size=None, band=None,
         if drop_orphans:
             # slivers that never touch solid ink are blends, not decal
             keep = keep & have
-        idx = _majority(idx, keep, len(pal), r=1)
+        # majority vote over a (2r+1) square: halftone mottle goes, and with
+        # a larger r (about 0.15 mm) small notches and flecks — dust and
+        # scratches in the scan — are voted away while corners stay
+        idx = _majority(idx, keep, len(pal), r=max(1, int(smooth_r)))
+        if rim_r and rim_r > 0:
+            P = np.asarray(pal, np.float32)
+            lum = (0.299 * P[:, 0] + 0.587 * P[:, 1] + 0.114 * P[:, 2]).tolist()
+            idx, keep = _drop_edge_rims(idx, keep, len(pal), int(rim_r), lum=lum)
+        if straight_ppm and straight_ppm > 0:
+            idx, keep = straighten_edges(idx, keep, len(pal), float(straight_ppm))
         flat = np.zeros(alpha.shape + (3,), np.uint8)
         flat[keep] = np.asarray(pal, np.uint8)[np.clip(idx[keep], 0, len(pal) - 1)]
     return Image.fromarray(np.dstack([flat, (keep * 255).astype(np.uint8)]), "RGBA")
@@ -1562,10 +2249,10 @@ def snap_palette(rgb_img, palette):
 
 
 # ---------------------------------------------------------------- AI redraw
-def _copy_sig(rgba, box, size):
+def _copy_sig(rgba, box, size, crop_fn=None):
     """A decal for copy matching: cropped tight to its ink, on mid grey,
     shrunk to `size` and blurred so halftone dots and JPEG noise wash out."""
-    c = rgba.crop(box).convert("RGBA")
+    c = (crop_fn(box) if crop_fn else rgba.crop(box)).convert("RGBA")
     bb = c.split()[3].point(lambda v: 255 if v > 96 else 0).getbbox()
     if bb:
         c = c.crop(bb)
@@ -1590,7 +2277,8 @@ def _ncc(a, b):
     return best
 
 
-def find_copies(rgba, boxes, size_tol=0.06, min_ncc=0.80, min_px=12):
+def find_copies(rgba, boxes, size_tol=0.06, min_ncc=0.80, min_px=12,
+                crop_fn=None):
     """Groups of decals that look like the SAME design printed several
     times on a sheet — straight, turned 180 degrees or mirrored: same size
     within `size_tol`, and blurred pictures correlating at `min_ncc` or
@@ -1620,8 +2308,8 @@ def find_copies(rgba, boxes, size_tol=0.06, min_ncc=0.80, min_px=12):
                     abs(hi - hj) > size_tol * max(hi, hj):
                 continue
             if a is None:
-                a = _copy_sig(rgba, boxes[i], size)
-            b = _copy_sig(rgba, boxes[j], size)
+                a = _copy_sig(rgba, boxes[i], size, crop_fn)
+            b = _copy_sig(rgba, boxes[j], size, crop_fn)
             v, how = max((_ncc(a, b), ""), (_ncc(a, b[::-1, ::-1].copy()), "turn"),
                          (_ncc(a, b[:, ::-1].copy()), "mirror"))
             if v >= min_ncc:
@@ -1631,6 +2319,142 @@ def find_copies(rgba, boxes, size_tol=0.06, min_ncc=0.80, min_px=12):
                 taken[idx] = True
             groups.append(group)
     return groups
+
+
+def straight_bars(rgba, min_elong=6.0, min_len=12):
+    """Long thin pieces (the stripes beside TURRET INFO, RAMP ISNTR,
+    UNLATCH) rebuilt as perfectly straight bars: each piece's centre line
+    and thickness from its pixels (principal axis), collinear pieces of one
+    stripe broken by wear joined into one. Returns (svg parts in crop px,
+    mask of the pixels the bars replace)."""
+    a = np.asarray(rgba.convert("RGBA"))
+    ink = a[..., 3] > 96
+    H, W = ink.shape
+    none = ([], np.zeros_like(ink))
+    if not ink.any():
+        return none
+    labels, stats = _label_runs(ink, diag=True)
+    bars = []
+    for lid, (x0, y0, x1, y1, area) in (stats or {}).items():
+        if area < min_len:
+            continue
+        sub = labels[y0:y1 + 1, x0:x1 + 1] == lid
+        ys, xs = np.nonzero(sub)
+        pts = np.stack([xs + x0, ys + y0], 1).astype(np.float64)
+        c = pts.mean(0)
+        u, s_, vt = np.linalg.svd(pts - c, full_matrices=False)
+        d = vt[0]
+        t = (pts - c) @ d
+        n = (pts - c) @ vt[1]
+        length = float(t.max() - t.min() + 1)
+        width = max(1.0, float(area) / length)
+        if length < min_len or length / width < min_elong:
+            continue
+        # straight edges: the off-axis spread must be bar-like, not a curve
+        if float(np.abs(n).max()) > 1.6 * width + 2:
+            continue
+        col = a[..., :3][y0:y1 + 1, x0:x1 + 1][sub].mean(0)
+        bars.append(dict(c=c, d=d, t0=float(t.min()), t1=float(t.max()),
+                         w=width, col=col, ids=[lid]))
+    if not bars:
+        return none
+    # join collinear pieces of one stripe (worn breaks)
+    merged = True
+    while merged:
+        merged = False
+        for i in range(len(bars)):
+            for j in range(i + 1, len(bars)):
+                A, B = bars[i], bars[j]
+                if abs(float(A["d"] @ B["d"])) < 0.998:      # ~3.6 degrees
+                    continue
+                d = A["d"] if float(A["d"] @ B["d"]) > 0 else A["d"]
+                nrm = np.array([-d[1], d[0]])
+                if abs(float((B["c"] - A["c"]) @ nrm)) > max(A["w"], B["w"]):
+                    continue
+                tb0 = float((B["c"] - A["c"]) @ d) + (B["t0"] if float(A["d"] @ B["d"]) > 0 else -B["t1"])
+                tb1 = float((B["c"] - A["c"]) @ d) + (B["t1"] if float(A["d"] @ B["d"]) > 0 else -B["t0"])
+                gap = max(tb0 - A["t1"], A["t0"] - tb1)
+                if gap > 4 * max(A["w"], B["w"]) + 3:
+                    continue
+                la, lb = A["t1"] - A["t0"], tb1 - tb0
+                A["t0"], A["t1"] = min(A["t0"], tb0), max(A["t1"], tb1)
+                A["w"] = (A["w"] * la + B["w"] * lb) / max(1e-6, la + lb)
+                A["col"] = (A["col"] * la + B["col"] * lb) / max(1e-6, la + lb)
+                A["ids"] += B["ids"]
+                bars.pop(j)
+                merged = True
+                break
+            if merged:
+                break
+    parts = []
+    used = np.isin(labels, [i for b in bars for i in b["ids"]])
+    for b in bars:
+        d = b["d"]
+        nrm = np.array([-d[1], d[0]]) * (b["w"] / 2.0)
+        p0 = b["c"] + d * b["t0"]
+        p1 = b["c"] + d * (b["t1"] + 1)
+        q = [p0 + nrm, p1 + nrm, p1 - nrm, p0 - nrm]
+        hexc = "#%02x%02x%02x" % tuple(int(round(v)) for v in b["col"])
+        parts.append('<path fill="%s" d="M%s Z"/>' % (hexc, " L".join(
+            "%.2f,%.2f" % (x, y) for x, y in q)))
+    return parts, used
+
+
+def decal_owner_map(rgba, boxes, down=4):
+    """Which decal every opaque pixel belongs to: the sheet's ink pieces
+    (labelled on the `down`x reduced mask, like segment_decals) each go to
+    the SMALLEST box that holds them whole, else the box they overlap
+    most. Returns an int32 map (-1 = none) at full size, or None. A decal's
+    crop then holds its own ink only: a DANGER! inside an orca's box was
+    drawn into the orca by Recraft and came back, mirrored, as a ghost
+    beside the orca's copy (v2.24.3)."""
+    try:
+        a = np.asarray(rgba)
+        opaque = a[..., 3] > 96
+        H, W = opaque.shape
+        hh, ww = max(1, H // down), max(1, W // down)
+        m = np.zeros((hh, ww), bool)
+        m[:, :] = opaque[:hh * down, :ww * down].reshape(
+            hh, down, ww, down).any(axis=(1, 3))
+        lab, stats = _label_runs(m, diag=True)
+        owner_of = np.full(int(lab.max()) + 1, -1, np.int32)
+        areas = [(b[2] - b[0]) * (b[3] - b[1]) for b in boxes]
+        for lid, (x0, y0, x1, y1, _area) in (stats or {}).items():
+            X0, Y0 = x0 * down, y0 * down
+            X1, Y1 = (x1 + 1) * down, (y1 + 1) * down
+            best, best_key = -1, None
+            for i, b in enumerate(boxes):
+                ix = min(X1, b[2]) - max(X0, b[0])
+                iy = min(Y1, b[3]) - max(Y0, b[1])
+                if ix <= 0 or iy <= 0:
+                    continue
+                whole = (b[0] <= X0 + down and b[1] <= Y0 + down
+                         and X1 - down <= b[2] and Y1 - down <= b[3])
+                key = (0, areas[i]) if whole else (1, -ix * iy)
+                if best_key is None or key < best_key:
+                    best, best_key = i, key
+            owner_of[lid] = best
+        small = np.where(lab > 0, owner_of[lab], -1).astype(np.int32)
+        full = np.full((H, W), -1, np.int32)
+        full[:hh * down, :ww * down] = np.repeat(np.repeat(small, down, 0),
+                                                 down, 1)
+        return full
+    except Exception:
+        return None
+
+
+def own_crop(rgba, box, owner=None, index=None):
+    """The decal at `box` with every other decal's ink made clear."""
+    c = rgba.crop(box)
+    if owner is None or index is None:
+        return c
+    x0, y0, x1, y1 = box
+    sub = owner[y0:y1, x0:x1] == index
+    if sub.all():
+        return c
+    arr = np.array(c.convert("RGBA"))
+    arr[..., 3] = np.where(sub, arr[..., 3], 0)
+    return Image.fromarray(arr, "RGBA")
 
 
 def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
@@ -1675,6 +2499,11 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
     if limit:
         boxes = boxes[:int(limit)]
     W, H = rgba.size
+    owner = decal_owner_map(rgba, boxes)
+    box_index = {tuple(b): i for i, b in enumerate(boxes)}
+
+    def _own(box):
+        return own_crop(rgba, box, owner, box_index.get(tuple(box)))
     k = float(size_scale) * float(target_dpi) / float(native_dpi)  # scan px -> out px
     sheet_w_in = W / float(native_dpi) * size_scale
     sheet_h_in = H / float(native_dpi) * size_scale
@@ -1693,22 +2522,120 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
         return (cw, ch, w_in, h_in, max(1, int(round(w_in * target_dpi))),
                 max(1, int(round(h_in * target_dpi))))
 
-    def _draw_one(box):
+    def _try_text(crop, w_in, h_in):
+        """The lettering of a decal set in type, flat or vertical: returns
+        (svg in crop px, mask of the lettering pixels, whole) — whole when
+        the decal is lettering only — or None. Partly-lettering decals
+        (REMOVAL with its stripes and triangle, UNLATCH, RAMP ACCESS) get
+        their words typeset; the caller draws the rest."""
+        # both ways are scored (RAMP ACCESS, vertical, sits in a box only
+        # 1.3x taller than wide and was set sideways)
+        tries = [(crop, 0), (crop.rotate(-90, expand=True), -90)]
+        # the way the lettering runs is the way more of the ink lines up
+        # in rows (RAMP ACCESS: 0.82 turned, 0.52 as is)
+        scored = []
+        for c2, ang in tries:
+            g = text_geometry(c2)
+            if g["lines"] and g["share"] >= 0.3:
+                scored.append((g["share"], c2, ang, g))
+        scored.sort(key=lambda t: -t[0])
+        for _sh, c2, ang, g in scored[:1]:   # only the way the lettering runs
+            if g["text"]:
+                tc, gt = c2, g
+            else:
+                # the lettering alone, with the rows already found (finding
+                # them again on the masked crop lost rows: REMOVAL 0.47)
+                arr = np.array(c2.convert("RGBA"))
+                arr[..., 3] = np.where(g["mask"], arr[..., 3], 0)
+                tc = Image.fromarray(arr, "RGBA")
+                gt = dict(g, text=True, share=1.0)
+            wi, hi = (w_in, h_in) if ang == 0 else (h_in, w_in)
+            got = text_fn(tc, palette_of(tc, colors=palette_colors), wi, hi, gt)
+            if cancelled and cancelled():
+                return "cancel"
+            if got is None:
+                continue
+            svg_t = got[0]
+            mask = g["mask"]
+            if ang == -90:
+                Hc = float(crop.height)
+                wm0 = re.search(r'data-words="[^"]*"', svg_t)
+                svg_t = ('<svg xmlns="http://www.w3.org/2000/svg" '
+                         + (wm0.group(0) + ' ' if wm0 else '')
+                         + f'version="1.1" width="{w_in:.4f}in" '
+                         f'height="{h_in:.4f}in" viewBox="0 0 '
+                         f'{crop.width} {crop.height}"><g transform='
+                         f'"matrix(0 -1 1 0 0 {Hc:.3f})">'
+                         + svg_inner(svg_t) + '</g></svg>')
+                mask = np.rot90(mask, 1)     # back to the crop's frame
+            return svg_t, mask, bool(g["text"])
+        return None
+
+    def _draw_one(box, crop=None, allow_text=True):
         """One decal drawn by the chosen method. Returns (svg in crop-pixel
         coordinates, raster, source) or None when cancelled."""
         x0, y0, x1, y1 = box
-        crop = rgba.crop(box)
+        crop = _own(box) if crop is None else crop
         cw, ch, w_in, h_in, px_w, px_h = _geom(box)
-        if text_fn is not None:
-            # lettering only: read the words, set them in type
-            geom = text_geometry(crop)
-            if geom["text"]:
-                got = text_fn(crop, palette_of(crop, colors=palette_colors),
-                              w_in, h_in, geom)
-                if cancelled and cancelled():
-                    return None                 # stop now, no trace fallback
-                if got is not None:
-                    return got[0], got[1], "text"
+        if text_fn is not None and allow_text:
+            import vector_redraw
+            tx = _try_text(crop, w_in, h_in)
+            if tx == "cancel":
+                return None
+            if tx is not None:
+                svg_t, mask, whole = tx
+                # ink the lettering does not cover (stripes beside a word)
+                # is always drawn — even on a decal that is mostly words
+                # the rest of the decal (stripes, a triangle) drawn as
+                # usual, the typeset words laid over it
+                arr = np.array(crop.convert("RGBA"))
+                if mask.shape == arr.shape[:2]:
+                    arr[..., 3] = np.where(dilate_mask(mask, 3), 0, arr[..., 3])
+                rest = Image.fromarray(arr, "RGBA")
+                # stripes: perfectly straight bars (user: "the lines under
+                # TURRET INFO … should be straight high quality lines")
+                bar_parts, bar_mask = straight_bars(rest)
+                if bar_parts:
+                    arr2 = np.array(rest)
+                    arr2[..., 3] = np.where(dilate_mask(bar_mask, 2), 0, arr2[..., 3])
+                    rest = Image.fromarray(arr2, "RGBA")
+                left = int((np.asarray(rest)[..., 3] > 96).sum())
+                total_ink = int((np.asarray(crop.convert("RGBA"))[..., 3] > 96).sum())
+                inner = "".join(bar_parts)
+                # what is left (a triangle, a box) drawn as usual — a few
+                # specks round typeset words are not worth a drawing
+                if left >= max(20, int(0.04 * total_ink)):
+                    drawn = _draw_one(box, crop=rest, allow_text=False)
+                    if drawn is None:
+                        return None
+                    inner += svg_inner(drawn[0])
+                inner += svg_inner(svg_t)
+                wm = re.search(r'data-words="[^"]*"', svg_t)
+                svg = ('<svg xmlns="http://www.w3.org/2000/svg" version="1.1" '
+                       + (wm.group(0) + ' ' if wm else '')
+                       + f'width="{w_in:.4f}in" height="{h_in:.4f}in" '
+                       f'viewBox="0 0 {crop.width} {crop.height}">'
+                       + inner + '</svg>')
+                return svg, vector_redraw.render_svg(svg, px_w), "text"
+        # straight-line art (a GI JOE banner: block letters, a striped
+        # flag) is rebuilt from straightened outlines — no service traces
+        # a ragged scan edge straight (v2.24.3, user: "no straight lines
+        # on the letters or flag")
+        try:
+            # the clustered palette (one entry per ink; palette_of split
+            # the banner's red and navy into near-twins)
+            import recraft_vectorize
+            gpal = recraft_vectorize.decal_palette(crop)
+            if gpal is None or len(gpal) == 0:
+                gpal = palette_of(crop, colors=palette_colors)
+            geo = geometric_svg(crop, gpal, float(native_dpi) / 25.4,
+                                w_in, h_in)
+        except Exception:
+            geo = None
+        if geo is not None:
+            import vector_redraw
+            st["geometric"] = st.get("geometric", 0) + 1
+            return geo, vector_redraw.render_svg(geo, px_w), "geometric"
         if vector_fn is not None:
             # a drawing from a description or a vectorizing service
             got = vector_fn(crop, palette_of(crop, colors=palette_colors),
@@ -1805,20 +2732,123 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
         x0, y0, x1, y1 = box
         cw, ch, w_in, h_in, px_w, px_h = _geom(box)
         own, inner, ras, sx, sy = _fit(drawn, box, how)
+        # the sheet is put together at the end (_compose), after typeset
+        # lettering has been carried over to its look-alike copies
         items.append(dict(box=(x0, y0, x1, y1), svg=own, rgba=ras,
-                          size_in=(w_in, h_in), source=source))
-        px, py = int(round(x0 * k)), int(round(y0 * k))
-        part = ras
-        if px + part.width > sheet.width or py + part.height > sheet.height:
-            part = part.crop((0, 0, max(1, min(part.width, sheet.width - px)),
-                              max(1, min(part.height, sheet.height - py))))
-        if px < sheet.width and py < sheet.height:
-            sheet.alpha_composite(part, (px, py))
-        parts.append(f'<g transform="translate({x0} {y0}) scale({sx:.6f} {sy:.6f})">'
-                     f'{inner}</g>')
+                          size_in=(w_in, h_in), source=source,
+                          _inner=inner, _sx=sx, _sy=sy, _drawn=drawn))
+
+    def _compose():
+        for it in items:
+            x0, y0 = it["box"][0], it["box"][1]
+            px, py = int(round(x0 * k)), int(round(y0 * k))
+            part = it["rgba"]
+            if px + part.width > sheet.width or py + part.height > sheet.height:
+                part = part.crop((0, 0, max(1, min(part.width, sheet.width - px)),
+                                  max(1, min(part.height, sheet.height - py))))
+            if px < sheet.width and py < sheet.height:
+                sheet.alpha_composite(part, (px, py))
+            parts.append(f'<g transform="translate({x0} {y0}) scale('
+                         f'{it["_sx"]:.6f} {it["_sy"]:.6f})">{it["_inner"]}</g>')
+            for key in ("_inner", "_sx", "_sy", "_drawn"):
+                it.pop(key, None)
+
+    def _carry_text():
+        """A word typeset on one decal is set on its look-alikes that were
+        not typeset themselves (worn AWAYs the model would not read, or
+        copies in another copy group): same size within 8%, scans that
+        correlate (0.6+, straight or turned), and the typeset word must
+        fit THAT decal's scan (overlap 0.7+, colour within 110)."""
+        import vector_redraw
+        typeset = [it for it in items if it["source"] == "text"]
+        if not typeset:
+            return 0
+        n = 0
+        # one word, one look: typeset decals with the same words and size
+        # share the version that fits them all best
+        def _words(it):
+            m = re.search(r'data-words="([^"]*)"', it["_drawn"][0] or "")
+            return m.group(1) if m else None
+        groups_w = {}
+        # every decal carrying typeset words — group copies placed from a
+        # typeset drawing too (they are marked "copy")
+        for it in items:
+            w_ = _words(it)
+            if w_:
+                groups_w.setdefault(w_, []).append(it)
+        for w_, grp in groups_w.items():
+            if len(grp) < 2:
+                continue
+            best_c, best_tot = None, -1e9
+            for cand in grp:
+                tot, fits = 0.0, []
+                for it in grp:
+                    b = it["box"]
+                    cb = cand["box"]
+                    if abs((b[2] - b[0]) - (cb[2] - cb[0])) > 0.08 * max(b[2] - b[0], cb[2] - cb[0]):
+                        tot -= 1.0
+                        continue
+                    try:
+                        own, inner, ras, sx, sy = _fit(cand["_drawn"], b, "")
+                        _ok, iou, col = vector_redraw.check_against_scan(own, _own(b))
+                    except Exception:
+                        iou, col = 0.0, 999.0
+                    tot += iou - col / 400.0
+                if tot > best_tot:
+                    best_c, best_tot = cand, tot
+            for it in grp:
+                if it is best_c:
+                    continue
+                b = it["box"]
+                try:
+                    own, inner, ras, sx, sy = _fit(best_c["_drawn"], b, "")
+                    _ok, iou, col = vector_redraw.check_against_scan(own, _own(b))
+                except Exception:
+                    continue
+                if iou >= 0.7 and col <= 110:
+                    it.update(svg=own, rgba=ras, _inner=inner, _sx=sx, _sy=sy,
+                              _drawn=best_c["_drawn"])
+        for it in items:
+            if it["source"] == "text":
+                continue
+            b = it["box"]
+            w, h = b[2] - b[0], b[3] - b[1]
+            best = None
+            for t in typeset:
+                tb = t["box"]
+                tw, th = tb[2] - tb[0], tb[3] - tb[1]
+                if abs(w - tw) > 0.08 * max(w, tw) or abs(h - th) > 0.08 * max(h, th):
+                    continue
+                try:
+                    f = 48.0 / max(w, h)
+                    size = (max(8, int(round(w * f))), max(8, int(round(h * f))))
+                    sa = _copy_sig(rgba, b, size, _own)
+                    sb = _copy_sig(rgba, tb, size, _own)
+                    v, how = max((_ncc(sa, sb), ""),
+                                 (_ncc(sa, sb[::-1, ::-1].copy()), "turn"))
+                except Exception:
+                    continue
+                if v < 0.6:
+                    continue
+                try:
+                    own, inner, ras, sx, sy = _fit(t["_drawn"], b, how)
+                    _ok, iou, col = vector_redraw.check_against_scan(own, _own(b))
+                except Exception:
+                    continue
+                if iou >= 0.7 and col <= 110:
+                    sc = iou - col / 400.0
+                    if best is None or sc > best[0]:
+                        best = (sc, own, inner, ras, sx, sy, t["_drawn"])
+            if best is not None:
+                _sc, own, inner, ras, sx, sy, drawn = best
+                it.update(svg=own, rgba=ras, source="copy", _inner=inner,
+                          _sx=sx, _sy=sy, _drawn=drawn)
+                n += 1
+        return n
 
     # repeated decals: draw a few copies, keep the best, place it on all
-    groups = find_copies(rgba, boxes) if (reuse_copies and not limit) else []
+    groups = (find_copies(rgba, boxes, crop_fn=_own)
+              if (reuse_copies and not limit) else [])
     member_of = {}
     for g in groups:
         for idx, rot in g:
@@ -1847,7 +2877,7 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
 
         def _score(svg, box):
             try:
-                _ok, iou, col = vector_redraw.check_against_scan(svg, rgba.crop(box))
+                _ok, iou, col = vector_redraw.check_against_scan(svg, _own(box))
                 return iou - col / 400.0, iou, col
             except Exception:
                 return 0.0, 0.0, 999.0
@@ -1903,6 +2933,11 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
         step += max(0, len(g) - 3)
         st["copy_groups"] += 1
         st["copies"] += reused
+    try:
+        st["text_carried"] = st.get("text_carried", 0) + _carry_text()
+    except Exception:
+        pass
+    _compose()
     sheet_svg = ('<?xml version="1.0" encoding="UTF-8"?>\n'
                  '<svg xmlns="http://www.w3.org/2000/svg" version="1.1" '
                  f'width="{sheet_w_in:.4f}in" height="{sheet_h_in:.4f}in" '

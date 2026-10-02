@@ -1003,6 +1003,94 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Whale sheets verified by eye (v2.24.3).** User: "white and red in
+  the orca, GI JOE not straight, white on the black letters", then "look
+  with the eye tool at the renders … verify they are close to 100% the
+  same", "a lot of these decals are letters only — convert them with the
+  correct fonts", "recreate the letters … prevent edges on the flag".
+  Method: full live redraws of all 3 whale pages (Recraft + Opus text
+  sweep), scan vs SVG side by side on grey in a viewer window, eye_look +
+  eye_zoom per region, fix, rerun (~$0.9 per 3-page run). Findings/fixes:
+  (1) Rims were IN THE PICTURE SENT: flatten snapped ink→film blends to
+  white/red. `_drop_edge_rims` (flatten rim_r): only colours LIGHTER (lum
+  −40) than the ink they hug; thin slivers near the outside; small
+  patches on the edge or touching the film; a lighter colour that is only
+  small pieces and < 25% of the decal = film (title halos, A/4 counters);
+  coreless STRAY patches (ink not used within 10r) take the colour around
+  (fin/ring red seam); a CAUTION icon's navy marks stay (navy nearby).
+  Without "lighter" the title's thin strokes were erased; two near-
+  identical blacks are merged in decal_palette (< 40 apart). (2) Red dots
+  on the white belly: finalize closed pin-holes but left them magenta →
+  snapped red; now they take the surrounding colour. (3) Straight lines:
+  `geometric_svg` — flatten, per-ink mask rounded (box mean 0.2 mm),
+  vtracer polygon outline, resampled per px, DP; a run is straight when a
+  fitted parabola's sagitta ≤ 0.25 tol (the mean-vs-RMS test called a
+  dented edge a curve: banner 9-27% straight), curves kept; used when
+  ≥ 50% of the outline is straight, union IoU ≥ 0.95 and EVERY ink's IoU
+  ≥ 0.96 (a black panel with round symbols scored 0.94 and its thin lines
+  were mangled); dominant ink painted under the others, others stroked a
+  hairline to hide seams; clustered palette (palette_of split red/navy
+  into twins). Banners 0.66-0.81 straight; orcas 0.18-0.25 → Recraft.
+  (4) Ghost mirrored DANGER! beside the orca copy: the orca crop held the
+  DANGER! inside its box; `decal_owner_map` gives each ink piece to the
+  smallest box holding it whole, `own_crop` clears other decals' ink, used
+  for drawing, scoring and copy matching. (5) Segmentation: big pieces a
+  LINE high join within gap on ink, a line-high piece ≥ 50% inside a box
+  joins if ink within 2·gap; segment_decals matched each component to its
+  label by its first inked pixel — a NEIGHBOUR's pixel ("AWAY" split as
+  AW|AY) — now by exact box. Thin LONG marks kept (min side < min_side
+  only drops pieces under 2·min_side long). p1 129→62 decals. (6) Text
+  sweep: vertical text read on the crop turned −90 (model reports
+  upside_down → turned 180); serif → Georgia/Times; the face/weight with
+  the best exact overlap wins (worn STAND read "serif"); decorative faces
+  raise Unsure (cost still counted); malformed JSON retried once; read at
+  effort medium, every character incl. "." and lower case (a run set
+  "K.IN-10k" as "KIN-10R"); type must cover scan and scan type ≥ 0.85
+  with 2 px slack (VENTS over its triangles 0.73/0.62; right words
+  0.95+); `_carry_text` sets a typeset word on same-size look-alikes
+  (ncc ≥ 0.6, fit 0.7/110) after all decals are drawn; the sheet is
+  composed at the end. (7) Recraft dropped the hairline "/": the sent
+  picture's dotted 1-2 px chain; `restore_missing` adds sent ink with no
+  drawn ink within a band (pieces grouped across 2 px, one colour each,
+  1 px thicker, own polygons) — only when the missing share ≤ 10% (a
+  wrong answer must still fail). Majority vote before Recraft 0.15→0.08
+  mm (it thinned the "/" to a hairline). Thin decals that cannot reach
+  fal's 256 px minimum within 2048 px go to the clean trace with no call.
+  (8) The white banners render at alpha 255: invisible only on white.
+  (9) Text: reads ask for the INTENDED words of worn print, but every
+  typeset word passes `verify_typeset` (scan | type, YES/NO; AWAY was
+  set as ARMY and carried to 10 copies) on the upright crop; orientation
+  by fit both ways (> 0.08) and an UNSURE read retried turned 180; rows
+  of the turned crop are the same rows turned (not re-detected);
+  decorative only for script/swash/outline; DISPLAY_FACES (Rockwell,
+  Stencil, Arial Narrow, Impact) chosen by exact overlap; coverage gate
+  scan >= 0.85 / type >= 0.70. text_geometry: rows widened to ink of the
+  lettering colour in the band (KEEP found as KE), other colours out
+  (REMOVAL's triangle), stripe rows dropped. `_try_text` picks the
+  orientation with the larger row share; partly-lettered decals typeset
+  the words (mask) and draw the rest; leftover ink >= 4% drawn.
+  `straight_bars`: elongation >= 6 pieces -> PCA bars, collinear worn
+  pieces joined. (10) Halos: a lighter colour hugging darker ink, 70%+
+  in the edge band and <= 0.3 mm thick is film (runs before the border
+  rule); rounding near cuts only removes. Thin decals may use up to 4000
+  px for Recraft. (11) Banner rebuild (`geometric_svg`): per ink, a
+  piece that opened by ~tol reduces to <= 8 corners (fewest first, 4 for
+  a stripe) with IoU >= 0.93 becomes that polygon (`_simple_shape`; the
+  opening drops a scratch's spike that Douglas-Peucker took as a corner);
+  a star is rebuilt from its own 5 tips and 5 notches (`_perfect_star`;
+  the GI JOE star is tilted, a regular star fitted 0.6-0.7); the detail
+  gate (per-ink IoU >= 0.95) judges the edge-straightened outline, not
+  the exact shapes; outline holes up to 1.2 mm, or thin scratches up to
+  1 mm x 4 mm crossing two inks (5%+ each), are filled (letter counters
+  sit in one ink and stay clear); thin dashes < 0.25 mm thick and < 1 mm2
+  dropped. Typeset copies with the same words share the best-fitting
+  version (`data-words` on the text SVG; kept through the split-decal
+  and vertical wrappers — losing it left DANGER! in two faces). The
+  outline (letters joined to the flag) is straightened at the coarser
+  tol, so the letters' notches go (user's clean GI Joe.png = the quality
+  target). (12) "Pages to redraw" applies to PDFs only: a PNG with "2"
+  left in the box failed "none of the pages asked for". Tests
+  446/62/20/14.
 - **Copies: ink distance, not boxes (v2.24.2).** User: "Those dangers are
   copies, why wasn't the danger with the best value kept and rewritten
   over those lesser copies?" Cause: the two right-hand DANGER!s (single

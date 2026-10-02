@@ -682,8 +682,23 @@ try:
         _calls.append((rgb.size, size))
         return rgb.resize(size)        # an identity "AI" at the work size
 
-    _out = _dec.redraw_sheet(_sheet, _fake_refine, native_dpi=100,
-                             size_scale=1.5, target_dpi=100)
+    # plain rectangles are straight-line art (rebuilt without the AI):
+    # first that path, then the AI path with it switched off
+    _geo_st = {}
+    _gout = _dec.redraw_sheet(_sheet, _fake_refine, native_dpi=100,
+                              size_scale=1.5, target_dpi=100, stats=_geo_st)
+    check("straight-line decals are rebuilt from their outlines, no AI call "
+          "(GI JOE banners: straight letters and flag)",
+          not _calls and len(_gout["items"]) == 2
+          and _geo_st.get("geometric") == 2
+          and "<path" in _gout["items"][0]["svg"], (_calls, _geo_st))
+    _orig_geo = _dec.geometric_svg
+    _dec.geometric_svg = lambda *a, **k: None
+    try:
+        _out = _dec.redraw_sheet(_sheet, _fake_refine, native_dpi=100,
+                                 size_scale=1.5, target_dpi=100)
+    finally:
+        _dec.geometric_svg = _orig_geo
     check("redraw_sheet redraws every decal once",
           len(_calls) == 2 and len(_out["items"]) == 2, (_calls, len(_out["items"])))
     # thin WHITE ink on its own (a white label on the film) must survive the
@@ -2077,6 +2092,25 @@ try:
         _t12.sleep(0.05)
     check("a page that is not in the file is reported, not silently skipped",
           "none of the pages asked for (7)" in ui.decal_status_var.get(), ui.decal_status_var.get())
+    # a PNG with Pages = 2 left over from a PDF: the picture is still used
+    _png12 = app.Path(str(_fs_tmp)) / "one_picture.png"
+    _imp = app.Image.new("RGB", (300, 300), (222, 253, 255))
+    app.ImageDraw.Draw(_imp).rectangle([60, 60, 200, 200], fill=(200, 20, 30))
+    _imp.save(str(_png12))
+    ui.decal_sources = [str(_png12)]
+    ui.decal_pages_var.set("2")
+    _n1 = len(ui.session)
+    ui._redraw_decals()
+    for _ in range(600):
+        ui._poll_queue(); root.update()
+        if not ui._decals_busy:
+            break
+        _t12.sleep(0.05)
+    check("a PNG is redrawn whatever the Pages box says (pages pick PDF pages)",
+          len(ui.session) > _n1
+          and "none of the pages" not in ui.decal_status_var.get(),
+          ui.decal_status_var.get())
+    ui.decal_sources = [str(_pdf3)]
     ui.decal_pages_var.set("x")
     ui._redraw_decals()
     check("a bad page list is explained before anything runs",
@@ -2104,6 +2138,8 @@ try:
         return _fn
     app.recraft_vectorize.get_key = lambda: "fal-test-key-not-real"
     app.recraft_vectorize.make_vector_fn = _fake_mk
+    _orig_geo12 = app.decals.geometric_svg
+    app.decals.geometric_svg = lambda *a, **k: None   # rectangles: else no call
     try:
         _n1 = len(ui.session)
         ui._redraw_decals()
@@ -2115,6 +2151,7 @@ try:
     finally:
         app.recraft_vectorize.get_key = _orig_gk
         app.recraft_vectorize.make_vector_fn = _orig_mk
+        app.decals.geometric_svg = _orig_geo12
     check("a Recraft run calls the service per decal with the key and finishes "
           "(cost in red, Recraft named in the note)",
           _calls_rc and _calls_rc[0][0] == "fal-test-key-not-real"

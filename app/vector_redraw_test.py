@@ -267,11 +267,30 @@ class _ReadResp(_Resp):
     content = [_B()]
 
 
+class _YesResp(_Resp):
+    class _B:
+        type = "text"
+        text = "YES"
+    content = [_B()]
+
+
+class _NoResp(_Resp):
+    class _B:
+        type = "text"
+        text = "NO"
+    content = [_B()]
+
+
+_VERIFY = {"answer": "YES"}
+
+
 class _ReadClient:
     class messages:
         @staticmethod
         def create(**kw):
             _calls.append(kw)
+            if kw.get("system") == vr.VERIFY_SYSTEM:
+                return _YesResp() if _VERIFY["answer"] == "YES" else _NoResp()
             return _ReadResp()
 
 
@@ -279,10 +298,20 @@ _calls.clear()
 _st = {}
 _tfn = vr.make_text_fn(_ReadClient(), "claude-opus-5-5", 300, stats=_st)
 _got = _tfn(_tcrop, [(206, 22, 30)], 1.4, 0.533, _geom)
+_read_kw = [c for c in _calls if c.get("system") != vr.VERIFY_SYSTEM][-1]
 check("make_text_fn reads, sets, checks and renders a lettering decal",
       _got is not None and "<path" in _got[0] and _got[1].size[0] == 420 and _st["text"] == 1
-      and _calls[-1]["output_config"]["effort"] == "low" and _calls[-1]["max_tokens"] == 600, (_st, _calls[-1].get("max_tokens")))
+      and _read_kw["output_config"]["effort"] == "medium" and _read_kw["max_tokens"] == 1200, (_st, _read_kw.get("max_tokens")))
 check("…the SVG carries the printed size", 'width="1.4000in"' in _got[0])
+check("…and its spelling was checked by a second look (scan beside type)",
+      any(c.get("system") == vr.VERIFY_SYSTEM for c in _calls) and _st["calls"] == 2, _st)
+_VERIFY["answer"] = "NO"
+_st2 = {}
+_got2 = vr.make_text_fn(_ReadClient(), "claude-opus-5-5", 300, stats=_st2)(
+    _tcrop, [(206, 22, 30)], 1.4, 0.533, _geom)
+_VERIFY["answer"] = "YES"
+check("a typeset word the second look says is misspelt is NOT used (AWAY → ARMY)",
+      _got2 is None and _st2["text"] == 0 and _st2["text_fallback"] == 1, _st2)
 
 
 class _UnsureReadResp(_Resp):

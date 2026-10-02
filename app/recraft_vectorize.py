@@ -33,6 +33,7 @@ CRED_TARGET = "AIImageGeneratorSuite/fal"
 PRICE_PER_IMAGE = 0.01
 KEY_RGB = (255, 0, 255)            # the backing, removed from the answer
 MIN_SIDE, MAX_SIDE = 320, 2048     # what is sent (fal: >256, <4096)
+THIN_MAX_SIDE = 4000                # a long thin decal's long side may reach this
 
 
 def get_key():
@@ -104,7 +105,21 @@ def decal_palette(crop_rgba):
     pal = _kmeans_palette(crop_rgba)
     if pal is None or len(pal) <= 2:
         return pal
-    P = [np.array(c, np.float32) for c in pal]
+    P0 = [np.array(c, np.float32) for c in pal]
+    # near-identical inks are one ink: two blacks (4,3,5) and (18,19,21)
+    # split a title's letters between them, and each half looked like a
+    # thin sliver of "another ink" to the rim cleanup (v2.24.3)
+    def _lum(c):
+        return 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]
+    P = []
+    for c in P0:
+        # dark inks closer than 60 are one black too (20 vs 48: the lighter
+        # one is the blend ring inside every letter)
+        if all(float(np.sqrt(((c - q) ** 2).sum())) >= (
+                60 if (_lum(c) < 70 and _lum(q) < 70) else 40) for q in P):
+            P.append(c)
+    if len(P) <= 2:
+        return np.array([np.round(k) for k in P], np.uint8)
     keep = [P[0], P[1]]                  # the two commonest inks always stay
     for c in P[2:]:
         blend = False
@@ -127,7 +142,7 @@ def decal_palette(crop_rgba):
     return np.array([np.round(k) for k in keep], np.uint8)
 
 
-def _prepare(crop_rgba, pal=None):
+def _prepare(crop_rgba, pal=None, dpi=None):
     """The decal FLATTENED (its own inks only, crisp edges, no halftone
     mottle — decals.flatten_decal) on magenta, sized for the service.
     Sending the raw scan made Recraft trace the noise: wobbly banner
@@ -139,11 +154,32 @@ def _prepare(crop_rgba, pal=None):
     # enlarge small decals (more detail to trace), keep inside the limits
     s = max(MIN_SIDE / float(min(W, H)), min(4.0, MAX_SIDE / float(max(W, H))))
     s = min(s, MAX_SIDE / float(max(W, H)))
+    if min(W, H) * s < MIN_SIDE:
+        # a long thin decal (a one-line caption): fal.ai takes up to 4096
+        # px a side, so the long side may grow past MAX_SIDE to bring the
+        # short one to MIN_SIDE (the clean trace drew "Bad Mother Tattoos
+        # & Customs" with grey patches and a pink counter)
+        s = min(MIN_SIDE / float(min(W, H)), THIN_MAX_SIDE / float(max(W, H)))
     nw, nh = max(1, int(round(W * s))), max(1, int(round(H * s)))
+    # fal.ai refuses a side under MIN_SIDE: rounding made a thin mark 255
+    if min(nw, nh) < MIN_SIDE:
+        import math
+        nw = max(nw, int(math.ceil(W * s)))
+        nh = max(nh, int(math.ceil(H * s)))
+    if min(nw, nh) < 256:
+        # a long thin mark cannot be enlarged to fal.ai's 256 px minimum
+        # within its 4096 px maximum: the clean trace draws it (no call)
+        raise FalError("the decal is too thin for Recraft (under 256 px)")
     if pal is None:
         pal = decal_palette(crop)
+    # vote away flecks and notches up to ~0.15 mm (scan dust on a banner's
+    # stripe edges, red/white flecks on an orca) before Recraft traces them
+    px_per_mm = (float(dpi) * s / 25.4) if dpi else (s * 300 / 25.4)
     big = decals.flatten_decal(crop, pal, size=(nw, nh),
-                               band=max(1, int(round(s))))
+                               band=max(1, int(round(s))),
+                               smooth_r=max(1, int(round(0.08 * px_per_mm))),
+                               rim_r=max(1, int(round(0.12 * px_per_mm))),
+                               straight_ppm=px_per_mm)
     a = np.asarray(big)
     hard = a[..., 3] >= 128
     rgb = np.empty(a.shape[:2] + (3,), np.uint8)
@@ -281,7 +317,11 @@ def finalize(svg_text, sent_w, sent_h, scale, pal=None, crop=None, sent=None):
         import decals as _d
         was_key = _d.erode_mask(was_key, 2)
         exposed = exposed | (was_key & (rc[..., 3] > 128))
-    if exposed.sum() <= 0.002 * key.size:
+    # specks Recraft invents: a small patch of one ink inside a region of
+    # another, where the picture SENT shows that other ink (red dots on
+    # the orca's white belly, snapped to the red)
+    specks = _invented_specks(rc, sent, pal)
+    if exposed.sum() <= 0.002 * key.size and not specks.any():
         return clean
     # re-trace from the keyed render. WHICH areas are clear comes from the
     # scan's own outline (smoothed), not from Recraft's layers: Recraft
@@ -315,8 +355,23 @@ def finalize(svg_text, sent_w, sent_h, scale, pal=None, crop=None, sent=None):
         tiny = max(12, int(0.0005 * holes.size))
         for lid, (x0, y0, x1, y1, area) in stats.items():
             if lid not in edge_ids and area <= tiny:
-                sub = lab[y0:y1 + 1, x0:x1 + 1] == lid
-                opaque[y0:y1 + 1, x0:x1 + 1][sub] = True
+                sl = (slice(max(0, y0 - 2), y1 + 3), slice(max(0, x0 - 2), x1 + 3))
+                sub = lab[sl] == lid
+                opaque[sl][sub] = True
+                # the colour around it — left as the backing it snapped
+                # to the nearest ink: magenta → red dots on a white belly
+                ring = _d2.dilate_mask(sub, 2) & ~sub & opaque[sl]
+                ring &= ~key[sl]
+                if ring.any():
+                    cols, cnt = np.unique(a[sl][..., :3][ring].reshape(-1, 3),
+                                          axis=0, return_counts=True)
+                    fill = cols[cnt.argmax()]
+                    patch = a[sl]
+                    patch[..., :3][sub] = fill
+    if specks.any():
+        sm2 = np.asarray(sent.convert("RGB").resize((a.shape[1], a.shape[0]),
+                                                    Image.NEAREST))
+        a[..., :3][specks] = sm2[specks]
     a[..., 3] = np.where(opaque, 255, 0).astype(np.uint8)
     rgba = Image.fromarray(a, "RGBA")
     if pal is not None:
@@ -337,6 +392,49 @@ def finalize(svg_text, sent_w, sent_h, scale, pal=None, crop=None, sent=None):
     return ('<svg xmlns="http://www.w3.org/2000/svg" version="1.1" '
             f'width="{cw:.2f}" height="{ch:.2f}" viewBox="0 0 {cw:.3f} {ch:.3f}">'
             f'<g transform="scale({sx:.6f} {sy:.6f})">{_inner(svg2)}</g></svg>')
+
+
+def _invented_specks(render, sent, pal, max_frac=0.0004):
+    """Pixels of small patches (each under max_frac of the picture) where
+    the render's ink differs from the SENT picture's and the patch is
+    ringed by one ink only — the one the sent picture has there. A patch
+    on a border between two inks (Recraft smoothing an edge) is left."""
+    import decals
+    H, W = render.shape[:2]
+    none = np.zeros((H, W), bool)
+    if sent is None or pal is None or len(pal) < 2:
+        return none
+    P = np.asarray(pal, np.int32)
+
+    def _idx(rgb):
+        px = rgb.reshape(-1, 3).astype(np.int32)
+        d = ((px[:, None, :] - P[None, :, :]) ** 2).sum(2)
+        return d.argmin(1).reshape(rgb.shape[:2])
+    sm = np.asarray(sent.convert("RGB").resize((W, H), Image.NEAREST))
+    s_key = (sm[..., 0].astype(int) >= 200) & (sm[..., 1] <= 70) & (sm[..., 2] >= 200)
+    opaque = render[..., 3] > 128
+    ri = _idx(render[..., :3])
+    si = _idx(sm)
+    diff = opaque & ~s_key & (ri != si)
+    if not diff.any():
+        return none
+    out = none.copy()
+    lab, stats = decals._label_runs(diff, diag=True)
+    limit = max(16, int(max_frac * H * W))
+    for lid, (x0, y0, x1, y1, area) in (stats or {}).items():
+        if area > limit:
+            continue
+        sl = (slice(max(0, y0 - 2), y1 + 3), slice(max(0, x0 - 2), x1 + 3))
+        sub = lab[sl] == lid
+        ring = decals.dilate_mask(sub, 2) & ~sub
+        if (ring & ~opaque[sl]).any():
+            continue  # touches the outline
+        rv_ = ri[sl][ring]
+        if rv_.size == 0 or (rv_ != rv_[0]).any():
+            continue  # on a border between inks
+        if (si[sl][sub] == rv_[0]).mean() >= 0.8:
+            out[sl][sub] = True
+    return out
 
 
 def _inner(svg_text):
@@ -379,14 +477,14 @@ def _detail(r):
     return (r.text or f"HTTP {r.status_code}")[:160]
 
 
-def vectorize_decal(crop_rgba, key, timeout=180.0, session=None):
+def vectorize_decal(crop_rgba, key, timeout=180.0, session=None, dpi=None):
     """One decal through Recraft Vectorize. Returns the SVG in crop-pixel
     coordinates. Raises FalError with an 'account' flag in the message
     for key / balance problems (the run then stops)."""
     import requests
     http = session or requests
     pal = decal_palette(crop_rgba)
-    png, scale = _prepare(crop_rgba, pal)
+    png, scale = _prepare(crop_rgba, pal, dpi=dpi)
     if len(png) >= 5 * 1024 * 1024:
         raise FalError("the decal picture is over 5 MB")
     sent_w = int(round(crop_rgba.width * scale))
@@ -439,8 +537,89 @@ def vectorize_decal(crop_rgba, key, timeout=180.0, session=None):
         svg = g.text
     if "<svg" not in svg:
         raise FalError("the result is not an SVG")
-    return finalize(svg, sent_w, sent_h, scale, pal, crop=crop_rgba,
-                    sent=Image.open(io.BytesIO(png)))
+    sent_im = Image.open(io.BytesIO(png))
+    out = finalize(svg, sent_w, sent_h, scale, pal, crop=crop_rgba,
+                   sent=sent_im)
+    try:
+        out = restore_missing(out, sent_im, scale, crop_rgba.size)
+    except Exception:
+        pass
+    return out
+
+
+def restore_missing(svg_text, sent, scale, crop_size, min_mm=0.25, dpi=None):
+    """Nothing the decal has may go missing: Recraft drops a thin mark now
+    and then (the "/" of "1/12" in a title). Ink present in the picture
+    SENT but absent from the answer — pieces bigger than a speck, beyond
+    the edge band where the two may differ by a pixel — is traced from
+    the sent picture and added to the answer."""
+    import decals
+    W, H = sent.size
+    s_rgb = np.asarray(sent.convert("RGB")).astype(int)
+    # the backing AND its blends (pink with white, purple with black):
+    # red and blue both well above green — they are not ink (a pink "C"
+    # counter came back otherwise)
+    s_key = ((s_rgb[..., 0] - s_rgb[..., 1] > 50)
+             & (s_rgb[..., 2] - s_rgb[..., 1] > 50))
+    s_ink = ~s_key
+    r = np.asarray(vector_redraw.render_svg(svg_text, W).convert("RGBA"))
+    if r.shape[:2] != s_ink.shape:
+        r = np.asarray(Image.fromarray(r).resize((W, H)))
+    r_ink = r[..., 3] > 128
+    band = max(2, int(round(W / 600.0)))
+    # sent ink with NO drawn ink near it (a hairline "/" is missing whole;
+    # an edge that moved a pixel is not)
+    missing = s_ink & ~decals.dilate_mask(r_ink, band)
+    if not missing.any():
+        return svg_text
+    # a few missing marks are restored; an answer missing a large part of
+    # the decal is WRONG and must fail its check (then the trace is used)
+    if missing.sum() > 0.10 * max(1, int(s_ink.sum())):
+        return svg_text
+    # pieces grouped across 2 px gaps: a hairline comes through as a
+    # dotted chain of 1-2 px bits (the "/" of "1/12")
+    lab, stats = decals._label_runs(decals.dilate_mask(missing, 2), diag=True)
+    min_px = max(12, int((0.002 * min(W, H)) ** 2))
+    keep_ids = []
+    for lid, st in (stats or {}).items():
+        x0, y0, x1, y1, _a = st
+        own_px = int((missing[y0:y1 + 1, x0:x1 + 1]
+                      & (lab[y0:y1 + 1, x0:x1 + 1] == lid)).sum())
+        if own_px >= min_px:
+            keep_ids.append(lid)
+    if not keep_ids:
+        return svg_text
+    # each missing piece in ONE colour (its commonest ink; splitting by
+    # colour broke a hairline into 1 px bits the tracer drops), a pixel
+    # thicker so it traces and prints; sent px → crop px
+    paths = []
+    for lid in keep_ids:
+        x0, y0, x1, y1, _a = stats[lid]
+        sl = (slice(max(0, y0 - 2), y1 + 3), slice(max(0, x0 - 2), x1 + 3))
+        comp = decals.dilate_mask((lab[sl] == lid) & missing[sl], 1)
+        cols = s_rgb[sl][comp & s_ink[sl]]
+        if cols.size == 0:
+            continue
+        u, n = np.unique(cols.reshape(-1, 3), axis=0, return_counts=True)
+        c = u[n.argmax()]
+        # traced in its own small window (fast), placed back by offset
+        m = np.pad(comp, 2)
+        ox, oy = sl[1].start - 2, sl[0].start - 2
+        d = []
+        for q in decals._mask_polygons(m):
+            d.append("M" + " L".join(f"{x + ox:.1f},{y + oy:.1f}"
+                                     for x, y in q) + " Z")
+        if d:
+            paths.append('<path fill="#%02x%02x%02x" fill-rule="evenodd" d="%s"/>'
+                         % (int(c[0]), int(c[1]), int(c[2]), " ".join(d)))
+    if not paths:
+        return svg_text
+    k = 1.0 / float(scale)
+    add = f'<g transform="scale({k:.6f} {k:.6f})">' + "".join(paths) + '</g>'
+    i = svg_text.rfind("</svg>")
+    if i < 0:
+        return svg_text
+    return svg_text[:i] + add + svg_text[i:]
 
 
 def make_vector_fn(key, target_dpi, stats=None, cancelled=None, log=None,
@@ -460,7 +639,9 @@ def make_vector_fn(key, target_dpi, stats=None, cancelled=None, log=None,
             return None
         try:
             svg = vector_redraw.call_cancellable(
-                lambda: vectorize_decal(crop, key, session=session), cancelled)
+                lambda: vectorize_decal(crop, key, session=session,
+                                        dpi=crop.width / max(1e-6, w_in)),
+                cancelled)
         except vector_redraw.Cancelled:
             return None
         except FalError as e:

@@ -131,5 +131,27 @@ check("Cancel abandons a call in flight at once", r is None and time.time() - t0
 check("no key is kept in this module's source",
       "sk-" not in Path(rv.__file__).read_text(encoding="utf-8").replace("sk-ant", ""))
 
+
+print("restore missing marks")
+# the picture sent: a black bar plus a hairline "/" well away from it; the
+# answer drew only the bar — the hairline must come back, in black
+_sent = Image.new("RGB", (400, 400), rv.KEY_RGB)
+_d = ImageDraw.Draw(_sent)
+_d.rectangle((40, 40, 160, 360), fill=(0, 0, 0))
+_d.line((250, 360, 330, 60), fill=(0, 0, 0), width=1)
+_ans = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" '
+        'width="100" height="100"><rect x="10" y="10" width="30" height="80" '
+        'fill="#000000"/></svg>')
+_fixed = rv.restore_missing(_ans, _sent, 4.0, (100, 100))
+_r = np.asarray(rv.vector_redraw.render_svg(_fixed, 400).convert("RGBA"))
+check("a hairline Recraft dropped is restored from the picture sent",
+      _fixed != _ans and _r[210, 290, 3] > 0 or _r[200:220, 280:300, 3].max() > 128,
+      _fixed[-200:])
+_wrong = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" '
+          'width="100" height="100"><circle cx="80" cy="80" r="5" '
+          'fill="#000000"/></svg>')
+check("an answer missing most of the decal is NOT patched (it must fail)",
+      rv.restore_missing(_wrong, _sent, 4.0, (100, 100)) == _wrong)
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

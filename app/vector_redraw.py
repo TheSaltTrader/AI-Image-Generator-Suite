@@ -419,6 +419,44 @@ def _crop_png_b64(rgba, max_px=1024):
     return base64.standard_b64encode(buf.getvalue()).decode("ascii"), scale
 
 
+VERIFY_SYSTEM = """You compare two pictures of one decal: the LEFT is a
+scan, the RIGHT is a re-typeset copy. You check spelling only, not the
+font or the wear. Answer YES or NO and nothing else."""
+
+
+def verify_typeset(crop_rgba, svg_text, words, model=DEFAULT_MODEL,
+                   client=None):
+    """A second look before a typeset word is used: the scan and the typeset
+    copy side by side, asked whether they spell the same characters (a
+    worn AWAY was once set as "ARMY" and carried to all ten copies).
+    Returns (same: bool, cost_usd)."""
+    crop = crop_rgba.convert("RGBA")
+    r = render_svg(svg_text, crop.width).convert("RGBA")
+    if r.size != crop.size:
+        r = r.resize(crop.size)
+    gap = max(8, crop.width // 10)
+    pair = Image.new("RGBA", (crop.width * 2 + gap, crop.height), (0, 0, 0, 0))
+    pair.alpha_composite(crop, (0, 0))
+    pair.alpha_composite(r, (crop.width + gap, 0))
+    if pair.height > pair.width * 1.5:
+        pair = pair.rotate(-90, expand=True)     # vertical lettering: read it level
+    b64, _s = _crop_png_b64(pair, max_px=1400)
+    ask = ("Left: a scanned decal. Right: our re-typeset copy, meant to read: "
+           + " / ".join(words) + ". Ignore font, weight and wear. Do the two "
+           "spell exactly the same characters? Answer YES or NO.")
+    resp = client.messages.create(
+        model=model, max_tokens=300, system=VERIFY_SYSTEM,
+        output_config={"effort": "low"},
+        messages=[{"role": "user", "content": [
+            {"type": "image", "source": {"type": "base64",
+                                         "media_type": "image/png", "data": b64}},
+            {"type": "text", "text": ask}]}])
+    text = "".join(b.text for b in resp.content
+                   if getattr(b, "type", "") == "text").strip().upper()
+    cost = estimate_cost(getattr(resp, "model", model) or model, resp.usage)
+    return text.startswith("YES"), cost
+
+
 def _extract_svg(text):
     m = re.search(r"<svg\b.*?</svg>", text, re.S | re.I)
     return m.group(0) if m else None
@@ -638,16 +676,31 @@ def read_text_decal(crop_rgba, n_lines, palette=None, model=DEFAULT_MODEL,
     pal_hex = ["#%02x%02x%02x" % tuple(int(v) for v in c) for c in palette] \
         if palette is not None else []
     ask = (f"This decal is lettering only, printed on {n_lines} line(s). "
-           "Read it exactly, top line first. Reply with JSON only, no prose:\n"
+           "Read it exactly, top line first: every character as printed — "
+           "full stops, hyphens and lower-case letters too (K.IN-10k is not "
+           "KIN-10R). Reply with JSON only, no prose:\n"
            '{"lines": [{"text": "...", "colour": "#rrggbb", '
-           '"weight": "regular|bold|black", "italic": false}], '
-           '"align": "left|center|right"}\n'
+           '"weight": "regular|bold|black", "italic": false, '
+           '"serif": false}], '
+           '"align": "left|center|right", "decorative": false, '
+           '"upside_down": false}\n'
            f"The grey-blue backing ({BACKING_HEX}) is not part of the decal."
            + ("\nColours on this decal: " + ", ".join(pal_hex) if pal_hex else "")
-           + "\nIf any character is not certain, reply UNSURE.")
+           + "\nserif: true when the letters have serifs (like Times or "
+           "Georgia), false for sans-serif lettering."
+           + "\ndecorative: true ONLY for script, handwriting, swash, "
+           "outlined/inline or novelty-shaped letters; block capitals — "
+           "heavy, slab, condensed, stencilled or worn — are NOT decorative."
+           + "\nupside_down: true when the lettering in this picture is "
+           "upside down (turned 180 degrees)."
+           + "\nLettering on these sheets is often printed worn, stencilled "
+           "or broken (a worn KEEP CLEAR can look like 'EBP CLEAR'), and may "
+           "be turned: give the words as they were meant to be printed, "
+           "letter for letter."
+           + "\nReply UNSURE only when you cannot tell what the words are.")
     resp = client.messages.create(
-        model=model, max_tokens=600, system=READ_SYSTEM,
-        output_config={"effort": "low"},
+        model=model, max_tokens=1200, system=READ_SYSTEM,
+        output_config={"effort": "medium"},
         messages=[{"role": "user", "content": [
             {"type": "image", "source": {"type": "base64",
                                          "media_type": "image/png", "data": b64}},
@@ -665,6 +718,13 @@ def read_text_decal(crop_rgba, n_lines, palette=None, model=DEFAULT_MODEL,
         data = json.loads(text[i:j + 1])
     except Exception as e:
         raise RuntimeError(f"unreadable JSON from the model: {e}")
+    if data.get("decorative"):
+        # a display face set in Arial looked nothing like the scan ("Bad
+        # Mother Tattoos & Customs"): the drawing path keeps its shapes
+        e = Unsure("decorative lettering: drawn, not typeset")
+        e.cost = estimate_cost(getattr(resp, "model", model) or model,
+                               resp.usage)
+        raise e
     lines = data.get("lines") or []
     if not isinstance(lines, list) or not lines:
         raise Unsure("the model returned no lines")
@@ -677,13 +737,32 @@ def read_text_decal(crop_rgba, n_lines, palette=None, model=DEFAULT_MODEL,
         out.append({"text": str(ln.get("text", "")).strip(),
                     "colour": str(ln.get("colour", "#000000")),
                     "weight": str(ln.get("weight", "bold")).lower(),
-                    "italic": bool(ln.get("italic", False))})
+                    "italic": bool(ln.get("italic", False)),
+                    "serif": bool(ln.get("serif", False))})
     if not out:
         raise Unsure("the model returned no readable line")
     return {"lines": out, "align": str(data.get("align", "center")).lower(),
+            "upside_down": bool(data.get("upside_down", False)),
             "usage": resp.usage,
             "cost_usd": estimate_cost(getattr(resp, "model", model) or model,
                                       resp.usage)}
+
+
+def _coverage(svg, crop, slack=2):
+    """(recall, precision) of a drawing against the scan's ink: the share
+    of the scan covered by the drawing and of the drawing lying on the
+    scan, each with `slack` px of tolerance for a different font."""
+    import decals
+    r = render_svg(svg, crop.width).convert("RGBA")
+    if r.size != crop.size:
+        r = r.resize(crop.size)
+    T = np.asarray(r)[..., 3] > 128
+    S = np.asarray(crop.convert("RGBA"))[..., 3] > 96
+    if not S.any() or not T.any():
+        return 0.0, 0.0
+    rec = (S & decals.dilate_mask(T, slack)).sum() / float(S.sum())
+    prec = (T & decals.dilate_mask(S, slack)).sum() / float(T.sum())
+    return float(rec), float(prec)
 
 
 def _snap_hex(colour, palette):
@@ -720,6 +799,11 @@ def typeset_lines(read, line_boxes, W, H, w_in, h_in, palette=None):
         weight = ln.get("weight", "bold")
         family = ("Arial Black" if weight == "black" else
                   "Arial Regular" if weight == "regular" else "Arial Bold")
+        if ln.get("serif"):
+            # a serif title set in Arial looked nothing like the scan
+            family = ("Serif Regular" if weight == "regular" else "Serif Bold")
+        if ln.get("face"):
+            family = ln["face"]
         if ln.get("italic"):
             family += " Italic"
         fp = _find_font(family)
@@ -845,20 +929,60 @@ def make_text_fn(client, model, target_dpi, stats=None, cancelled=None,
         boxes = geom.get("lines") or []
         if not boxes:
             return None
+        W, H = crop.size
+        # the rows of the crop turned 180 degrees: the same rows turned
+        # (finding them again on a masked crop could fail: REMOVAL)
+        boxes_up = sorted([(W - x1, H - y1, W - x0, H - y0)
+                           for (x0, y0, x1, y1) in boxes], key=lambda b: b[1])
+        up = crop.rotate(180)
+        pre_turned = False
         try:
-            read = call_cancellable(
-                lambda: read_text_decal(crop, len(boxes), palette=pal,
-                                        model=model, client=client), cancelled)
+            try:
+                read = call_cancellable(
+                    lambda: read_text_decal(crop, len(boxes), palette=pal,
+                                            model=model, client=client),
+                    cancelled)
+            except RuntimeError as e:
+                # a malformed JSON answer (seen 3 times on a 70-decal
+                # sheet) is asked once more before giving up
+                if "JSON" not in str(e):
+                    raise
+                st["calls"] += 1
+                read = call_cancellable(
+                    lambda: read_text_decal(crop, len(boxes), palette=pal,
+                                            model=model, client=client),
+                    cancelled)
         except Cancelled:
             return None
-        except Unsure:
+        except Unsure as e:
             st["calls"] += 1
-            st["unsure"] += 1
-            st["text_fallback"] += 1
-            if log:
-                log("text sweep: the model was unsure of this lettering; "
-                    "normal path used")
-            return None
+            st["cost"] += float(getattr(e, "cost", 0.0) or 0.0)
+            # worn lettering upside down is what the model is unsure of
+            # (these sheets mostly read top to bottom; a quarter turn left
+            # them upside down): once more, turned 180
+            try:
+                read = call_cancellable(
+                    lambda: read_text_decal(up, len(boxes_up), palette=pal,
+                                            model=model, client=client),
+                    cancelled)
+                if read.get("upside_down"):
+                    raise Unsure("upside down both ways")
+                pre_turned = True
+            except Cancelled:
+                return None
+            except Unsure as e2:
+                st["calls"] += 1
+                st["cost"] += float(getattr(e2, "cost", 0.0) or 0.0)
+                st["unsure"] += 1
+                st["text_fallback"] += 1
+                if log:
+                    log("text sweep: the model was unsure of this lettering; "
+                        "normal path used")
+                return None
+            except Exception as e2:
+                _account_stop(e2)
+                st["text_fallback"] += 1
+                return None
         except Exception as e:
             _account_stop(e)
             if log:
@@ -867,8 +991,110 @@ def make_text_fn(client, model, target_dpi, stats=None, cancelled=None,
             return None
         st["calls"] += 1
         st["cost"] += float(read.get("cost_usd") or 0.0)
-        W, H = crop.size
-        svg = typeset_lines(read, boxes, W, H, w_in, h_in, palette=pal)
+        turned = False
+        # which way up? the model can miss that worn lettering is upside
+        # down ("AWAY" was set facing the wrong way, and misread): the words
+        # are set both ways and the way that fits the scan clearly better
+        # is believed
+        if pre_turned:
+            boxes = boxes_up
+            turned = True
+        elif not read.get("upside_down"):
+            try:
+                a_svg = typeset_lines(read, boxes, W, H, w_in, h_in, palette=pal)
+                b_svg = typeset_lines(read, boxes_up, W, H, w_in, h_in,
+                                      palette=pal)
+                if a_svg is not None and b_svg is not None:
+                    ra, pa = _coverage(a_svg, crop)
+                    rb, pb = _coverage(b_svg, up)
+                    if (rb + pb) - (ra + pa) > 0.08:
+                        read = dict(read, upside_down=True)
+            except Exception:
+                pass
+        if read.get("upside_down") and not pre_turned:
+            # read AGAIN on the crop turned right way up — words read upside
+            # down came back wrong ("MET-b52" as "MET-d52", "CLEAR" as
+            # "CLEAN") — then set them there and turn the result back onto
+            # the crop as given
+            try:
+                read2 = call_cancellable(
+                    lambda: read_text_decal(up, len(boxes_up), palette=pal,
+                                            model=model, client=client),
+                    cancelled)
+            except Cancelled:
+                return None
+            except Unsure as e:
+                st["calls"] += 1
+                st["cost"] += float(getattr(e, "cost", 0.0) or 0.0)
+                st["unsure"] += 1
+                st["text_fallback"] += 1
+                return None
+            except Exception as e:
+                _account_stop(e)
+                st["text_fallback"] += 1
+                return None
+            st["calls"] += 1
+            st["cost"] += float(read2.get("cost_usd") or 0.0)
+            if read2.get("upside_down"):
+                st["text_fallback"] += 1
+                return None             # still not sure which way is up
+            read = read2
+            boxes = boxes_up
+            turned = True
+        # the face that fits the SCAN best: the model's serif / weight call
+        # is a guess (worn block capitals read as serif "STAND"); each
+        # variant is set and the one whose letters overlap the scan's most
+        # (exact, unpadded) wins — no extra model call
+        ref = crop.rotate(180) if turned else crop
+        ref_a = np.asarray(ref.convert("RGBA"))[..., 3] > 96
+        best_svg, best_sc = None, -1.0
+        for serif in (bool(read["lines"][0].get("serif")),
+                      not read["lines"][0].get("serif")):
+            for weight in ("regular", "bold", "black"):
+                if serif and weight == "black":
+                    continue
+                var = dict(read, lines=[dict(ln, serif=serif, weight=weight)
+                                        for ln in read["lines"]])
+                cand = typeset_lines(var, boxes, W, H, w_in, h_in, palette=pal)
+                if cand is None:
+                    continue
+                try:
+                    ra = np.asarray(render_svg(cand, W).convert("RGBA"))[..., 3]
+                    if ra.shape != ref_a.shape:
+                        ra = np.asarray(Image.fromarray(ra).resize(
+                            (ref_a.shape[1], ref_a.shape[0])))
+                    m = ra > 128
+                    sc = (m & ref_a).sum() / float(max(1, (m | ref_a).sum()))
+                except Exception:
+                    sc = 0.0
+                if sc > best_sc:
+                    best_svg, best_sc = cand, sc
+        for face in DISPLAY_FACES:
+            if _find_font(face) is None:
+                continue
+            var = dict(read, lines=[dict(ln, face=face) for ln in read["lines"]])
+            cand = typeset_lines(var, boxes, W, H, w_in, h_in, palette=pal)
+            if cand is None:
+                continue
+            try:
+                ra = np.asarray(render_svg(cand, W).convert("RGBA"))[..., 3]
+                if ra.shape != ref_a.shape:
+                    ra = np.asarray(Image.fromarray(ra).resize(
+                        (ref_a.shape[1], ref_a.shape[0])))
+                m = ra > 128
+                sc = (m & ref_a).sum() / float(max(1, (m | ref_a).sum()))
+            except Exception:
+                sc = 0.0
+            if sc > best_sc:
+                best_svg, best_sc = cand, sc
+        svg = best_svg
+        svg_upright = best_svg      # for the spelling check: words the right way up
+        if svg is not None and turned:
+            svg = ('<svg xmlns="http://www.w3.org/2000/svg" version="1.1" '
+                   f'width="{w_in:.4f}in" height="{h_in:.4f}in" '
+                   f'viewBox="0 0 {W} {H}"><g transform="rotate(180 '
+                   f'{W / 2.0:.3f} {H / 2.0:.3f})">'
+                   + decals.svg_inner(svg) + '</g></svg>')
         if svg is None:
             st["text_fallback"] += 1
             if log:
@@ -878,13 +1104,50 @@ def make_text_fn(client, model, target_dpi, stats=None, cancelled=None,
         # text must sit on the scan's letters closely (0.4 let a clipped
         # word and a banner-turned-text through)
         ok, iou, col = check_against_scan(svg, crop, min_iou=0.65)
+        if ok:
+            # …and closely both ways: the type must cover the scan's ink
+            # and the scan the type (a VENTS decal set as one big word over
+            # its two triangles scored 0.73 / 0.62; right words 0.95+)
+            try:
+                rec, prec = _coverage(svg, crop)
+                # worn print fills less of the clean letters: the type may
+                # lie 30% off the (broken) scan, but must cover it
+                if rec < 0.85 or prec < 0.70:
+                    ok = False
+                    iou = min(iou, rec, prec)
+            except Exception:
+                pass
         if not ok:
             st["text_fallback"] += 1
             if log:
                 log(f"text sweep rejected (overlap {iou:.2f}, colour "
                     f"{col:.0f}); normal path used")
             return None
+        # the spelling checked by eye, scan beside type (shape checks pass
+        # "ARMY" for a worn "AWAY")
+        words = [ln["text"] for ln in read["lines"]]
+        try:
+            same, vcost = call_cancellable(
+                lambda: verify_typeset(ref, svg_upright, words, model=model,
+                                       client=client), cancelled)
+        except Cancelled:
+            return None
+        except Exception as e:
+            _account_stop(e)
+            same, vcost = False, 0.0
+        st["calls"] += 1
+        st["cost"] += float(vcost or 0.0)
+        if not same:
+            st["text_fallback"] += 1
+            if log:
+                log("text sweep: the typeset %r does not spell what the scan "
+                    "shows; normal path used" % (words,))
+            return None
         svg = decals.svg_set_physical_size(svg, w_in, h_in)
+        # the words travel with the drawing: copies of one word are made
+        # identical later (DANGER! came out in two faces on one sheet)
+        svg = svg.replace("<svg ", '<svg data-words="%s" ' % html.escape(
+            " / ".join(words), quote=True), 1)
         ras = render_svg(svg, max(1, int(round(w_in * target_dpi))))
         st["text"] += 1
         return svg, ras
@@ -899,7 +1162,22 @@ _FONT_CANDIDATES = {
     "bolditalic": ["arialbi.ttf", "verdanaz.ttf", "segoeuiz.ttf", "arialbd.ttf"],
     "italic": ["ariali.ttf", "verdanai.ttf", "segoeuii.ttf", "arial.ttf"],
     "regular": ["arial.ttf", "verdana.ttf", "segoeui.ttf", "calibri.ttf"],
+    "serif_regular": ["georgia.ttf", "times.ttf"],
+    "serif_bold": ["georgiab.ttf", "timesbd.ttf"],
+    "serif_italic": ["georgiai.ttf", "timesi.ttf"],
+    "serif_bolditalic": ["georgiaz.ttf", "timesbi.ttf"],
+    # display faces model-kit lettering is set in (tried by fit; the type
+    # becomes outlines, so the SVG needs none of them installed)
+    "slab_bold": ["ROCKB.TTF"],
+    "slab_black": ["ROCKEB.TTF"],
+    "stencil": ["STENCIL.TTF"],
+    "condensed_bold": ["ARIALNB.TTF", "FRAMDCN.TTF"],
+    "impact": ["impact.ttf"],
 }
+
+# the extra faces the fit chooser tries, by family name
+DISPLAY_FACES = ["Slab Bold", "Slab Black", "Stencil", "Condensed Bold",
+                 "Impact"]
 
 
 def _find_font(family=""):
@@ -909,6 +1187,26 @@ def _find_font(family=""):
     'Arial Bold', 'sans-serif') → bold, as before."""
     base = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
     fam = (family or "").lower()
+    for key, kind in (("slab black", "slab_black"), ("slab", "slab_bold"),
+                      ("stencil", "stencil"), ("condensed", "condensed_bold"),
+                      ("impact", "impact")):
+        if fam.startswith(key):
+            for name in _FONT_CANDIDATES[kind]:
+                p = base / name
+                if p.exists():
+                    return p
+            break
+    serif = ("serif" in fam and "sans" not in fam) or any(
+        n in fam for n in ("georgia", "times"))
+    if serif:
+        kind = "serif_" + ("bolditalic" if "italic" in fam and "bold" in fam
+                           else "italic" if "italic" in fam
+                           else "regular" if ("regular" in fam or "light" in fam)
+                           else "bold")
+        for name in _FONT_CANDIDATES[kind]:
+            p = base / name
+            if p.exists():
+                return p
     if "black" in fam:
         kind = "black"
     elif "italic" in fam and "bold" in fam:

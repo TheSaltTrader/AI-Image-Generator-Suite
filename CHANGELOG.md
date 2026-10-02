@@ -1,5 +1,48 @@
 # Changelog — AI Image Generator Suite
 
+## v2.24.3 — 2026-10-02
+- **GI JOE banners with straight lines.** A decal drawn in straight lines
+  (block letters, a striped flag, a star) is rebuilt from its own outline
+  with every wobbling edge made straight — no service traced the scan's
+  ragged edges straight. Curves stay curves, and a decal whose fine detail
+  would suffer (round symbols in a panel) is drawn as before. The flag's
+  stripes come out as exact parallelograms, the star as a crisp star in
+  its own place, and a scratch across the flag is painted over in the
+  stripe's colour. No API cost.
+- **More lettering set in real fonts.** Vertical lettering (most of a
+  model sheet's stencils: STAND, RAMP ISNTR, TURRET INFO…) is now read
+  and typeset too; serif lettering is set in Georgia; the face and weight
+  that fit the scan best are chosen; a word typeset once is used on its
+  look-alike copies. Decorative faces are drawn, not typeset. A typeset
+  word must cover the scan closely both ways, or the decal is drawn.
+- **Lettering in real fonts, checked.** Worn and stencilled words are
+  read as the words they were printed as and set in the face that fits
+  them best (Stencil, slab, condensed, Impact, Arial, Georgia). Every
+  typeset word gets a second look — the scan beside the type — and is
+  only used when both spell the same (a worn AWAY once came back
+  "ARMY"); words that read upside down are read again the right way up.
+  Decals mixing words and graphics (REMOVAL, UNLATCH, RAMP ACCESS) get
+  their words typeset and the rest drawn. Copies of a word on a sheet all
+  get the same face.
+- **Straight stripes.** The lines beside TURRET INFO, RAMP ISNTR, UNLATCH
+  and the like are rebuilt as perfectly straight bars.
+- **Orca: no white or red on the outlines.** The scan's ink-to-film
+  blends (white and red slivers, white wedges where the tail and fin cross
+  the ring, a red seam at the fin) are removed before Recraft draws; red
+  dots on the white belly are gone.
+- **Nothing missing.** A mark Recraft leaves out (the "/" of "1/12") is
+  put back from the scan. Thin printed lines on the sheet are kept as
+  decals. A title is no longer cut into overlapping pieces that garbled
+  each other, and a word inside another decal's box is not drawn into it
+  (no more ghost DANGER! beside the orcas).
+- **No white rims on black lettering**, and no white blobs in the holes
+  of letters (A, a, 4).
+- **A PNG with "Pages to redraw" set** (left over from a PDF) is redrawn —
+  page numbers pick PDF pages only (it failed with "none of the pages
+  asked for").
+- The white GI JOE banners were never missing: they are white decals,
+  invisible only when the SVG is viewed on a white page.
+
 ## v2.24.2 — 2026-10-02
 - **Every copy of a repeated decal now gets the best version.** Two
   DANGER!s sitting beside the orcas were cut out as part of the orca

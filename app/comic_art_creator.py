@@ -108,7 +108,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.24.2"
+APP_VERSION = "2.24.3"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -6780,9 +6780,14 @@ class App:
                 # request has a known number of decals for the bar
                 pages = []
                 for src in srcs:
+                    # page numbers pick pages of a PDF; a picture (PNG, JPG)
+                    # is always used — "2" left over from a PDF made a PNG
+                    # fail with "none of the pages asked for"
+                    multi = Path(src).suffix.lower() in decals.PDF_EXTS
                     for page_no, (label, raw, file_dpi) in enumerate(
                             decals.iter_sources(src), start=1):
-                        if page_sel is not None and page_no not in page_sel:
+                        if (page_sel is not None and multi
+                                and page_no not in page_sel):
                             continue            # not a page the user picked
                         if CANCEL.is_set():
                             err = "cancelled"
