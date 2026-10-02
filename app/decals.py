@@ -1330,6 +1330,8 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
             if geom["text"]:
                 got = text_fn(crop, palette_of(crop, colors=palette_colors),
                               w_in, h_in, geom)
+                if cancelled and cancelled():
+                    return None                 # stop now, no trace fallback
                 if got is not None:
                     _place(got[0], got[1], "text")
                     continue
@@ -1337,6 +1339,8 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
             # a drawing from a description (vision model): already vector
             got = vector_fn(crop, palette_of(crop, colors=palette_colors),
                             w_in, h_in)
+            if cancelled and cancelled():
+                return None                     # stop now, no trace fallback
             if got is not None:
                 _place(got[0], got[1], "vector")
                 continue

@@ -1003,6 +1003,18 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Immediate cancel of model calls (v2.22.1).** User: "cancel the
+  running job takes some time … when cancelling an llm redraw it is not
+  immediate". The SDK / Ollama call blocks for the whole request and the
+  flag was only checked between decals; then `redraw_sheet` traced the
+  decal (an engine ESRGAN step) before looking again.
+  `vector_redraw.call_cancellable(fn, cancelled)` runs the call on a
+  daemon thread and joins in 0.1 s steps, raising `Cancelled` (the late
+  answer is dropped); vector_fn / text_fn return None on it;
+  `redraw_sheet` returns None right after text_fn / vector_fn when
+  cancelled (no trace fallback); the orientation ask is wrapped too and a
+  cancelled answer is not cached; pass 2 checks the flag per page. Test:
+  a 5 s fake call is abandoned in < 1 s. Tests 422/54/20.
 - **Print beside Save As (v2.22.0).** User: "Add a print button next to
   save as so it possible to print the svg in the highest quality straight
   to the user". The default PDF handler here is Edge (ProgId MSEdgePDF),

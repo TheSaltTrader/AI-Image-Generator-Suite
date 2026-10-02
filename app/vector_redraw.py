@@ -365,6 +365,38 @@ BACKING = (170, 185, 195)          # the stand-in for the carrier film
 BACKING_HEX = "#%02x%02x%02x" % BACKING
 
 
+class Cancelled(RuntimeError):
+    """The user pressed Cancel while a model call was in flight."""
+
+
+def call_cancellable(fn, cancelled=None, poll=0.1):
+    """Run a blocking model call on a helper thread and wait for it in
+    short steps, so Cancel takes effect at once instead of after the whole
+    request (20-60 s at high effort). On cancel the call is abandoned —
+    its answer, when it comes, is dropped — and Cancelled is raised.
+    The call's own exception is re-raised as is."""
+    import threading
+    if cancelled is None:
+        return fn()
+    box = {}
+
+    def run():
+        try:
+            box["ok"] = fn()
+        except BaseException as e:          # handed back to the caller
+            box["err"] = e
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    while t.is_alive():
+        if cancelled():
+            raise Cancelled("cancelled")
+        t.join(poll)
+    if "err" in box:
+        raise box["err"]
+    return box.get("ok")
+
+
 class Unsure(RuntimeError):
     """The model said UNSURE: it could not read the decal — trace it."""
 
@@ -515,8 +547,11 @@ def make_vector_fn(client, model, target_dpi, hint="", stats=None,
         if cancelled and cancelled():
             return None
         try:
-            res = draw_decal(crop, w_in, h_in, pal, hint=hint, model=model,
-                             client=client)
+            res = call_cancellable(
+                lambda: draw_decal(crop, w_in, h_in, pal, hint=hint,
+                                   model=model, client=client), cancelled)
+        except Cancelled:
+            return None
         except Unsure:
             # the honest answer: it could not read the decal — trace it
             st["calls"] += 1
@@ -807,8 +842,11 @@ def make_text_fn(client, model, target_dpi, stats=None, cancelled=None,
         if not boxes:
             return None
         try:
-            read = read_text_decal(crop, len(boxes), palette=pal, model=model,
-                                   client=client)
+            read = call_cancellable(
+                lambda: read_text_decal(crop, len(boxes), palette=pal,
+                                        model=model, client=client), cancelled)
+        except Cancelled:
+            return None
         except Unsure:
             st["calls"] += 1
             st["unsure"] += 1

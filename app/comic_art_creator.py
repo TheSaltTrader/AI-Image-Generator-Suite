@@ -107,7 +107,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.22.0"
+APP_VERSION = "2.22.1"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -5459,10 +5459,9 @@ class App:
         self.decal_cancel_btn.grid(row=r, sticky="ew", pady=(0, 4)); r += 1
         self.decal_cancel_btn.state(["disabled"])
         self._tip(self.decal_cancel_btn,
-                  "Stops Process, Preview, Redraw or Generate → SVG: the job "
-                  "ends after the decal it is on (a model call already in "
-                  "flight cannot be interrupted; the engine step is). What "
-                  "was finished stays saved.")
+                  "Stops Process, Preview, Redraw or Generate → SVG at once: "
+                  "a model call in flight is abandoned and the engine step "
+                  "interrupted. What was finished stays saved.")
         self._tip(self.decal_btn,
                   "Run the method chosen above on the queued scans: Clean up "
                   "(faithful transparent raster) or Vectorize (a plain trace "
@@ -5842,8 +5841,13 @@ class App:
                 client = vector_redraw.OllamaVision(timeout=180.0)
             if client is not None or vector_redraw.get_api_key():
                 probe, _n = decals.prepare_photo(img, rotate=0, auto_crop=True)
-                rot = vector_redraw.ask_orientation(probe, model=model,
-                                                    client=client)
+                rot = vector_redraw.call_cancellable(
+                    lambda: vector_redraw.ask_orientation(probe, model=model,
+                                                          client=client),
+                    CANCEL.is_set if getattr(self, "_decals_busy", False)
+                    else None)
+        except vector_redraw.Cancelled:
+            return 0                            # not remembered: ask next time
         except Exception:
             applog.exception("orientation ask failed; the page is left as is")
             rot = 0
@@ -6477,9 +6481,7 @@ class App:
         if not getattr(self, "_decals_busy", False):
             return
         cancel_all()
-        self.decal_status_var.set("Cancelling — the job stops after the decal "
-                                  "it is on (a model call already in flight "
-                                  "cannot be interrupted)…")
+        self.decal_status_var.set("Cancelling…")
 
     def _redraw_decals(self, preview=False, only=None):
         """Redraw to vector: every decal on the queued scan(s) — or just on
@@ -6718,6 +6720,8 @@ class App:
                     ui_q.put(("decal_progress", 0.0) + figures(0))
                 # pass 2 — the redraw itself, decal by decal
                 for pg in pages:
+                    if CANCEL.is_set():
+                        err = "cancelled"
                     if err:
                         break
                     label, src_dpi = pg["label"], pg["src_dpi"]

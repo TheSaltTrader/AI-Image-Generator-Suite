@@ -370,6 +370,39 @@ finally:
     _rq.post = _orig_post
 check("a local model costs nothing", vr.estimate_cost("ollama:gemma3:27b", None) == 0.0)
 
+print("cancel is immediate")
+import threading as _th, time as _tm
+_flag = _th.Event()
+
+
+class _SlowClient:
+    class messages:
+        @staticmethod
+        def create(**kw):
+            _tm.sleep(5)
+            return _OrientResp()
+
+    beta = messages
+
+
+_th.Timer(0.3, _flag.set).start()
+_t0 = _tm.time()
+_st4 = {}
+_got4 = vr.make_vector_fn(_SlowClient(), "claude-opus-5-5", 300, stats=_st4,
+                          cancelled=_flag.is_set)(_clear, None, 1.0, 1.0)
+_dt = _tm.time() - _t0
+check("Cancel abandons a model call in flight at once (well under its 5 s)",
+      _got4 is None and _dt < 1.0, round(_dt, 2))
+_flag.clear()
+check("call_cancellable passes a result and an error through",
+      vr.call_cancellable(lambda: 7, _flag.is_set) == 7)
+try:
+    vr.call_cancellable(lambda: (_ for _ in ()).throw(ValueError("x")), _flag.is_set)
+    _raised2 = False
+except ValueError:
+    _raised2 = True
+check("…and re-raises the call's own error", _raised2)
+
 print("pull progress")
 import json as _j2
 

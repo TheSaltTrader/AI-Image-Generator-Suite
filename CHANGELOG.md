@@ -1,5 +1,11 @@
 # Changelog — AI Image Generator Suite
 
+## v2.22.1 — 2026-10-01
+- **Cancel stops a vision redraw at once.** A model call can run 20–60
+  seconds; Cancel used to wait for it to finish (and then trace that
+  decal). The call is now abandoned the moment Cancel is pressed and the
+  job ends there — the same for the text sweep and the orientation check.
+
 ## v2.22.0 — 2026-10-01
 - **🖨 Print, beside Save As.** The selected picture goes straight to a
   printer: the Windows Print dialog opens to pick it. A decal prints at
