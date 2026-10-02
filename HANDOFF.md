@@ -138,7 +138,13 @@ exe** via the spec (`collect_all`). Verify in a frozen build with
   report window). There is NO Scan DPI / Photo / Rotate control: the only
   input is the optional sheet width (mm) for photos. `process_image(
   photo=True)` keys on `PHOTO_WHITE` and drops border-hugging table
-  slivers (`_drop_border_fringe`). Run figures (v2.17.1): the
+  slivers (`_drop_border_fringe`). Compare (v2.18, `app/compare_view.py`):
+  `⇄ Compare with the original` puts the gallery's decal result beside
+  the original it came from on one inch grid (entries carry `src`,
+  `page`, `kind`, `src_dpi`, `box`); `_open_decal_compare` →
+  `decal_compare_ready` → `CompareWindow`; its Re-run calls
+  `_process_decals(only=)` / `_redraw_decals(only=)` and `_compare_refresh`
+  swaps the result pane on the matching `decal_add`. Run figures (v2.17.1): the
   `decal_progress` queue message (fraction, green text, red text) drives
   `decal_count_badge` / `decal_cost_badge` / `decal_progress`; the redraw
   worker cuts every page out first (pass 1) so the bar covers the whole
@@ -204,7 +210,7 @@ global across installs, and both share the one engine/GPU. `tasklist` for
 ### Run tests (use the **venv python** — system python lacks pymupdf/vtracer)
 ```
 venv\Scripts\python.exe app\update_ui_test.py     # MAIN gate — builds the real
-                                                  # App (engine/net stubbed), 381 checks
+                                                  # App (engine/net stubbed), 394 checks
 venv\Scripts\python.exe app\vector_redraw_test.py # vision redraw, fake client (32)
 venv\Scripts\python.exe app\swap_test.py          # face-swap two-step (22)
 venv\Scripts\python.exe app\variations_test.py    # clones store (18)
@@ -327,7 +333,7 @@ on GitHub).
 
 ## 10. State at handoff
 
-- All test suites green (update_ui 381, vector_redraw 32). Frozen build
+- All test suites green (update_ui 394, vector_redraw 32). Frozen build
   self-test passes (incl. the SDK, fontTools and text outlining frozen).
 - Latest release published to GitHub; dev tree clean (only gitignored build
   artifacts untracked). `Stickers/_final/` holds the user's cleaned sample

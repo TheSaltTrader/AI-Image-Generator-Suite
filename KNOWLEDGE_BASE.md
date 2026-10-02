@@ -1003,6 +1003,32 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Compare with the original (v2.18.0).** User: "To validate stickers,
+  when generating an image or apply option to clean it, it would be
+  essential add a compare with the original side by side within the
+  interface so a user can tweak things." New module `app/compare_view.py`:
+  `Pane` (image, ppi, offset on an inch grid, backing, optional svg),
+  `render_frame(pane, W, H, s, ox, oy)` — a pure function (tested without
+  a window) that crops the visible window in image px and resizes it
+  (LANCZOS below 1:1, BILINEAR to 3×, NEAREST past that so pixels show
+  honestly; an SVG pane past 1:1 goes through
+  `vector_redraw.render_svg_region`), `wipe_frame`, and `CompareWindow`
+  (Toplevel: side-by-side or wipe, wheel zoom about the cursor, drag pan,
+  Fit, 1:1, Re-run). The two sides never share pixels, only INCHES: the
+  original pane's ppi is the source dpi; the result pane's ppi is its
+  pixel width over the original's inch width (a sheet) or the decal box's
+  inch width (a preview, with its offset = box corner − crop corner), so a
+  size_scale ≠ 1 result still overlays the original. App side: every
+  decal entry now carries `src`, `page`, `kind` (process/preview/redraw),
+  `src_dpi` and, for a preview, `box` (scan px); `_open_decal_compare`
+  loads the page via `iter_sources` + `_prepare_source` with the cached
+  orientation on a worker, posts `decal_compare_ready`; `_compare_rerun`
+  calls `_process_decals(only=src)` / `_redraw_decals(preview, only=src)`
+  (new `only=` on both; the source is added to the list if missing) and
+  `_compare_refresh` swaps the result pane when the matching `decal_add`
+  (src, page, kind) lands. The UI test runs the whole loop for real on
+  the 200-dpi probe PDF: open → original 400×200 @ 200 ppi, result ppi
+  200 → Re-run → process worker → new pane swapped in.
 - **Run figures + progress bar on the Decals tab (v2.17.1).** User: "Make
   the vision model decal count show in green and the cost in red. Add a
   progress bar under showing the progress for the whole request." A Tk

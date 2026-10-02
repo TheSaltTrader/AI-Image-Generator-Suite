@@ -1963,6 +1963,96 @@ except Exception as _e:
     check("photo mode runs headless", False, repr(_e))
 
 # ---- taskbar identity (v2.16.1) -------------------------------------------
+# ---- Compare with the original (v2.18) -----------------------------------
+print("compare view")
+try:
+    import compare_view as _cv
+    import time as _time8
+    # two pictures of the same 2 x 1 inch sheet at different resolutions
+    _lo = app.Image.new("RGB", (200, 100), (240, 240, 240))
+    app.ImageDraw.Draw(_lo).rectangle([50, 25, 150, 75], fill=(200, 20, 30))
+    _hi = app.Image.new("RGB", (400, 200), (255, 255, 255))
+    app.ImageDraw.Draw(_hi).rectangle([100, 50, 300, 150], fill=(210, 25, 35))
+    _pl = _cv.Pane("orig", image=_lo, ppi=100)
+    _pr = _cv.Pane("result", image=_hi, ppi=200)
+    check("panes share the inch grid", _pl.size_in == (2.0, 1.0) and _pr.size_in == (2.0, 1.0))
+    _fl = _cv.render_frame(_pl, 400, 200, 150, 0.0, 0.0)
+    _fr = _cv.render_frame(_pr, 400, 200, 150, 0.0, 0.0)
+    _al, _ar = _np6.asarray(_fl), _np6.asarray(_fr)
+    check("the same grid point lands on the same screen pixel on both sides",
+          _fl.size == (400, 200) and _ar[112, 150, 0] > 180 and _ar[112, 150, 1] < 80
+          and _al[112, 150, 0] > 180 and _al[112, 150, 1] < 80
+          and _al[112, 50, 0] > 200 and _al[112, 50, 1] > 200,
+          (_al[112, 150], _ar[112, 150]))
+    _wf = _cv.wipe_frame(_fl, _fr, 200)
+    _aw = _np6.asarray(_wf)
+    # at 150 px/in the 2-inch sheet spans x 0..300: sample inside it on both sides
+    check("the wipe shows the original left of the divider and the result right of it",
+          int(_aw[10, 100, 0]) == 240 and int(_aw[10, 250, 0]) == 255
+          and int(_aw[10, 350, 0]) == 60, (_aw[10, 100], _aw[10, 250], _aw[10, 350]))
+    _po = _cv.Pane("decal", image=_hi, ppi=200, offset=(0.5, 0.25))
+    _fo = _cv.render_frame(_po, 400, 200, 100, 0.0, 0.0)
+    _ao = _np6.asarray(_fo)
+    check("an offset pane sits at its place on the grid",
+          _ao[10, 10, 0] == 60 and _ao[100, 200, 0] > 180, (_ao[10, 10], _ao[100, 200]))
+    _win = _cv.CompareWindow(root, _pl, _pr, on_rerun=lambda: True)
+    _win.render()
+    _s0 = _win.s if _win.s is not None else _win._fit_scale(*_win._pane_size())
+    _win.zoom_at(2.0, 10, 10)
+    check("wheel zoom doubles the scale and keeps the cursor's grid point",
+          abs(_win.s / _s0 - 2.0) < 1e-6, (_s0, _win.s))
+    _ox = _win.ox
+    _win.pan(50, 0)
+    check("drag pans in inches", abs((_ox - _win.ox) - 50 / _win.s) < 1e-9)
+    _win.mode.set("wipe"); _win._mode_changed(); _win.render()
+    check("wipe mode renders one composite", "wipe" in _win._frames)
+    _win._rerun()
+    check("Re-run reports it started", "Re-running" in _win.msg_var.get(), _win.msg_var.get())
+    _win.set_right(_cv.Pane("new", image=_lo, ppi=100), note="swapped")
+    check("set_right swaps the result side", _win.right.title == "new" and _win.msg_var.get() == "swapped")
+    _win.destroy()
+    # the App side: a processed entry knows its source; Compare loads the
+    # original from it and Re-run re-processes that sheet only
+    check("the Decals tab has the Compare button", hasattr(ui, "decal_compare_btn"))
+    _png8 = app.Path(str(_fs_tmp)) / "cmp_result.png"
+    _hi.convert("RGBA").save(_png8)
+    _prm8 = {"model": "decal", "seed": "dpi_probe", "user_prompt": "dpi_probe",
+             "png": str(_png8), "film": (205, 215, 225), "size_in": (2.0, 1.0),
+             "src": str(_pdf), "page": "dpi_probe", "kind": "process", "src_dpi": 200}
+    ui.tagged = set()
+    ui.ui_queue.put(("decal_add", _hi, _prm8, str(_png8)))
+    ui._poll_queue(); root.update()
+    ui._open_decal_compare()
+    for _ in range(200):
+        ui._poll_queue(); root.update()
+        if getattr(ui, "_compare_win", None) is not None:
+            break
+        _time8.sleep(0.05)
+    _w8 = getattr(ui, "_compare_win", None)
+    check("Compare opens with the original page (from the PDF) beside the result",
+          _w8 is not None and _w8.left.image is not None and _w8.left.image.size == (400, 200)
+          and _w8.left.ppi == 200 and abs(_w8.right.ppi - 200) < 1e-6, (ui.decal_status_var.get()))
+    if _w8 is not None:
+        _old_right = _w8.right
+        ui.decal_mode_var.set("cleanup"); ui.decal_ai_var.set(False)
+        check("Re-run starts a job on that sheet only",
+              ui._compare_rerun(_prm8) and ui.decal_sources[-1] == str(_pdf) and ui._decals_busy)
+        for _ in range(400):
+            ui._poll_queue(); root.update()
+            if not ui._decals_busy and _w8.right is not _old_right:
+                break
+            _time8.sleep(0.05)
+        check("…and the result side is swapped when the new picture lands",
+              _w8.right is not _old_right and ui._compare_wait is None
+              and "new picture" in _w8.msg_var.get(), (ui.decal_status_var.get(), _w8.msg_var.get()))
+        _w8.destroy()
+    ui.decal_sources = [s for s in ui.decal_sources if s != str(_pdf)]
+    ui.decal_list.delete(0, "end")
+except Exception as _e:
+    import traceback
+    traceback.print_exc()
+    check("compare view runs headless", False, repr(_e))
+
 # ---- run figures + progress bar (v2.17.1) --------------------------------
 print("decal progress")
 try:

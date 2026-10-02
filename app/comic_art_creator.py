@@ -98,6 +98,7 @@ from PIL.PngImagePlugin import PngInfo
 
 import self_update
 import vector_redraw
+import compare_view
 import engine_files
 import applog
 import decals
@@ -105,7 +106,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.17.1"
+APP_VERSION = "2.18.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -5492,6 +5493,17 @@ class App:
             left, text="👁 Preview one decal",
             command=lambda: self._redraw_decals(preview=True))
         self.decal_preview_btn.grid(row=r, sticky="ew", pady=(4, 2)); r += 1
+        self.decal_compare_btn = ttk.Button(
+            left, text="⇄ Compare with the original",
+            command=self._open_decal_compare)
+        self.decal_compare_btn.grid(row=r, sticky="ew", pady=(0, 2)); r += 1
+        self._tip(self.decal_compare_btn,
+                  "The decal result picked in the gallery beside the original "
+                  "it came from (the page, or that decal's own region), on "
+                  "one inch grid: wheel to zoom, drag to pan, both sides "
+                  "together, or a wipe divider. Re-run re-processes that "
+                  "sheet with the settings as they are now and swaps the "
+                  "result in — tweak, re-run, look.")
         self._tip(self.decal_preview_btn,
                   "Redraws only the FIRST decal of the first sheet with the "
                   "chosen method and shows it in the gallery — check the "
@@ -5725,9 +5737,14 @@ class App:
                                   "it appears in the gallery and the decals "
                                   "folder.")
 
-    def _process_decals(self, force_mode=None):
+    def _process_decals(self, force_mode=None, only=None):
+        """Process the queued files (or just `only`, for Compare's Re-run)."""
         if getattr(self, "_decals_busy", False):
             return
+        if only and only not in self.decal_sources:
+            self.decal_sources.append(only)
+            self.decal_list.insert("end", Path(only).name)
+            self._update_decal_count()
         if not self.decal_sources:
             self.decal_status_var.set("Add one or more images first "
                                       "(➕ Add files…).")
@@ -5755,7 +5772,7 @@ class App:
                     tidy_matte=self.decal_tidy_var.get(),
                     solidify=self.decal_solid_var.get(),
                     smooth=self.decal_smooth_var.get())
-        srcs = list(self.decal_sources)
+        srcs = [only] if only else list(self.decal_sources)
         prep = self._decal_source_prep()
         vector = opts["mode"] == "vector"
         ai_warn = ai and not engine_alive()
@@ -5809,7 +5826,10 @@ class App:
                                  "user_prompt": label, "png": str(out_png),
                                  "film": _film_colour(film),
                                  "size_in": (rgba.width / float(dpi_out),
-                                             rgba.height / float(dpi_out))}
+                                             rgba.height / float(dpi_out)),
+                                 # where it came from, for Compare / Re-run
+                                 "src": str(src), "page": label,
+                                 "kind": "process", "src_dpi": src_dpi}
                         entry_path = str(out_png)
                         if res.get("svg"):
                             svg_path = DECALS_OUT / f"{label}.svg"
@@ -5864,6 +5884,148 @@ class App:
                 return mid
         return vector_redraw.DEFAULT_MODEL
 
+    # ---- Compare with the original -------------------------------------
+    def _open_decal_compare(self):
+        """The decal result picked in the gallery beside the original it
+        came from — the page, or that decal's own region — on one inch
+        grid (compare_view.CompareWindow). The original is loaded on a
+        worker thread exactly as the pipeline saw it (photo crop,
+        flattening, orientation)."""
+        if self.current is None or not self.session:
+            self.decal_status_var.set("Pick a decal result in the gallery "
+                                      "first, then Compare.")
+            return
+        _img, params, _path = self.session[self.current]
+        if (not isinstance(params, dict) or params.get("model") != "decal"
+                or not params.get("src") or not params.get("png")):
+            self.decal_status_var.set(
+                "Compare works on a decal result made by Process, Preview "
+                "or Redraw in this version — pick one of those in the "
+                "gallery.")
+            return
+        prep = self._decal_source_prep()
+        src, page = str(params["src"]), params.get("page")
+        rot = self.__dict__.setdefault("_decal_orient", {}).get((src, page), 0)
+        ui_q = self.ui_queue
+        self.decal_status_var.set("Compare — loading the original…")
+
+        def work():
+            try:
+                orig, src_dpi = None, int(params.get("src_dpi") or 300)
+                for label, raw, file_dpi in decals.iter_sources(src):
+                    if label == page:
+                        orig, src_dpi, _n, _ph = self._prepare_source(
+                            raw, prep, file_dpi, rotate=rot)
+                        break
+                if orig is None:
+                    raise FileNotFoundError(
+                        f"page {page} not found in {Path(src).name}")
+                box = params.get("box")
+                if box:
+                    # a single decal: its own region of the page, with a
+                    # margin so the cut edge can be judged
+                    x0, y0, x1, y1 = [int(v) for v in box]
+                    m = int(0.15 * max(x1 - x0, y1 - y0)) + 4
+                    box = (max(0, x0 - m), max(0, y0 - m),
+                           min(orig.width, x1 + m), min(orig.height, y1 + m))
+                    orig = orig.crop(box)
+                left = compare_view.Pane("Original (as scanned)", image=orig,
+                                         ppi=src_dpi)
+                right = self._compare_result_pane(params, left, box)
+                ui_q.put(("decal_compare_ready", left, right, params, box))
+            except Exception as e:
+                applog.exception("compare failed")
+                ui_q.put(("decal_status", f"Compare failed: {e}"))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    @staticmethod
+    def _compare_result_pane(params, left, crop_box=None):
+        """The result side: the saved PNG on the sheet's film colour (its
+        SVG for sharp zoom), placed on the original's inch grid. A whole
+        sheet covers the page; a single decal sits in its own box."""
+        rgba = Image.open(params["png"]).convert("RGBA")
+        film = params.get("film") or (255, 255, 255)
+        img = _on_film(rgba, film)
+        src_dpi = float(params.get("src_dpi") or left.ppi)
+        box = params.get("box")
+        if box and crop_box:
+            x0, y0, x1, y1 = [int(v) for v in box]
+            w_in = max(1e-6, (x1 - x0) / src_dpi)
+            offset = ((x0 - crop_box[0]) / src_dpi, (y0 - crop_box[1]) / src_dpi)
+        else:
+            w_in = max(1e-6, left.size_in[0]) if left.image is not None \
+                else (params.get("size_in") or (img.width / src_dpi, 0))[0]
+            offset = (0.0, 0.0)
+        ppi = img.width / w_in
+        kind = {"process": "Processed", "preview": "Preview decal",
+                "redraw": "Redrawn"}.get(params.get("kind"), "Result")
+        svg = params.get("svg")
+        return compare_view.Pane(f"{kind} ({params.get('user_prompt', '')})",
+                                 image=img, ppi=ppi, offset=offset,
+                                 backing=tuple(film), svg=svg if svg
+                                 and Path(svg).exists() else None)
+
+    def _compare_open(self, left, right, params, box):
+        old = getattr(self, "_compare_win", None)
+        if old is not None:
+            try:
+                old.destroy()
+            except Exception:
+                pass
+        win = compare_view.CompareWindow(
+            self.root, left, right,
+            on_rerun=lambda: self._compare_rerun(params),
+            colours={"bg": BG, "fg": FG, "dim": FG_DIM},
+            svg_render=vector_redraw.render_svg_region)
+        win.params = params
+        win.crop_box = box
+        self._compare_win = win
+        self.decal_status_var.set(
+            "Compare — wheel to zoom, drag to pan, both sides together; "
+            "tweak a setting and press Re-run in the window.")
+
+    def _compare_rerun(self, params):
+        """Re-run the job a compared result came from, on its sheet only,
+        with the settings as they are now. False when a job is running."""
+        if getattr(self, "_decals_busy", False):
+            return False
+        src, page, kind = str(params["src"]), params.get("page"), \
+            params.get("kind")
+        self._compare_wait = (src, page, kind)
+        if kind == "process":
+            self._process_decals(only=src)
+        elif kind == "preview":
+            self._redraw_decals(preview=True, only=src)
+        else:
+            self._redraw_decals(only=src)
+        return True
+
+    def _compare_refresh(self, params):
+        """A new result landed: if the compare window waits for this one,
+        swap its result side."""
+        win = getattr(self, "_compare_win", None)
+        want = getattr(self, "_compare_wait", None)
+        if win is None or want is None or not isinstance(params, dict):
+            return
+        try:
+            if not win.winfo_exists():
+                self._compare_win = None
+                return
+        except Exception:
+            return
+        got = (str(params.get("src")), params.get("page"), params.get("kind"))
+        if got != want:
+            return
+        try:
+            pane = self._compare_result_pane(params, win.left, win.crop_box)
+            win.params = params
+            win.set_right(pane, note="Re-run done — the result side is the "
+                                     "new picture.")
+            self._compare_wait = None
+        except Exception:
+            applog.exception("compare refresh failed")
+
     def _set_decal_buttons(self, enabled):
         """Grey the Decals action buttons while a job runs (one at a time:
         they share the engine and the status line)."""
@@ -5876,8 +6038,9 @@ class App:
                 except Exception:
                     pass
 
-    def _redraw_decals(self, preview=False):
-        """Redraw to vector: every decal on the queued scan(s) is cut out and
+    def _redraw_decals(self, preview=False, only=None):
+        """Redraw to vector: every decal on the queued scan(s) — or just on
+        `only`, for Compare's Re-run — is cut out and
         rebuilt as vector art at its printed size, by the chosen method:
           trace      RealESRGAN sharpening + the scan's exact palette + trace
                      (deterministic — nothing invented)           [default]
@@ -5890,6 +6053,10 @@ class App:
         Runs on a worker thread; reports through the Decals status line."""
         if getattr(self, "_decals_busy", False):
             return
+        if only and only not in self.decal_sources:
+            self.decal_sources.append(only)
+            self.decal_list.insert("end", Path(only).name)
+            self._update_decal_count()
         if not self.decal_sources:
             self.decal_status_var.set("Add one or more scans first "
                                       "(➕ Add files…).")
@@ -5942,7 +6109,7 @@ class App:
                     exact=True, tidy_matte=self.decal_tidy_var.get(),
                     solidify=self.decal_solid_var.get(),
                     smooth=self.decal_smooth_var.get())
-        srcs = list(self.decal_sources)
+        srcs = [only] if only else list(self.decal_sources)
         prep = self._decal_source_prep()
         self._decals_busy = True
         self._set_decal_buttons(False)
@@ -6138,7 +6305,10 @@ class App:
                                    "svg": str(base) + ".svg",
                                    "png": str(base) + ".png",
                                    "film": _film_colour(carrier),
-                                   "size_in": tuple(it["size_in"])},
+                                   "size_in": tuple(it["size_in"]),
+                                   "src": str(pg["src"]), "page": label,
+                                   "kind": "preview", "src_dpi": src_dpi,
+                                   "box": tuple(int(v) for v in it["box"])},
                                   str(base) + ".svg"))
                         done += 1
                         break
@@ -6162,7 +6332,9 @@ class App:
                                "png": str(base) + ".png",
                                "film": _film_colour(carrier),
                                "size_in": (out["rgba"].width / float(tgt_dpi),
-                                           out["rgba"].height / float(tgt_dpi))},
+                                           out["rgba"].height / float(tgt_dpi)),
+                               "src": str(pg["src"]), "page": label,
+                               "kind": "redraw", "src_dpi": src_dpi},
                               str(base) + ".svg"))
                     done += 1
             except Exception as e:
@@ -10476,6 +10648,10 @@ class App:
                         self._show_current()
                     self._add_thumb(len(self.session) - 1)
                     self._update_editor_btn()
+                    self._compare_refresh(params)
+                elif kind == "decal_compare_ready":
+                    left, right, params, box = msg[1], msg[2], msg[3], msg[4]
+                    self._compare_open(left, right, params, box)
                 elif kind == "decal_progress":
                     # (fraction of the whole request, green text, red text)
                     frac, count_text, cost_text = msg[1], msg[2], msg[3]

@@ -1,5 +1,20 @@
 # Changelog — AI Image Generator Suite
 
+## v2.18.0 — 2026-10-01
+- **Compare with the original, inside the app.** Pick a decal result in the
+  gallery and press **⇄ Compare with the original** on the Decals tab: the
+  original page (or, for a previewed decal, that decal's own region of it)
+  sits beside the result on one inch grid, so the same spot is under the
+  eye on both sides. Wheel to zoom about the cursor, drag to pan, both
+  sides move together; **Wipe** puts the two under a draggable divider;
+  **1:1** shows one screen pixel per scanned pixel; a vector result is
+  rendered from its SVG when zoomed past the raster, so it stays sharp.
+- **Re-run with the current settings.** The window's Re-run button
+  re-processes that one sheet with the Decals settings as they are now
+  (sensitivity, solidify, method, grouping…) and swaps the new result in
+  when it lands — tweak, re-run, look, repeat. The original is loaded
+  exactly as the pipeline saw it (photo crop, flattening, orientation).
+
 ## v2.17.1 — 2026-10-01
 - **Run figures and a progress bar on the Decals tab.** Under the status
   line, the number of decals done shows in **green** (for the vision model

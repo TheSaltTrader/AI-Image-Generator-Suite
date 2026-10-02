@@ -1,1 +1,1 @@
-AI Image Generator Suite 2.17.1
+AI Image Generator Suite 2.18.0
