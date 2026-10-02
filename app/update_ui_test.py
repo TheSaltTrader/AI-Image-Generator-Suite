@@ -2265,6 +2265,14 @@ try:
         if _w9 is not None:
             _w9.destroy()
         ui._compare_win = None
+        # …but a finished Redraw leaves Compare to the user
+        ui.ui_queue.put(("decal_add", _hi, dict(_prm8, kind="redraw"), str(_png8)))
+        ui.ui_queue.put(("decal_done", 1, None, False, "redraw"))
+        for _ in range(20):
+            ui._poll_queue(); root.update()
+            _time8.sleep(0.05)
+        check("a finished Redraw does not open Compare by itself",
+              getattr(ui, "_compare_win", None) is None and ui._last_run_entry is None)
     ui.decal_sources = [s for s in ui.decal_sources if s != str(_pdf)]
     ui.decal_list.delete(0, "end")
 except Exception as _e:

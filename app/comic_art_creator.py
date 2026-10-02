@@ -107,7 +107,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.22.2"
+APP_VERSION = "2.22.3"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -6397,12 +6397,16 @@ class App:
                 "Compare — wheel to zoom, drag to pan, both sides together; "
                 "tweak a setting and press Re-run in the window.")
 
-    def _auto_compare_after_job(self, n, err):
-        """Preview / Process / Redraw changed the original: show the result
-        beside it without being asked. A Compare window that already shows
-        this result (its Re-run just landed) is left as it is."""
+    def _auto_compare_after_job(self, n, err, what="process"):
+        """Preview / Process changed the original: show the result beside
+        it without being asked. A finished Redraw does NOT open it — the
+        user opens Compare on the decal they want (user's call, v2.22.3).
+        A Compare window that already shows this result (its Re-run just
+        landed) is left as it is."""
         p = getattr(self, "_last_run_entry", None)
         self._last_run_entry = None
+        if what == "redraw":
+            return
         if err or not n or not p or not getattr(self, "_auto_compare", True):
             return
         win = getattr(self, "_compare_win", None)
@@ -11250,7 +11254,7 @@ class App:
                             f"Done — {n} decal image(s) saved (transparent PNG"
                             f"{svg}) to the decals output folder, and shown in "
                             f"the gallery.{note}")
-                    self._auto_compare_after_job(n, err)
+                    self._auto_compare_after_job(n, err, what)
                 elif kind == "done":
                     self.busy = False
                     self.go_btn.state(["!disabled"])

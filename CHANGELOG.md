@@ -1,5 +1,10 @@
 # Changelog — AI Image Generator Suite
 
+## v2.22.3 — 2026-10-01
+- **Redraw to vector no longer opens Compare by itself** when it finishes;
+  open it with ⇄ Compare on the decal you want. Preview one decal and
+  Process decals still show the result beside the original.
+
 ## v2.22.2 — 2026-10-01
 - **White ink on a pale-blue film is kept.** On the Killer Whale sheets
   the white of the whale, the panels inside the M, B and 11 boxes, the

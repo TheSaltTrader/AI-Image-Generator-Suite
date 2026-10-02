@@ -1003,6 +1003,11 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **No auto-Compare after Redraw (v2.22.3).** User: "when the redraw
+  completes do not auto compare the last decal, leave to the user to open
+  the compare." `_auto_compare_after_job(n, err, what)` returns for
+  what == "redraw"; Preview and Process keep it (the v2.21 request).
+  Tests 425/54/20.
 - **White ink on tinted film (v2.22.2).** User: "In the whale image the
   white color gets replaced by transparent, even when the pale blue the
   whale's white gets replaced as transparent". Measured on KW p1-p3 (film
