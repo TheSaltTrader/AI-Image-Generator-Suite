@@ -1003,6 +1003,29 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Recraft colours, text preference (v2.24.1).** User: "Created a new
+  extract and compare, still a lot of issues, svg looks worse than the
+  cleaned file". Measured on their run: banner red stripe in the scan
+  (199,40,57) → palette (175,44,66): MEDIANCUT with 10 clusters put the
+  red and its darker halftone shade in one cluster (16 clusters gave
+  201,39,57); at 16 the top orca still had no red (median-cut spends
+  clusters on near-identical blacks; the 2.4% red brush merged into a
+  muddy 103,54,54 — red only appeared at 48). `recraft_vectorize.
+  _kmeans_palette`: k=10, k-means++ seed, 15 iterations, over solid
+  pixels 2 px inside; merge 40; min_share 0.4%; near-white (min ≥ 215,
+  chroma ≤ 30) → white; then `decal_palette` drops a cluster only if it
+  is a BLEND (projects within 0.15-0.85 onto the segment between two
+  other inks and lies < 28 from it). Result: orcas [black, white,
+  (223,70,67)], banner [white, navy, (200,40,56)]. text_geometry word
+  fill limit 0.75 → 0.88 (a halo-joined DANGER! fills 0.78, a banner bar
+  ~1.0); find_copies min_ncc 0.85 → 0.80; a "text" candidate gets +0.25
+  in the group score; Recraft re-trace closes enclosed clear specks ≤
+  0.05% of the picture. Live p2 (Recraft + Opus text sweep, $0.15): 10/10
+  left DANGER!s typeset, the 2 right ones still Recraft traces (their
+  group had no passing text candidate). Review images are written to
+  output\decals\_review. The cleaned output looked sharper partly
+  because Process (AI upscale on) wrote 600 dpi while the redraw PNG was
+  at the Output DPI (300): the SVG is resolution-free. Tests 444/60/20/12.
 - **Recraft cleaned up + repeated decals (v2.24.0).** User, after the
   first real Recraft run: "lines are not straight for the GI JOE banner on
   all 4, small errors on the orca symbol and some of the dangers have

@@ -1142,7 +1142,9 @@ def text_geometry(crop_rgba):
         # panel (the white GI JOE banner) fills it — that is not text
         # (v2.23.1: the banner was replaced by "G.I.JOE" in Arial)
         fill = area / float(max(1, w * h))
-        word = w >= 2.5 * h and w <= 12 * h and fill < 0.75
+        # 0.88: a word whose letters a faint halo joins fills ~0.78 of its
+        # box (v2.24.1: the first DANGER! was missed); a bar fills ~1.0
+        word = w >= 2.5 * h and w <= 12 * h and fill < 0.88
         letter = h <= 6 * w and w <= 3 * h and area <= 0.45 * total
         if word or letter:
             letters.append((x0, y0, x1, y1, area, w, h))
@@ -1512,7 +1514,7 @@ def _ncc(a, b):
     return best
 
 
-def find_copies(rgba, boxes, size_tol=0.06, min_ncc=0.85, min_px=12):
+def find_copies(rgba, boxes, size_tol=0.06, min_ncc=0.80, min_px=12):
     """Groups of decals that look like the SAME design printed several
     times on a sheet — straight, turned 180 degrees or mirrored: same size
     within `size_tol`, and blurred pictures correlating at `min_ncc` or
@@ -1785,6 +1787,10 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
                 return None
             cands[idx] = (drawn, how)
             sc = _score(drawn[0], boxes[idx])[0]
+            if drawn[2] == "text":
+                # clean type beats a trace of halftone lettering when it
+                # passed its own check (the group then all reads the same)
+                sc += 0.25
             if sc > best_score:
                 best, best_score, best_how = drawn, sc, how
         rel = {"": {"": "", "turn": "turn", "mirror": "mirror"},

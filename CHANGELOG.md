@@ -1,5 +1,20 @@
 # Changelog — AI Image Generator Suite
 
+## v2.24.1 — 2026-10-02
+- **Recraft colours are the scan's own.** The banner's red came out a dull
+  maroon and the orca's red brush brown: the colour step mixed a small or
+  halftone ink with its neighbours. Each decal's inks are now found by
+  clustering (k-means) and only true blends of two inks are dropped, so
+  the bright red, the navy and a small red brush all keep their colour;
+  film-tinted white becomes pure white (no pale-blue specks in white
+  banners).
+- **Lettering is set in type more often.** A word whose letters a faint
+  halo joins (the first DANGER!) was missed by the text sweep; copies of a
+  word now prefer the clean typeset version when it passes its check, so
+  a column of DANGER!s reads the same throughout. Copies are recognised a
+  little more readily (the per-copy check still guards every placement).
+- **Fewer pin-holes** inside Recraft shapes.
+
 ## v2.24.0 — 2026-10-02
 - **Repeated decals get the best copy.** A decal printed several times on
   a sheet (four banners, ten DANGER!s, two orcas — straight, turned or

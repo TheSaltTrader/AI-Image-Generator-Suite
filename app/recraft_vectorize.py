@@ -44,14 +44,87 @@ def set_key(key):
     return vector_redraw.cred_write(CRED_TARGET, (key or "").strip())
 
 
-def decal_palette(crop_rgba):
-    """The decal's own inks (the scan's colours, near-white = white ink)."""
+def _kmeans_palette(crop_rgba, k=10, sample=30000, merge=40, min_share=0.004):
+    """The decal's inks by k-means over its solid pixels (2 px inside the
+    outline). Median-cut spent its slots on near-identical blacks and
+    mixed a small red brush (2.4% of an orca decal) into a muddy brown;
+    k-means with k-means++ seeding keeps it. Clusters are ordered by
+    size, merged within `merge`, dropped under `min_share`; near-white
+    becomes pure white (white ink). Returns (N, 3) uint8 or None."""
     import decals
-    # merge 60 / min_share 2%: the light blends of a halftone red (pinks)
-    # are not inks of their own — they made Recraft trace 790 shapes on
-    # one DANGER! (v2.23.3)
-    return decals.palette_of(crop_rgba.convert("RGBA"), colors=10, merge=60,
-                             min_share=0.02, erode=1)
+    a = np.asarray(crop_rgba.convert("RGBA"))
+    solid = decals.erode_mask(a[..., 3] >= 250, 2)
+    if solid.sum() < 50:
+        solid = a[..., 3] >= 250
+    px = a[..., :3][solid].astype(np.float32)
+    if len(px) < 10:
+        return None
+    rng = np.random.default_rng(7)
+    if len(px) > sample:
+        px = px[rng.choice(len(px), sample, replace=False)]
+    k = min(k, len(px))
+    cent = [px[rng.integers(len(px))]]
+    d2 = ((px - cent[0]) ** 2).sum(1)
+    for _ in range(1, k):
+        if d2.sum() <= 0:
+            break
+        cent.append(px[rng.choice(len(px), p=d2 / d2.sum())])
+        d2 = np.minimum(d2, ((px - cent[-1]) ** 2).sum(1))
+    C = np.array(cent, np.float32)
+    for _ in range(15):
+        lab = ((px[:, None, :] - C[None, :, :]) ** 2).sum(2).argmin(1)
+        newc = np.array([px[lab == i].mean(0) if (lab == i).any() else C[i]
+                         for i in range(len(C))], np.float32)
+        if np.abs(newc - C).max() < 0.5:
+            C = newc
+            break
+        C = newc
+    lab = ((px[:, None, :] - C[None, :, :]) ** 2).sum(2).argmin(1)
+    counts = np.bincount(lab, minlength=len(C))
+    kept = []
+    for i in np.argsort(-counts):
+        if counts[i] < min_share * len(px) and len(kept) >= 2:
+            continue
+        c = C[i]
+        # film-tinted white ink (232,252,253) is white: chroma up to 30
+        if float(c.min()) >= 215 and float(c.max() - c.min()) <= 30:
+            c = np.array([255, 255, 255], np.float32)
+        if all(float(np.abs(c - q).sum()) > merge for q in kept):
+            kept.append(c)
+    return np.array([np.round(c) for c in kept], np.uint8) if kept else None
+
+
+def decal_palette(crop_rgba):
+    """The decal's own inks (the scan's colours, near-white = white ink).
+    16 clusters (with 10 the banner's red and its darker halftone shade
+    shared a cluster whose mean was maroon — v2.24.1); small clusters are
+    kept unless they are a BLEND of two other inks (a pink between red
+    and white, a purple-brown between black and red): dropping every
+    cluster under 2% also dropped the orca's small red brush."""
+    pal = _kmeans_palette(crop_rgba)
+    if pal is None or len(pal) <= 2:
+        return pal
+    P = [np.array(c, np.float32) for c in pal]
+    keep = [P[0], P[1]]                  # the two commonest inks always stay
+    for c in P[2:]:
+        blend = False
+        refs = keep + [p for p in P if p is not c]
+        for ai in range(len(refs)):
+            for bi in range(ai + 1, len(refs)):
+                a, b = refs[ai], refs[bi]
+                ab = b - a
+                n2 = float((ab * ab).sum())
+                if n2 < 1:
+                    continue
+                t = float(((c - a) * ab).sum()) / n2
+                if 0.15 <= t <= 0.85 and float(np.sqrt(((a + t * ab - c) ** 2).sum())) < 28:
+                    blend = True
+                    break
+            if blend:
+                break
+        if not blend:
+            keep.append(c)
+    return np.array([np.round(k) for k in keep], np.uint8)
 
 
 def _prepare(crop_rgba, pal=None):
@@ -229,7 +302,22 @@ def finalize(svg_text, sent_w, sent_h, scale, pal=None, crop=None, sent=None):
     # snapped to a brown/white rim)
     # and where Recraft drew nothing at all, nothing is filled in (a wrong
     # answer must not be completed into a right-looking one)
-    a[..., 3] = np.where(inside & ~key & (rk[..., 3] > 128), 255, 0).astype(np.uint8)
+    opaque = inside & ~key & (rk[..., 3] > 128)
+    # pin-holes: clear specks shut inside the ink (under ~0.05% of the
+    # picture) are anti-aliasing leftovers, not windows — closed; the edge
+    # band below gives them the colour around them
+    import decals as _d2
+    holes = ~opaque
+    lab, stats = _d2._label_runs(holes, diag=False)
+    if stats:
+        edge_ids = set(np.unique(np.concatenate([lab[0, :], lab[-1, :],
+                                                 lab[:, 0], lab[:, -1]])).tolist())
+        tiny = max(12, int(0.0005 * holes.size))
+        for lid, (x0, y0, x1, y1, area) in stats.items():
+            if lid not in edge_ids and area <= tiny:
+                sub = lab[y0:y1 + 1, x0:x1 + 1] == lid
+                opaque[y0:y1 + 1, x0:x1 + 1][sub] = True
+    a[..., 3] = np.where(opaque, 255, 0).astype(np.uint8)
     rgba = Image.fromarray(a, "RGBA")
     if pal is not None:
         # the band of edge blends is as wide as the enlargement (black-to-
