@@ -44,3 +44,4 @@ __pycache__/
 *.gif
 *.png
 *.jpg
+stall.log
