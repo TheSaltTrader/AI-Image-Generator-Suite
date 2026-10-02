@@ -1,5 +1,14 @@
 # Changelog — AI Image Generator Suite
 
+## v2.17.1 — 2026-10-01
+- **Run figures and a progress bar on the Decals tab.** Under the status
+  line, the number of decals done shows in **green** (for the vision model
+  also how many it drew and how many fell back to the clean trace) and the
+  money spent shows in **red**, with a bar for the whole request underneath.
+  Every queued page is cut out first, so the total is known before the first
+  decal is redrawn and the bar means what it says; Process decals shows its
+  progress by file.
+
 ## v2.17.0 — 2026-10-01
 - **The source is judged before it is converted.** Every file added to the
   Decals tab is analysed on its own: scan or photo, the file's real

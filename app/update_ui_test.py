@@ -1963,6 +1963,43 @@ except Exception as _e:
     check("photo mode runs headless", False, repr(_e))
 
 # ---- taskbar identity (v2.16.1) -------------------------------------------
+# ---- run figures + progress bar (v2.17.1) --------------------------------
+print("decal progress")
+try:
+    import tkinter.ttk as _ttk7
+    check("the Decals tab has the green count badge, the red cost badge and the bar",
+          hasattr(ui, "decal_count_badge") and hasattr(ui, "decal_cost_badge")
+          and hasattr(ui, "decal_progress")
+          and str(ui.decal_count_badge.cget("style")) == "Good.TLabel"
+          and str(ui.decal_cost_badge.cget("style")) == "Cost.TLabel")
+    _sty7 = _ttk7.Style(root)
+    check("green is green and red is red",
+          _sty7.lookup("Good.TLabel", "foreground") == "#22c55e"
+          and _sty7.lookup("Cost.TLabel", "foreground") == "#ef4444",
+          (_sty7.lookup("Good.TLabel", "foreground"), _sty7.lookup("Cost.TLabel", "foreground")))
+    ui.ui_queue.put(("decal_progress", 0.5, "3 / 6 decals (2 drawn, 1 traced)", "$0.12"))
+    ui._poll_queue()
+    root.update()
+    check("a progress message moves the bar and fills the figures",
+          int(float(ui.decal_progress["value"])) == 500
+          and str(ui.decal_count_badge.cget("text")).startswith("3 / 6")
+          and str(ui.decal_cost_badge.cget("text")) == "$0.12",
+          (ui.decal_progress["value"], ui.decal_count_badge.cget("text")))
+    ui._decal_note = ""
+    ui.ui_queue.put(("decal_done", 1, None, False, "redraw"))
+    ui._poll_queue()
+    root.update()
+    check("a finished run fills the bar", int(float(ui.decal_progress["value"])) == 1000)
+    ui._decal_progress_reset("counting the decals…")
+    check("a new run empties the bar and the cost",
+          int(float(ui.decal_progress["value"])) == 0
+          and str(ui.decal_cost_badge.cget("text")) == ""
+          and str(ui.decal_count_badge.cget("text")) == "counting the decals…")
+except Exception as _e:
+    import traceback
+    traceback.print_exc()
+    check("decal progress runs headless", False, repr(_e))
+
 print("taskbar identity")
 _scr = app._shortcut_fix_script(r"D:\Some Dir\AIImageGeneratorSuite.exe")
 check("the shortcut upkeep script targets this exe and stamps the app's ID",

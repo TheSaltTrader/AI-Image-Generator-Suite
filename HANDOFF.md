@@ -138,7 +138,11 @@ exe** via the spec (`collect_all`). Verify in a frozen build with
   report window). There is NO Scan DPI / Photo / Rotate control: the only
   input is the optional sheet width (mm) for photos. `process_image(
   photo=True)` keys on `PHOTO_WHITE` and drops border-hugging table
-  slivers (`_drop_border_fringe`).
+  slivers (`_drop_border_fringe`). Run figures (v2.17.1): the
+  `decal_progress` queue message (fraction, green text, red text) drives
+  `decal_count_badge` / `decal_cost_badge` / `decal_progress`; the redraw
+  worker cuts every page out first (pass 1) so the bar covers the whole
+  request.
 - **AI redraw (v2.15, now the "Re-imagine" method):** `_redraw_decals()`
   (App) → `decals.redraw_sheet(rgba, refine)`. The faithful cleanup supplies the alpha; `segment_decals` (run-based
   connected components, no scipy) cuts the sheet into decals in reading order;
@@ -200,7 +204,7 @@ global across installs, and both share the one engine/GPU. `tasklist` for
 ### Run tests (use the **venv python** — system python lacks pymupdf/vtracer)
 ```
 venv\Scripts\python.exe app\update_ui_test.py     # MAIN gate — builds the real
-                                                  # App (engine/net stubbed), 376 checks
+                                                  # App (engine/net stubbed), 381 checks
 venv\Scripts\python.exe app\vector_redraw_test.py # vision redraw, fake client (32)
 venv\Scripts\python.exe app\swap_test.py          # face-swap two-step (22)
 venv\Scripts\python.exe app\variations_test.py    # clones store (18)
@@ -323,7 +327,7 @@ on GitHub).
 
 ## 10. State at handoff
 
-- All test suites green (update_ui 376, vector_redraw 32). Frozen build
+- All test suites green (update_ui 381, vector_redraw 32). Frozen build
   self-test passes (incl. the SDK, fontTools and text outlining frozen).
 - Latest release published to GitHub; dev tree clean (only gitignored build
   artifacts untracked). `Stickers/_final/` holds the user's cleaned sample

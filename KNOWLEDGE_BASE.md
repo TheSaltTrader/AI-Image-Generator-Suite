@@ -1003,6 +1003,23 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Run figures + progress bar on the Decals tab (v2.17.1).** User: "Make
+  the vision model decal count show in green and the cost in red. Add a
+  progress bar under showing the progress for the whole request." A Tk
+  label holds one colour, so the status line keeps the words and two
+  badges beside it carry the figures: `decal_count_badge` (style
+  `Good.TLabel`, #22c55e) and `decal_cost_badge` (`Cost.TLabel`, #ef4444),
+  with `decal_progress` (ttk.Progressbar, maximum 1000) underneath. One
+  queue message feeds all three: `("decal_progress", fraction, green_text,
+  red_text)`; `decal_done` without an error fills the bar;
+  `_decal_progress_reset()` empties it at the start of a run. "Whole
+  request" needs the total up front, so `_redraw_decals` now runs in two
+  passes: pass 1 prepares + cuts out every page (`process_image` +
+  `segment_decals` with the same gap/min_side as `redraw_sheet`, so the
+  per-page count equals the n the callback reports), pass 2 redraws with
+  `prog(i, n)` mapped to (decals done before this page + i) / total. The
+  vision figures come from `stats` (ok / fallback / cost) that
+  `make_vector_fn` keeps. Process decals reports by file.
 - **Pre-flight assessment, DPI from the file, automatic photo path
   (v2.17.0).** User: "If the process can validate the picture, determine
   the quality and success rate based on picture or scan and give you a

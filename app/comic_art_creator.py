@@ -105,7 +105,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.17.0"
+APP_VERSION = "2.17.1"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -3794,6 +3794,11 @@ class App:
         # hover tooltips + the top-right mode badges
         s.configure("Tip.TLabel", background=TIP_BG, foreground=TIP_FG,
                     padding=(8, 5), relief="solid", borderwidth=1)
+        # the Decals run figures: decals done in green, money spent in red
+        s.configure("Good.TLabel", background=BG, foreground="#22c55e",
+                    font=(UI_FONT, 10, "bold"))
+        s.configure("Cost.TLabel", background=BG, foreground="#ef4444",
+                    font=(UI_FONT, 10, "bold"))
         # green = the feature will apply to the next generation, red = it won't
         s.configure("Gpu.Horizontal.TProgressbar", background="#3b82f6",
                     troughcolor=BG2, bordercolor=BG3, lightcolor="#3b82f6",
@@ -5528,6 +5533,30 @@ class App:
         ttk.Label(left, textvariable=self.decal_status_var, style="Dim.TLabel",
                   wraplength=410, justify="left").grid(row=r, sticky=W,
                                                        pady=(6, 0)); r += 1
+        # the run's figures: decals done (green), money spent (red), and a
+        # bar for the WHOLE request — every decal on every queued page
+        brow = ttk.Frame(left); brow.grid(row=r, sticky="ew", pady=(4, 0)); r += 1
+        self.decal_count_badge = ttk.Label(brow, text="", style="Good.TLabel")
+        self.decal_count_badge.pack(side="left")
+        self.decal_cost_badge = ttk.Label(brow, text="", style="Cost.TLabel")
+        self.decal_cost_badge.pack(side="left", padx=(12, 0))
+        self.decal_progress = ttk.Progressbar(left, mode="determinate",
+                                              maximum=1000, length=410)
+        self.decal_progress.grid(row=r, sticky="ew", pady=(4, 0)); r += 1
+        self._tip(self.decal_progress,
+                  "Progress of the whole request: every decal on every queued "
+                  "page (the pages are cut out first, so the total is known). "
+                  "Green = decals done, red = what the vision model has cost "
+                  "so far.")
+
+    def _decal_progress_reset(self, count_text=""):
+        """A new run: empty bar, fresh figures."""
+        try:
+            self.decal_progress["value"] = 0
+            self.decal_count_badge.configure(text=count_text)
+            self.decal_cost_badge.configure(text="")
+        except Exception:
+            pass
 
     def _add_decal_sources(self):
         paths = filedialog.askopenfilenames(
@@ -5735,6 +5764,7 @@ class App:
         self.decal_status_var.set("Processing…"
                                   + (" (first vectorize can take a moment)"
                                      if vector else ""))
+        self._decal_progress_reset()
         DECALS_OUT.mkdir(parents=True, exist_ok=True)
 
         def work():
@@ -5744,6 +5774,8 @@ class App:
                     self.ui_queue.put(("decal_status",
                                        f"Processing {i + 1}/{len(srcs)}: "
                                        f"{Path(src).name}…"))
+                    self.ui_queue.put(("decal_progress", i / float(len(srcs)),
+                                       f"{i} / {len(srcs)} file(s)", ""))
                     for label, raw, file_dpi in decals.iter_sources(src):
                         rot = self._decal_orientation(src, label, raw)
                         img, src_dpi, pnote, photo = self._prepare_source(
@@ -5918,6 +5950,7 @@ class App:
         self.decal_status_var.set(("Preview — " if preview else "Redraw — ")
                                   + "cleaning the scan and cutting the "
                                     "decals out…")
+        self._decal_progress_reset("counting the decals…")
         out_dir = (DECALS_OUT / "_preview") if preview else DECALS_OUT
         out_dir.mkdir(parents=True, exist_ok=True)
         ui_q = self.ui_queue
@@ -5993,8 +6026,14 @@ class App:
 
             try:
                 white_paper = []
+                # pass 1 — every page is prepared and cut out, so the whole
+                # request has a known number of decals for the bar
+                pages = []
                 for src in srcs:
                     for label, raw, file_dpi in decals.iter_sources(src):
+                        if CANCEL.is_set():
+                            err = "cancelled"
+                            break
                         # which way is up: the vision model's answer,
                         # remembered from Add files (asked now if not yet)
                         rot = self._decal_orientation(src, label, raw,
@@ -6003,7 +6042,8 @@ class App:
                             raw, prep, file_dpi, rotate=rot)
                         ui_q.put(("decal_status", f"{label}: "
                                   + (pnote + "; " if pnote else "")
-                                  + "cleaning the scan…"))
+                                  + "cleaning the scan and cutting the "
+                                    "decals out…"))
                         carrier = (decals.PHOTO_WHITE if photo
                                    else decals.detect_carrier(img))
                         if decals.is_neutral_carrier(carrier):
@@ -6011,76 +6051,120 @@ class App:
                         o = dict(opts, native_dpi=src_dpi, target_dpi=src_dpi,
                                  photo=photo)
                         res = decals.process_image(img, **o)
-
-                        def prog(i, n, _lab=label):
-                            cost = (f"  ≈ ${stats['cost']:.2f} so far"
-                                    if method == "vision" else "")
-                            ui_q.put(("decal_status",
-                                      f"{_lab}: {label_m}, decal {i + 1} of "
-                                      f"{n}…{cost}"))
-
-                        out = decals.redraw_sheet(
-                            res["rgba"], refine, native_dpi=src_dpi,
-                            size_scale=size_scale, target_dpi=tgt_dpi,
-                            keep_palette=keep_pal, progress=prog,
-                            cancelled=CANCEL.is_set,
-                            gap=int(round(gap_mm / 25.4 * src_dpi)),
-                            vector_fn=vector_fn, limit=1 if preview else None)
-                        if out is None:
-                            err = "cancelled"
-                            break
-                        if not out["items"]:
-                            ui_q.put(("decal_status",
-                                      f"{label}: no decals found on the sheet "
-                                      "(nothing opaque after background "
-                                      "removal — try a lower sensitivity)."))
-                            continue
+                        gap = int(round(gap_mm / 25.4 * src_dpi))
+                        count = len(decals.segment_decals(res["rgba"], gap=gap))
                         if preview:
-                            it = out["items"][0]
-                            base = out_dir / f"{label}_preview_decal_01"
-                            it["rgba"].save(str(base) + ".png",
-                                            dpi=(tgt_dpi, tgt_dpi))
-                            Path(str(base) + ".svg").write_text(
-                                it["svg"], encoding="utf-8")
-                            prev = _on_film(it["rgba"], carrier)
-                            ui_q.put(("decal_add", prev,
-                                      {"model": "decal",
-                                       "seed": label + "_preview",
-                                       "user_prompt": f"{label} preview: decal 1 "
-                                                      f"({label_m}, "
-                                                      f"{it.get('source', '')})",
-                                       "svg": str(base) + ".svg",
-                                       "png": str(base) + ".png",
-                                       "film": _film_colour(carrier),
-                                       "size_in": tuple(it["size_in"])},
-                                      str(base) + ".svg"))
-                            done += 1
+                            count = min(1, count)
+                        pages.append(dict(src=src, label=label, src_dpi=src_dpi,
+                                          carrier=carrier, res=res, gap=gap,
+                                          count=count))
+                        if preview and count:
                             break
-                        base = out_dir / f"{label}_redraw"
-                        out["rgba"].save(str(base) + ".png",
-                                         dpi=(tgt_dpi, tgt_dpi))
+                    if err or (preview and pages and pages[-1]["count"]):
+                        break
+                total = sum(pg["count"] for pg in pages)
+                total_done = 0
+
+                def figures(n_done):
+                    """The green and red texts for the badges."""
+                    count_text = f"{n_done} / {total} decals"
+                    if method == "vision":
+                        extra = []
+                        if stats["ok"]:
+                            extra.append(f"{stats['ok']} drawn")
+                        if stats["fallback"]:
+                            extra.append(f"{stats['fallback']} traced")
+                        if extra:
+                            count_text += " (" + ", ".join(extra) + ")"
+                    cost_text = (f"${stats['cost']:.2f}" if method == "vision"
+                                 else "")
+                    return count_text, cost_text
+
+                if not err:
+                    ui_q.put(("decal_progress", 0.0) + figures(0))
+                # pass 2 — the redraw itself, decal by decal
+                for pg in pages:
+                    if err:
+                        break
+                    label, src_dpi = pg["label"], pg["src_dpi"]
+                    carrier, res = pg["carrier"], pg["res"]
+                    before = total_done
+
+                    def prog(i, n, _lab=label, _before=before, _cnt=pg["count"]):
+                        n_done = _before + i
+                        frac = (n_done / float(total)) if total else 1.0
+                        cost = (f"  ≈ ${stats['cost']:.2f} so far"
+                                if method == "vision" else "")
+                        ui_q.put(("decal_status",
+                                  f"{_lab}: {label_m}, decal {i + 1} of "
+                                  f"{n}…{cost}"))
+                        ui_q.put(("decal_progress", frac) + figures(n_done))
+
+                    out = decals.redraw_sheet(
+                        res["rgba"], refine, native_dpi=src_dpi,
+                        size_scale=size_scale, target_dpi=tgt_dpi,
+                        keep_palette=keep_pal, progress=prog,
+                        cancelled=CANCEL.is_set,
+                        gap=pg["gap"],
+                        vector_fn=vector_fn, limit=1 if preview else None)
+                    total_done = before + pg["count"]
+                    if out is not None:
+                        ui_q.put(("decal_progress",
+                                  (total_done / float(total)) if total else 1.0)
+                                 + figures(total_done))
+                    if out is None:
+                        err = "cancelled"
+                        break
+                    if not out["items"]:
+                        ui_q.put(("decal_status",
+                                  f"{label}: no decals found on the sheet "
+                                  "(nothing opaque after background "
+                                  "removal — try a lower sensitivity)."))
+                        continue
+                    if preview:
+                        it = out["items"][0]
+                        base = out_dir / f"{label}_preview_decal_01"
+                        it["rgba"].save(str(base) + ".png",
+                                        dpi=(tgt_dpi, tgt_dpi))
                         Path(str(base) + ".svg").write_text(
-                            out["svg"], encoding="utf-8")
-                        base.mkdir(parents=True, exist_ok=True)
-                        for j, it in enumerate(out["items"], start=1):
-                            it["rgba"].save(base / f"decal_{j:02d}.png",
-                                            dpi=(tgt_dpi, tgt_dpi))
-                            (base / f"decal_{j:02d}.svg").write_text(
-                                it["svg"], encoding="utf-8")
-                        prev = _on_film(out["rgba"], carrier)
+                            it["svg"], encoding="utf-8")
+                        prev = _on_film(it["rgba"], carrier)
                         ui_q.put(("decal_add", prev,
-                                  {"model": "decal", "seed": label + "_redraw",
-                                   "user_prompt": f"{label} ({label_m}, "
-                                                  f"{len(out['items'])} decals)",
+                                  {"model": "decal",
+                                   "seed": label + "_preview",
+                                   "user_prompt": f"{label} preview: decal 1 "
+                                                  f"({label_m}, "
+                                                  f"{it.get('source', '')})",
                                    "svg": str(base) + ".svg",
                                    "png": str(base) + ".png",
                                    "film": _film_colour(carrier),
-                                   "size_in": (out["rgba"].width / float(tgt_dpi),
-                                               out["rgba"].height / float(tgt_dpi))},
+                                   "size_in": tuple(it["size_in"])},
                                   str(base) + ".svg"))
                         done += 1
-                    if err or (preview and done):
                         break
+                    base = out_dir / f"{label}_redraw"
+                    out["rgba"].save(str(base) + ".png",
+                                     dpi=(tgt_dpi, tgt_dpi))
+                    Path(str(base) + ".svg").write_text(
+                        out["svg"], encoding="utf-8")
+                    base.mkdir(parents=True, exist_ok=True)
+                    for j, it in enumerate(out["items"], start=1):
+                        it["rgba"].save(base / f"decal_{j:02d}.png",
+                                        dpi=(tgt_dpi, tgt_dpi))
+                        (base / f"decal_{j:02d}.svg").write_text(
+                            it["svg"], encoding="utf-8")
+                    prev = _on_film(out["rgba"], carrier)
+                    ui_q.put(("decal_add", prev,
+                              {"model": "decal", "seed": label + "_redraw",
+                               "user_prompt": f"{label} ({label_m}, "
+                                              f"{len(out['items'])} decals)",
+                               "svg": str(base) + ".svg",
+                               "png": str(base) + ".png",
+                               "film": _film_colour(carrier),
+                               "size_in": (out["rgba"].width / float(tgt_dpi),
+                                           out["rgba"].height / float(tgt_dpi))},
+                              str(base) + ".svg"))
+                    done += 1
             except Exception as e:
                 applog.exception("decal redraw failed")
                 err = str(e)
@@ -10392,11 +10476,26 @@ class App:
                         self._show_current()
                     self._add_thumb(len(self.session) - 1)
                     self._update_editor_btn()
+                elif kind == "decal_progress":
+                    # (fraction of the whole request, green text, red text)
+                    frac, count_text, cost_text = msg[1], msg[2], msg[3]
+                    try:
+                        self.decal_progress["value"] = int(
+                            max(0.0, min(1.0, float(frac))) * 1000)
+                        self.decal_count_badge.configure(text=count_text or "")
+                        self.decal_cost_badge.configure(text=cost_text or "")
+                    except Exception:
+                        pass
                 elif kind == "decal_done":
                     n, err, ai_warn = msg[1], msg[2], msg[3]
                     what = msg[4] if len(msg) > 4 else "process"
                     self._decals_busy = False
                     self._set_decal_buttons(True)
+                    if not err:
+                        try:
+                            self.decal_progress["value"] = 1000
+                        except Exception:
+                            pass
                     # the engine wait leaves "Loading the model…" on the main
                     # status line; the job is over, say so there too
                     try:
