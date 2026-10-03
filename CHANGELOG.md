@@ -1,5 +1,13 @@
 # Changelog — AI Image Generator Suite
 
+## v2.24.5 — 2026-10-03
+- **Typeset lettering keeps its weight on worn print.** Worn letters read
+  lighter than they were printed, so a lighter face could "fit" a little
+  better: on a 600 dpi copy of the whale sheets BEWARE OF FAN came out in
+  a light condensed face instead of the verified heavy one (a tie by
+  0.004). The wear gaps are closed before faces are compared, and among
+  faces within 0.02 of the best fit the heaviest is used.
+
 ## v2.24.4 — 2026-10-03
 - **Redraw now uses the verified recipe, whatever the scan's resolution.**
   The whale sheets were tuned and checked at 300 dpi; the same sheets

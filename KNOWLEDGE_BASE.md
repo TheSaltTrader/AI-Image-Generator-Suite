@@ -1003,6 +1003,23 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Face weight on worn print (v2.24.5).** Full comparison of the
+  user's 600 dpi PDF (app recipe, fonts on, $1.37 for 3 sheets) against
+  the verified sheets, zoomed by eye: decals, banners, orcas, title,
+  STAND AWAY, KEEP CLEAR, MET-b52, MOTO-4, TURRET INFO, RAMP ISNTR,
+  REMOVAL matched; DANGER! was better (all 12 one face); differences:
+  BEWARE OF FAN light (chooser scores: Condensed Bold 0.721, Arial Bold
+  0.718, Arial Black 0.704 on the user's copy; Arial Black 0.699 won on
+  the verified copy) and the CAUTION icon's chevron (white ink = film
+  colour in that scan; four fill rules tried, each filled letter
+  counters (a, e, 4, h) or DANGER! gaps elsewhere — all reverted,
+  accepted). Fix in typeset choice: reference mask closed by
+  min(shape)/40 px, then among candidates within 0.02 of the best the
+  heaviest (regular 1, bold/Condensed/Slab Bold/Stencil 2, black/Slab
+  Black/Impact 3) wins. Result: BEWARE OF FAN heavy like verified;
+  UNLATCH / SENSOR ACCESS / LOAD INFO a little bolder than verified —
+  checked against the scan, closer to its medium-bold stroke.
+  Tests 447/62/20/14.
 - **Verified recipe in the app (v2.24.4).** User: "I just ran the app and
   it's not anywhere close" to the three verified sheets. Cause: their PDF
   (Desktop\Stickers\Killer Whale Stickers.pdf) is a 600 dpi scan

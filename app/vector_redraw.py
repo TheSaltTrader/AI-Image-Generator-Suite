@@ -1047,7 +1047,13 @@ def make_text_fn(client, model, target_dpi, stats=None, cancelled=None,
         # (exact, unpadded) wins — no extra model call
         ref = crop.rotate(180) if turned else crop
         ref_a = np.asarray(ref.convert("RGBA"))[..., 3] > 96
+        # worn print: the gaps the wear leaves in each stroke are closed
+        # before scoring (else a lighter face "fits" better — a 600 dpi copy
+        # resampled to 300 had thinner strokes and chose a regular weight)
+        _cr = max(1, int(round(min(ref_a.shape) / 40.0)))
+        ref_a = decals.erode_mask(decals.dilate_mask(ref_a, _cr), _cr)
         best_svg, best_sc = None, -1.0
+        scored = []                     # (score, heaviness, svg)
         for serif in (bool(read["lines"][0].get("serif")),
                       not read["lines"][0].get("serif")):
             for weight in ("regular", "bold", "black"):
@@ -1067,6 +1073,7 @@ def make_text_fn(client, model, target_dpi, stats=None, cancelled=None,
                     sc = (m & ref_a).sum() / float(max(1, (m | ref_a).sum()))
                 except Exception:
                     sc = 0.0
+                scored.append((sc, {"regular": 1, "bold": 2, "black": 3}[weight], cand))
                 if sc > best_sc:
                     best_svg, best_sc = cand, sc
         for face in DISPLAY_FACES:
@@ -1085,8 +1092,15 @@ def make_text_fn(client, model, target_dpi, stats=None, cancelled=None,
                 sc = (m & ref_a).sum() / float(max(1, (m | ref_a).sum()))
             except Exception:
                 sc = 0.0
+            scored.append((sc, 3 if face in ("Slab Black", "Impact") else 2, cand))
             if sc > best_sc:
                 best_svg, best_sc = cand, sc
+        # worn print reads lighter than it was printed: among faces within
+        # 0.02 of the best fit, the heaviest wins (a 600 dpi copy picked a
+        # condensed bold by 0.004 over Arial Black, the verified choice)
+        if scored:
+            near = [t for t in scored if t[0] >= best_sc - 0.02]
+            best_svg = max(near, key=lambda t: (t[1], t[0]))[2]
         svg = best_svg
         svg_upright = best_svg      # for the spelling check: words the right way up
         if svg is not None and turned:
