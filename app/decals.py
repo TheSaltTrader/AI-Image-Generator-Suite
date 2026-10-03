@@ -53,6 +53,24 @@ def scale_factor(source_n, target_n):
 
 
 # ---------------------------------------------------------------- input
+WORKING_DPI = 300
+
+
+def to_working_dpi(img, dpi, working=WORKING_DPI):
+    """A page scanned finer than the working resolution, resampled to it
+    (Lanczos: a 600 dpi scan comes out cleaner than a native 300 one).
+    Returns (image, dpi). Coarser pages are left as they are."""
+    try:
+        d = float(dpi or 0)
+    except (TypeError, ValueError):
+        d = 0.0
+    if d <= working * 1.05:
+        return img, dpi
+    k = working / d
+    size = (max(1, int(round(img.width * k))), max(1, int(round(img.height * k))))
+    return img.resize(size, Image.LANCZOS), working
+
+
 def iter_sources(path):
     """Yield (label, PIL.Image RGB, dpi) for every page/image in a source
     file — the resolution comes from the FILE, never from a setting: a PDF
@@ -1335,7 +1353,10 @@ def _group_boxes(boxes, gap, small_side, touch=6, word_pieces=3,
                 # two LINE-HIGH pieces (a line of lettering whose letters
                 # the reduced mask joined: "LGIJ1" and "84 WHALE" of one
                 # title, 8 px apart) join within `gap` too, on their ink
-                liney = (min(a[2] - a[0], a[3] - a[1]) <= 2 * small_side and
+                # (one of them line-high is enough: a title piece beside its
+                # two-line rest, a stripe beside RAMP / ACCESS — 13-14 px of
+                # ink apart in a 600 dpi copy resampled to 300)
+                liney = (min(a[2] - a[0], a[3] - a[1]) <= 2 * small_side or
                          min(b[2] - b[0], b[3] - b[1]) <= 2 * small_side)
                 g = gap if (either_small or wordy or liney) else min(gap, touch)
                 # a line-high piece lying mostly INSIDE another's box ("CH"
@@ -1418,6 +1439,14 @@ def segment_decals(rgba, gap=16, min_side=24, pad=6, down=4, small_side=48,
     out = []
     for bx0, by0, bx1, by1 in raw:
         bw, bh = bx1 - bx0, by1 - by0
+        # a thin strip lying ALONG the page border is the scanner's edge,
+        # not a decal (a 600 dpi copy of the whale sheets had four); a
+        # printed line meeting the border end-on is kept
+        edge_t = max(4, int(round(min_side * 0.6)))
+        em = max(2, int(pad))                   # "at the border": within pad px
+        if ((bw <= edge_t and (bx0 <= em or bx1 >= W - em)) or
+                (bh <= edge_t and (by0 <= em or by1 >= H - em))):
+            continue
         # a thin but LONG mark (a printed line on the sheet) is a decal;
         # only pieces small both ways are specks
         if max(bw, bh) < min_side or (min(bw, bh) < min_side

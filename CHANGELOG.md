@@ -1,5 +1,22 @@
 # Changelog — AI Image Generator Suite
 
+## v2.24.4 — 2026-10-03
+- **Redraw now uses the verified recipe, whatever the scan's resolution.**
+  The whale sheets were tuned and checked at 300 dpi; the same sheets
+  scanned at 600 dpi (twice the pixels) were cut into 76 / 27 / 173
+  pieces instead of 42 / 20 / 62, lost the title's "/" and placed one
+  DANGER! mirrored. Pages finer than 300 dpi are now worked at 300 dpi
+  (the SVG is vector at the printed size, nothing is lost for print), and
+  the cleanup for Redraw is the verified one (colour balance on, no
+  solidify, no smoothing, decal gap at least 1.35 mm).
+- **Defaults are the verified recipe**: method Recraft (when a fal key is
+  saved, else the clean trace), text sweep on with Claude Opus 5.5, reuse
+  the best copy on, solidify off, decal gap 1.35 mm, tolerance 52, fill
+  holes / tidy / remove lines on.
+- Thin strips of the scanner's edge along the page border are no longer
+  taken for decals; a stripe or second line next to a two-line decal
+  (RAMP ISNTR's stripes, a title's second line) stays in that decal.
+
 ## v2.24.3 — 2026-10-02
 - **GI JOE banners with straight lines.** A decal drawn in straight lines
   (block letters, a striped flag, a star) is rebuilt from its own outline

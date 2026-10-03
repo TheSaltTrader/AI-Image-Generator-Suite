@@ -1003,6 +1003,24 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Verified recipe in the app (v2.24.4).** User: "I just ran the app and
+  it's not anywhere close" to the three verified sheets. Cause: their PDF
+  (Desktop\Stickers\Killer Whale Stickers.pdf) is a 600 dpi scan
+  (2069x5084, pages in another order), the repo copy used for tuning is
+  300 dpi; every px limit (letters, gaps, rows, restore, slack) misfired:
+  segmentation 76/27/173 vs 42/20/62. The app also differed from the
+  verified script: balance False (script True by default), solidify True
+  (False), gap 1.0 mm = 12 px (16 px). Fix: `decals.to_working_dpi` (pages
+  > 315 dpi resampled to 300, Lanczos) in the Redraw worker; Redraw opts
+  balance=True, solidify=False, smooth=False; gap >= 16 px @300; defaults
+  method recraft (if fal key) / solidify off / gap 1.35 mm. Segmentation:
+  border strips (thin side <= 0.6 min_side, lying within pad of an edge)
+  dropped; "liney" join now needs ONE line-high piece (two-line
+  neighbours: title + "(Sheet 1 of 3)", RAMP over ACCESS were 13-14 px of
+  ink apart and split). Result: user's copy 42/20/58 vs verified 41/20/58
+  (the extra merge is LED LAUNCH, correct). Live check of the user's
+  whale sheet (Recraft, no text sweep — Anthropic credit was exhausted):
+  banners straight, title with "/", every DANGER! upright. Tests 447/62/20/14.
 - **Whale sheets verified by eye (v2.24.3).** User: "white and red in
   the orca, GI JOE not straight, white on the black letters", then "look
   with the eye tool at the renders … verify they are close to 100% the

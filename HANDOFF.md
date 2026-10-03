@@ -355,7 +355,7 @@ on GitHub).
 
 ## 10. State at handoff
 
-- All test suites green (update_ui 446, vector_redraw 62, print_export 20, recraft 14). Frozen build
+- All test suites green (update_ui 447, vector_redraw 62, print_export 20, recraft 14). Frozen build
   self-test passes (incl. the SDK, fontTools and text outlining frozen).
 - Latest release published to GitHub; dev tree clean (only gitignored build
   artifacts untracked). `Stickers/_final/` holds the user's cleaned sample

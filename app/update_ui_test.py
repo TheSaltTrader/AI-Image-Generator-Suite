@@ -501,8 +501,8 @@ try:
 except Exception as _e:
     check("clean_matte works", False, repr(_e))
 # solidify black: patchy dark grey -> pure black, greys/colours left alone
-check("Decals has a solidify-black toggle, on by default",
-      hasattr(ui, "decal_solid_var") and ui.decal_solid_var.get())
+check("Decals has a solidify-black toggle, OFF by default (verified recipe)",
+      hasattr(ui, "decal_solid_var") and not ui.decal_solid_var.get())
 try:
     import numpy as _np5
     _sb = _np5.array([[[40, 44, 38], [128, 128, 128], [150, 20, 24]]], _np5.uint8)
@@ -540,8 +540,11 @@ check("decal-gen flag defaults off (normal generation unaffected)",
 # ---- sheet rebuild at the printed size, the per-decal engine graph ----------
 print("decals AI redraw")
 # ---- v2.16: redraw methods, vision model, grouping, preview, film preview --
-check("redraw method defaults to the clean trace (nothing invented)",
-      hasattr(ui, "decal_method_var") and ui.decal_method_var.get() == "trace")
+_want_m = "recraft" if app.recraft_vectorize.get_key() else "trace"
+check("redraw method defaults to the verified recipe: Recraft with a fal key, "
+      "else the clean trace",
+      hasattr(ui, "decal_method_var") and ui.decal_method_var.get() == _want_m,
+      ui.decal_method_var.get())
 check("the vision model picker lists Opus 5.5 (default) and Sonnet 5.5",
       hasattr(ui, "decal_vision_model_var")
       and ui._vision_model_id() == "claude-opus-5-5"
@@ -558,10 +561,16 @@ check("the API key is never part of the saved UI state",
       not any("key" in k.lower() and "decal" in k.lower()
               for k in ui._collect_ui_state().keys())
       and "sk-ant" not in json.dumps(ui._collect_ui_state()))
-check("grouping distance defaults to 1.0 mm and is saved with the UI state",
-      abs(float(ui.decal_gap_var.get()) - 1.0) < 1e-6
-      and abs(float(ui._collect_ui_state().get("decal_gap", 0)) - 1.0) < 1e-6
-      and ui._collect_ui_state().get("decal_method") == "trace")
+check("grouping distance defaults to 1.35 mm and is saved with the UI state",
+      abs(float(ui.decal_gap_var.get()) - 1.35) < 1e-6
+      and abs(float(ui._collect_ui_state().get("decal_gap", 0)) - 1.35) < 1e-6
+      and ui._collect_ui_state().get("decal_method") == _want_m)
+_im6 = app.Image.new("RGB", (1200, 600), "white")
+_w6, _d6 = app.decals.to_working_dpi(_im6, 600)
+_w7, _d7 = app.decals.to_working_dpi(_im6, 300)
+check("a 600 dpi page is worked at 300 dpi (the verified resolution); a 300 dpi page is left as it is",
+      _w6.size == (600, 300) and _d6 == 300 and _w7.size == (1200, 600) and _d7 == 300,
+      (_w6.size, _d6, _w7.size, _d7))
 _ug = app.build_decal_upscale_graph({"width": 640, "height": 448, "esrgan": True,
                                      "ref_image_name": "in.png"})
 check("the clean-trace graph is ESRGAN + scale only (no sampler)",

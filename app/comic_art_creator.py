@@ -108,7 +108,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.24.3"
+APP_VERSION = "2.24.4"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -5340,7 +5340,7 @@ class App:
                         "they print as clean flat colour — edges, text and fine "
                         "detail are left sharp, and colours aren't shifted (each "
                         "flat area keeps its own true colour).")
-        self.decal_solid_var = BooleanVar(value=True)
+        self.decal_solid_var = BooleanVar(value=False)   # verified recipe (v2.24.4)
         _sc = ttk.Checkbutton(
             left, text="Solidify black (fix patchy grey)",
             variable=self.decal_solid_var)
@@ -5493,7 +5493,10 @@ class App:
                   justify="left").grid(row=r, sticky=W, pady=(2, 2)); r += 1
         ttk.Label(left, text="Redraw method", style="Dim.TLabel").grid(
             row=r, sticky=W); r += 1
-        self.decal_method_var = StringVar(value="trace")
+        # the verified recipe draws with Recraft (+ text sweep, straight-line
+        # rebuild); without a fal key the clean trace is the default
+        self.decal_method_var = StringVar(
+            value="recraft" if recraft_vectorize.get_key() else "trace")
         _m1 = ttk.Radiobutton(
             left, text="Clean trace — sharpen with RealESRGAN, keep the exact "
                        "colours, trace (nothing invented)",
@@ -5584,7 +5587,7 @@ class App:
         grow = ttk.Frame(left); grow.grid(row=r, sticky="ew", pady=(2, 2)); r += 1
         ttk.Label(grow, text="Group nearby pieces within",
                   style="Dim.TLabel").pack(side="left")
-        self.decal_gap_var = DoubleVar(value=1.0)
+        self.decal_gap_var = DoubleVar(value=1.35)       # verified: 16 px at 300 dpi
         ttk.Spinbox(grow, from_=0.0, to=10.0, increment=0.2, width=5,
                     textvariable=self.decal_gap_var).pack(side="left", padx=(6, 4))
         ttk.Label(grow, text="mm", style="Dim.TLabel").pack(side="left")
@@ -6648,17 +6651,19 @@ class App:
         try:
             gap_mm = max(0.0, float(self.decal_gap_var.get()))
         except Exception:
-            gap_mm = 1.0
+            gap_mm = 1.35
         # the faithful cleanup supplies the alpha (silhouettes) and the
         # palette; the background MUST be removed for the cut-out to work
         # (the page's own resolution is set per page, from the file)
+        # the VERIFIED recipe (v2.24.4): the cleanup the whale sheets were
+        # tuned and checked by eye with — colour balance on, no solidify, no
+        # smoothing — so Redraw gives those results, not a variation of them
         opts = dict(mode="cleanup", remove_bg=True, denoise=0,
                     tol=int(self.decal_tol_var.get()),
                     do_trim=False, size_scale=1.0,
-                    remove_lines=self.decal_lines_var.get(), balance=False,
+                    remove_lines=self.decal_lines_var.get(), balance=True,
                     exact=True, tidy_matte=self.decal_tidy_var.get(),
-                    solidify=self.decal_solid_var.get(),
-                    smooth=self.decal_smooth_var.get(),
+                    solidify=False, smooth=False,
                     fill_holes=self.decal_holes_var.get())
         try:
             page_sel = decals.parse_pages(self.decal_pages_var.get()
@@ -6798,6 +6803,12 @@ class App:
                                                       client=client, model=vmodel)
                         img, src_dpi, pnote, photo = self._prepare_source(
                             raw, prep, file_dpi, rotate=rot)
+                        # every size limit in the cut-out, the text sweep and
+                        # the straight-line rebuild was tuned at 300 dpi; a
+                        # 600 dpi scan (twice the pixels) lost the title's
+                        # "/" and misplaced a DANGER! — the page is worked at
+                        # 300 dpi (the output is vector at the printed size)
+                        img, src_dpi = decals.to_working_dpi(img, src_dpi)
                         ui_q.put(("decal_status", f"{label}: "
                                   + (pnote + "; " if pnote else "")
                                   + "cleaning the scan and cutting the "
@@ -6810,7 +6821,9 @@ class App:
                         o = dict(opts, native_dpi=src_dpi, target_dpi=src_dpi,
                                  photo=photo, carrier=prep.get("paper"))
                         res = decals.process_image(img, **o)
-                        gap = int(round(gap_mm / 25.4 * src_dpi))
+                        # at least the verified 16 px (1.35 mm) at 300 dpi
+                        gap = max(int(round(gap_mm / 25.4 * src_dpi)),
+                                  int(round(16 * src_dpi / 300.0)))
                         count = len(decals.segment_decals(res["rgba"], gap=gap))
                         if preview:
                             count = min(1, count)
