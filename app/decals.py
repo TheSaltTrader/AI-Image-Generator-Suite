@@ -2466,7 +2466,7 @@ def _picture_copies(rgba, boxes, size_tol=0.06, min_ncc=0.80, min_px=12,
 
 
 def find_copies(rgba, boxes, size_tol=0.06, min_ncc=0.88, min_px=12,
-                crop_fn=None):
+                crop_fn=None, cross_colour=True):
     """Groups of decals that are the SAME design printed several times on a
     sheet. First the picture match (same colour; straight, turned 180 or
     mirrored — the verified grouping, unchanged). Then what it left over is
@@ -2582,6 +2582,39 @@ def find_copies(rgba, boxes, size_tol=0.06, min_ncc=0.88, min_px=12,
         else:
             merged.append(g)
     groups = merged
+    # 5. one design in two colours (red cobras, white cobras): one group,
+    # drawn from the colour whose copies agree best with each other — the
+    # cleaner print (user: "take the best red icon and color its white
+    # version"); the other colour's copies are recoloured from their scans
+    if cross_colour:
+        def quality(g):
+            vs = [match(g[0][0], idx)[0] for idx, _h in g[1:]]
+            return float(np.mean(vs)) if vs else 0.0
+        def xmatch(i, j):           # worn ink prints a little smaller
+            return _shape_match(rgba, boxes[i], boxes[j], 0.12, crop_fn, cache)
+        merged = []
+        for g in groups:
+            for m in merged:
+                if not differ(m[0][0], g[0][0]):
+                    continue
+                v, h = xmatch(m[0][0], g[0][0])
+                if v < min_ncc:
+                    continue
+                if quality(g) > quality(m) + 0.01:
+                    # g is the cleaner print: it leads, m follows
+                    v2, h2 = xmatch(g[0][0], m[0][0])
+                    if v2 < min_ncc:
+                        continue
+                    lead, rest, h_rest = list(g), list(m), h2
+                else:
+                    lead, rest, h_rest = list(m), list(g), h
+                lead.extend((idx, _compose_orient(how, h_rest)) for idx, how in rest)
+                m[:] = lead
+                break
+            else:
+                merged.append(g)
+        groups = merged
+        recolour = {idx for g in groups for idx, _h in g[1:] if differ(g[0][0], idx)}
     find_copies.recolour = recolour
     find_copies.colours = cols
     return groups
@@ -3249,9 +3282,13 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
         return best
 
     def _recolour(drawn, box, how):
-        """The drawing with each of its fill colours replaced by the ink
-        the scan of `box` has under it (a white cobra drawn from the red
-        one), or made clear where that scan has no ink. None if it fails."""
+        """The drawing in the inks of the copy at `box` (a white cobra drawn
+        from the clean red one). The drawing's MAIN inks (its edge shades
+        follow the nearest) each take the ink the copy's scan has under
+        them, or clear where the scan has none; when two main inks would
+        end up alike (red body and white ribs both white) the smaller one
+        becomes clear film, so the detail still shows. Near-white is
+        printed white. None if it fails."""
         try:
             import vector_redraw
             svg, ras, src = drawn
@@ -3263,20 +3300,49 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
             sc = np.asarray(_own(box).convert("RGBA")).astype(np.int32)
             fills = sorted(set(m.lower() for m in re.findall(
                 r'fill="(#[0-9a-fA-F]{6})"', svg)))
-            out = svg
-            for hx in fills:
-                c = np.array([int(hx[1:3], 16), int(hx[3:5], 16), int(hx[5:7], 16)])
-                m = (ra[..., 3] > 128) & (np.abs(ra[..., :3] - c).sum(2) < 40)
-                if m.sum() < 12:
-                    continue
+            if not fills:
+                return None
+            rgb = {hx: np.array([int(hx[1:3], 16), int(hx[3:5], 16),
+                                 int(hx[5:7], 16)]) for hx in fills}
+            solid = ra[..., 3] > 128
+            # every rendered pixel to its nearest fill: the area of each
+            cols = np.stack([rgb[hx] for hx in fills])
+            d = np.abs(ra[..., None, :3] - cols[None, None]).sum(3)
+            near = np.argmin(d, axis=2)
+            area = {hx: int((solid & (near == k)).sum()) for k, hx in enumerate(fills)}
+            total = max(1, sum(area.values()))
+            major = [hx for hx in fills if area[hx] >= 0.04 * total] or \
+                [max(fills, key=lambda h: area[h])]
+            target = {}
+            for hx in major:
+                k = fills.index(hx)
+                m = solid & (near == k)
                 inked = m & (sc[..., 3] > 128)
-                if inked.sum() < 0.3 * m.sum():
-                    new = "none"
+                if inked.sum() < 0.3 * max(1, m.sum()):
+                    target[hx] = None
                 else:
-                    med = np.median(sc[..., :3][inked], axis=0).astype(int)
-                    new = "#%02x%02x%02x" % tuple(int(v) for v in med)
-                out = re.sub('fill="%s"' % hx, 'fill="%s"' % new, out,
-                             flags=re.IGNORECASE)
+                    med = np.median(sc[..., :3][inked], axis=0)
+                    if med.min() > 200:
+                        med = np.array([255, 255, 255])
+                    target[hx] = med.astype(int)
+            # two main inks alike: the smaller is clear film
+            for a in major:
+                for b in major:
+                    if a == b or target[a] is None or target[b] is None:
+                        continue
+                    if np.abs(target[a] - target[b]).sum() < 60 and area[a] < area[b]:
+                        target[a] = None
+            new_of = {}
+            for hx in fills:
+                lead = hx if hx in target else min(
+                    major, key=lambda m_: np.abs(rgb[m_] - rgb[hx]).sum())
+                t_ = target[lead]
+                new_of[hx] = "none" if t_ is None else                     "#%02x%02x%02x" % tuple(int(v) for v in t_)
+            # one pass: red -> white must not then be caught by white -> clear
+            out = re.sub(r'fill="(#[0-9a-fA-F]{6})"',
+                         lambda m_: 'fill="%s"' % new_of.get(m_.group(1).lower(),
+                                                             m_.group(1)),
+                         svg)
             if out == svg:
                 return None
             nr = vector_redraw.render_svg(out, ras.width).convert("RGBA")
@@ -3519,7 +3585,10 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
                     best, best_how, best_key, idx_b = drawn, how_c, key, i_c
                 continue
             fits = []
+            recol = getattr(find_copies, "recolour", set())
             for idx, how in g:
+                if idx in recol:
+                    continue          # another colour: judged at placement
                 try:
                     own, _inner, _ras, _sx, _sy = _fit(
                         drawn, boxes[idx], relative_orient(how_c, how))
@@ -3535,18 +3604,33 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
         st["copy_draws"] = st.get("copy_draws", 0) + len(cands)
         reused = 0
         col_b = ink_colour(rgba, boxes[idx_b], _own)
+        bw_b = boxes[idx_b][2] - boxes[idx_b][0]
+        bh_b = boxes[idx_b][3] - boxes[idx_b][1]
         for idx, how in g:
             # the best drawing turned/mirrored from ITS orientation to this one's
             t = relative_orient(best_how, how)
             use = best
+            other_col = False
+            place_box = boxes[idx]
             if t is None:
                 iou, col = 0.0, 999.0
             else:
                 if idx != idx_b and float(np.abs(
                         ink_colour(rgba, boxes[idx], _own) - col_b).sum()) > 90:
-                    # same design, other colour: the drawing in THIS copy's
-                    # inks, sampled from its own scan
+                    # same design, other colour (user: "take the best red
+                    # icon and color its white version"): the clean drawing
+                    # in THIS copy's inks, sampled from its own scan, at the
+                    # clean print's size centred on this copy (worn white
+                    # ink prints smaller than the design)
+                    other_col = True
                     use = _recolour(best, boxes[idx], t) or best
+                    qw = t in ("rot90", "rot270", "transpose", "transverse")
+                    pw, ph = (bh_b, bw_b) if qw else (bw_b, bh_b)
+                    x0, y0, x1, y1 = boxes[idx]
+                    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+                    px0 = max(0, min(W - pw, int(round(cx - pw / 2.0))))
+                    py0 = max(0, min(H - ph, int(round(cy - ph / 2.0))))
+                    place_box = (px0, py0, px0 + pw, py0 + ph)
                 own, _inner, _ras, _sx, _sy = _fit(use, boxes[idx], t)
                 _sc, iou, col = _score(own, boxes[idx])
             # never swap in a different design: the best drawing must sit on
@@ -3555,9 +3639,14 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
             # same word sits a little differently on each halftone scan:
             # 4 of 10 DANGER! copies refused it at the graphics level)
             need_iou, max_col = (0.65, 110) if best[2] == "text" else (0.75, 90)
+            if other_col:
+                # the worn scan is what is being replaced: a looser outline
+                # check (the design itself was matched by shape already)
+                need_iou = min(need_iou, 0.6)
+            st.setdefault("_place_fit", []).append((idx, other_col, round(iou, 3), round(col, 1)))
             if best is not None and iou >= need_iou and col <= max_col:
                 is_self = cands.get(idx, (None,))[0] is best
-                _place(use, boxes[idx], best[2] if is_self else "copy", how=t)
+                _place(use, place_box, best[2] if is_self else "copy", how=t)
                 if not is_self:
                     reused += 1
             else:

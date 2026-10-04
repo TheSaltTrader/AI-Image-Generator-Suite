@@ -1,5 +1,14 @@
 # Changelog — AI Image Generator Suite
 
+## v2.25.2 — 2026-10-03
+- **A worn colour is drawn from the clean one.** When the same design is
+  printed in two colours (red cobras and white cobras), it is drawn once
+  from the colour whose copies are cleanest, and the other colour's copies
+  get that drawing recoloured: red becomes white, and detail that would
+  vanish white-on-white (the cobra's ribs) becomes clear film so it still
+  shows. The copies are placed at the clean print's full size — worn white
+  ink prints smaller. The Cobra sheet: 3 drawings, all 12 cobras clean.
+
 ## v2.25.1 — 2026-10-03
 - **Vision redraw works again.** In 2.25.0 every vision-model redraw
   failed ("unexpected keyword argument 'betas'") and fell back to the

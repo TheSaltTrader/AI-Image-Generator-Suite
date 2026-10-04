@@ -1003,6 +1003,19 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Cross-colour recolour (v2.25.2).** User: "the white icon is the same
+  as the red, but its quality is bad … take the best red icon and color
+  its white version". find_copies step 5 (cross_colour=True): groups of
+  one design in different colours merge (size_tol 0.12: the white cobras
+  are 243x149 vs red 251x162 — worn ink prints smaller), led by the group
+  whose members match their reference best (cleaner print). Placement:
+  recoloured copies placed at the leader's size centred on the copy
+  (clamped to the sheet), outline check 0.6. _recolour: main inks (>= 4%
+  of area; edge shades follow nearest) take the scan's median ink or
+  clear (<30% inked); two mains alike -> the smaller is clear (ribs stay
+  visible); near-white -> #ffffff; ONE-PASS substitution (sequential
+  re.sub turned red->white then white->none: everything vanished). Group
+  fit counts only the leader's colour. Whale groups unchanged, gate 0/118.
 - **One drawing per design; beta routing (v2.25.1).** User: "do not send
   them all to be rewritten, just send the best and recreate them on the
   sheet" / Cobra: "17 rewrites, but the stickers are all the same, minus

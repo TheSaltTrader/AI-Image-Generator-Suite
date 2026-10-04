@@ -559,10 +559,10 @@ check("a decal printed in two halves is joined again (it matches a whole one)",
       len(_jb) == len(_cb) - 1 and any(b[0] <= 252 and b[2] >= 250 + 178 for b in _jb), (_cb, _jb))
 _cg = _dec.find_copies(_cs, _jb)
 _hows = sorted(h for g in _cg for _i, h in g)
-check("copies found by shape in any colour and a quarter turn; red and white kept apart",
-      len(_cg) == 2 and sorted(len(g) for g in _cg) == [4, 4]
+check("copies found by shape in any colour and a quarter turn; the white ones join the red (recoloured)",
+      len(_cg) == 1 and len(_cg[0]) == 8
       and ("rot90" in _hows or "rot270" in _hows)
-      and not _dec.find_copies.recolour, (_cg, _hows))
+      and len(_dec.find_copies.recolour) == 4, (_cg, _hows, _dec.find_copies.recolour))
 check("orientations compose (a mirror then a half turn is upside down)",
       _dec.relative_orient("", "rot90") == "rot90" and _dec.relative_orient("rot90", "") == "rot270"
       and _dec.relative_orient("rot90", "rot270") == "turn"
@@ -572,8 +572,12 @@ _cst = {}
 _n_ai = []
 _cout = _dec.redraw_sheet(_cs, lambda rgb, size: (_n_ai.append(1), rgb.resize(size))[1],
                           native_dpi=300, target_dpi=300, gap=6, stats=_cst, methods={"trace"})
-check("ONE drawing per design is sent (2 for 8 decals), the rest are copies",
-      len(_n_ai) == 2 and _cst.get("copies") == 6 and _cst.get("joined") == 1, (len(_n_ai), _cst))
+check("ONE drawing for the design in both colours (8 decals), the rest are copies",
+      len(_n_ai) == 1 and _cst.get("copies") == 7 and _cst.get("joined") == 1, (len(_n_ai), _cst))
+_cw = np.asarray(_cout["rgba"])
+check("…and the white copies come out white (recoloured, not red)",
+      _cw[160 + 30, 480 + 150, :3].min() > 220 and _cw[160 + 30, 480 + 150, 3] > 200,
+      _cw[190, 630].tolist())
 _ca = np.asarray(_cout["rgba"])
 # the turned red copy: its wing tip that was top-left is now top-right
 check("the quarter-turned copy is placed turned",
