@@ -101,6 +101,7 @@ import vector_redraw
 import compare_view
 import print_export
 import recraft_vectorize
+import api_cache
 import engine_files
 import applog
 import decals
@@ -108,7 +109,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.24.5"
+APP_VERSION = "2.25.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -149,6 +150,9 @@ def engine_python():
 MODELS = PROJECT / "models"
 OUTPUT = PROJECT / "output"
 DECALS_OUT = OUTPUT / "decals"         # cleaned/vectorized decal exports
+# answers from the paid services (Anthropic, Recraft), kept so a rerun of
+# the same decal is free (api_cache.py)
+API_CACHE = PROJECT / "cache" / "api"
 # the AI redraw of a scanned decal: image-to-image on the scan crop, steered
 # toward flat, crisp, traceable art (the user's own description is prepended)
 DECAL_REDRAW_STYLE = ("clean flat vector sticker decal art, crisp sharp edges, "
@@ -5380,6 +5384,41 @@ class App:
                        "Every placement is checked against that copy's own "
                        "scan first, so a look-alike different word is never "
                        "swapped in.")
+        self.decal_cache_var = BooleanVar(value=True)
+        _cc = ttk.Checkbutton(left, text="Remember paid answers (reruns are free)",
+                              variable=self.decal_cache_var)
+        _cc.grid(row=r, sticky=W); r += 1
+        self._tip(_cc, "Every answer from Claude and Recraft is kept on disk "
+                       "(the cache/api folder next to the app), keyed by the exact "
+                       "request. Redrawing the same decal again — a rerun, "
+                       "or a redraw after a tweak that did not change it — is "
+                       "answered from the disk for $0. Only answers are kept "
+                       "(no images, no keys); delete the folder to start "
+                       "over.")
+        self.decal_judge_var = BooleanVar(value=True)
+        _jc = ttk.Checkbutton(left, text="AI quality check of every decal "
+                                         "(≈ $0.01 each)",
+                              variable=self.decal_judge_var)
+        _jc.grid(row=r, sticky=W); r += 1
+        self._tip(_jc, "After each decal is drawn, the vision model sees it "
+                       "beside its scan and scores it 0-10 (parts missing, "
+                       "shapes, colours, straight edges, spelling). Under 7, "
+                       "up to two other methods are tried — set in type, "
+                       "straight-line rebuild, Recraft or the clean trace — "
+                       "and the best-scored drawing is kept. About $0.01 per "
+                       "decal with Claude Opus 5.5; reruns are free when "
+                       "'Remember paid answers' is on.")
+        self.decal_batch_var = BooleanVar(value=False)
+        _bc = ttk.Checkbutton(left, text="Cheaper text reading (batch: half "
+                                         "price, waits minutes)",
+                              variable=self.decal_batch_var)
+        _bc.grid(row=r, sticky=W); r += 1
+        self._tip(_bc, "Before drawing, every lettering decal's reading is "
+                       "sent to Claude in ONE batch at half the price; the "
+                       "answers usually come back within minutes (the run "
+                       "waits, Cancel stops it). Needs 'Remember paid "
+                       "answers'. The checks that follow a reading still go "
+                       "one by one.")
         self.decal_text_var = BooleanVar(value=True)
         _tc = ttk.Checkbutton(left, text="Text sweep: re-set lettering in "
                                          "type (vision key)",
@@ -6319,6 +6358,14 @@ class App:
         ttk.Checkbutton(f, text="SVG pages (for a cutter / Inkscape)",
                         variable=fmt_svg).grid(row=r, column=0, columnspan=3,
                                                sticky=W); r += 1
+        ttk.Label(f, text="White ink (clear decal film)", style="Head.TLabel").grid(
+            row=r, column=0, columnspan=3, sticky=W, pady=(8, 0)); r += 1
+        wl = StringVar(value="none")
+        for val, txt in (("none", "One layer (white paper, or no white needed)"),
+                         ("white", "Separate white-ink layer: the white areas"),
+                         ("underbase", "Separate white underbase: under all the ink")):
+            ttk.Radiobutton(f, text=txt, value=val, variable=wl).grid(
+                row=r, column=0, columnspan=3, sticky=W); r += 1
         ttk.Label(f, text="Every decal is printed at its true size — the "
                           "figure-scale conversion included. One bigger than "
                           "the page is split across pages with a 0.2 in "
@@ -6344,7 +6391,8 @@ class App:
             try:
                 opts = dict(paper=paper.get(), landscape=landscape.get(),
                             margin_mm=float(margin.get()), gap_mm=float(gap.get()),
-                            formats=fmts, dpi=int(dpi.get()))
+                            formats=fmts, dpi=int(dpi.get()),
+                            white_layer=wl.get())
             except Exception:
                 self.decal_status_var.set("Check the margin and gap numbers.")
                 return
@@ -6464,7 +6512,7 @@ class App:
         return compare_view.Pane(f"{kind} ({params.get('user_prompt', '')})",
                                  image=img, ppi=ppi, offset=offset,
                                  backing=tuple(film), svg=svg if svg
-                                 and Path(svg).exists() else None)
+                                 and Path(svg).exists() else None, rgba=rgba)
 
     def _compare_open(self, left, right, params, box, auto=False):
         old = getattr(self, "_compare_win", None)
@@ -6473,11 +6521,15 @@ class App:
                 old.destroy()
             except Exception:
                 pass
+        fixable = bool(params and params.get("fix_index")
+                       and Path(params["fix_index"]).exists())
         win = compare_view.CompareWindow(
             self.root, left, right,
             on_rerun=lambda: self._compare_rerun(params),
             colours={"bg": BG, "fg": FG, "dim": FG_DIM},
-            svg_render=vector_redraw.render_svg_region)
+            svg_render=vector_redraw.render_svg_region,
+            on_decal_action=(lambda k, x, y: self._decal_fix(params, k, x, y))
+            if fixable else None)
         win.params = params
         win.crop_box = box
         self._compare_win = win
@@ -6485,6 +6537,142 @@ class App:
             self.decal_status_var.set(
                 "Compare — wheel to zoom, drag to pan, both sides together; "
                 "tweak a setting and press Re-run in the window.")
+
+    def _decal_fix(self, params, action, x_in, y_in, sync=False):
+        """Fix ONE decal of a redrawn sheet from the Compare window: redraw
+        it with another method ('text', 'geometric', 'vector', 'trace') or
+        fill / clear the spot under the cursor ('fill', 'clear'); the sheet
+        is put together again and the Compare window refreshed. Returns
+        the message for the window."""
+        if getattr(self, "_decals_busy", False):
+            return "A Decals job is running — wait for it to finish."
+        try:
+            idx_path = Path(params["fix_index"])
+            meta = json.loads(idx_path.read_text(encoding="utf-8"))
+        except Exception:
+            return "This result cannot be fixed decal by decal (redraw it again first)."
+        src_dpi = float(meta["src_dpi"])
+        px, py = x_in * src_dpi, y_in * src_dpi
+        hit = None
+        for j, it in enumerate(meta["items"]):
+            x0, y0, x1, y1 = it["box"]
+            if x0 <= px < x1 and y0 <= py < y1:
+                area = (x1 - x0) * (y1 - y0)
+                if hit is None or area < hit[1]:
+                    hit = (j, area)
+        if hit is None:
+            return "No decal under the cursor — right-click on the decal itself."
+        j = hit[0]
+        base = idx_path.parent
+        ui_q = self.ui_queue
+        cache_on = bool(getattr(self, "decal_cache_var", None) is None
+                        or self.decal_cache_var.get())
+        try:
+            vmodel_fix = self._vision_model_id()
+        except Exception:
+            vmodel_fix = vector_redraw.DEFAULT_MODEL
+        label = {"text": "set in type", "geometric": "straight lines",
+                 "vector": "Recraft", "trace": "a clean trace",
+                 "fill": "spot filled", "clear": "spot cleared"}[action]
+
+        def work():
+            note = ""
+            try:
+                it = meta["items"][j]
+                box = [int(v) for v in it["box"]]
+                f_svg, f_png = base / f"{it['file']}.svg", base / f"{it['file']}.png"
+                tgt_dpi = float(meta["tgt_dpi"])
+                if action in ("fill", "clear"):
+                    old = f_svg.read_text(encoding="utf-8")
+                    new = decals.edit_spot(old, box[2] - box[0], box[3] - box[1],
+                                           px - box[0], py - box[1], action)
+                    if new is None:
+                        ui_q.put(("decal_fixed", params, "Nothing to "
+                                  + ("fill" if action == "fill" else "clear")
+                                  + " at that spot."))
+                        return
+                    svg = decals.svg_set_physical_size(
+                        new, (box[2] - box[0]) / src_dpi * meta["size_scale"],
+                        (box[3] - box[1]) / src_dpi * meta["size_scale"])
+                    ras = vector_redraw.render_svg(svg, max(1, int(round(
+                        (box[2] - box[0]) * meta["k"]))))
+                    source = it.get("source", "")
+                else:
+                    scan = Image.open(base / "_scan.png").convert("RGBA")
+                    boxes = [tuple(b["box"]) for b in meta["items"]]
+                    owner = decals.decal_owner_map(scan, boxes)
+                    own = decals.own_crop(scan, tuple(box), owner, j)
+                    page = Image.new("RGBA", scan.size, (0, 0, 0, 0))
+                    page.paste(own, (box[0], box[1]))
+                    stats = {}
+                    fns = self._decal_service_fns(action, stats, cache_on,
+                                                  vmodel_fix)
+                    out = decals.redraw_sheet(
+                        page, None, native_dpi=src_dpi,
+                        size_scale=meta["size_scale"], target_dpi=tgt_dpi,
+                        boxes=[tuple(box)], methods={action},
+                        vector_fn=fns.get("vector_fn"), text_fn=fns.get("text_fn"),
+                        reuse_copies=False, stats=stats)
+                    if not out or not out["items"]:
+                        ui_q.put(("decal_fixed", params, "The redraw gave nothing."))
+                        return
+                    got = out["items"][0]
+                    svg, ras, source = got["svg"], got["rgba"], got.get("source", "")
+                    if source != action:
+                        note = (f" ({label} was not possible here — "
+                                f"{ {'trace': 'a clean trace', 'vector': 'Recraft', 'text': 'type', 'geometric': 'straight lines'}.get(source, source)} used)")
+                    if stats.get("cost"):
+                        note += f" — ${stats['cost']:.2f}"
+                f_svg.write_text(svg, encoding="utf-8")
+                ras.save(f_png, dpi=(tgt_dpi, tgt_dpi))
+                meta["items"][j]["source"] = source
+                idx_path.write_text(json.dumps(meta), encoding="utf-8")
+                items = []
+                for k_, m_ in enumerate(meta["items"]):
+                    items.append({"box": m_["box"],
+                                  "svg": (base / f"{m_['file']}.svg").read_text(encoding="utf-8"),
+                                  "rgba": Image.open(base / f"{m_['file']}.png")})
+                sheet_svg, sheet = decals.rebuild_sheet(
+                    items, meta["W"], meta["H"], meta["sheet_in"][0],
+                    meta["sheet_in"][1], meta["k"])
+                Path(params["svg"]).write_text(sheet_svg, encoding="utf-8")
+                sheet.save(params["png"], dpi=(tgt_dpi, tgt_dpi))
+                ui_q.put(("decal_fixed", params, f"Decal {j + 1}: {label}{note}."))
+            except Exception as e:
+                applog.exception("decal fix failed")
+                ui_q.put(("decal_fixed", params, f"The fix failed: {e}"))
+
+        if sync:
+            work()
+        else:
+            threading.Thread(target=work, daemon=True).start()
+        return f"Decal {j + 1}: {label} — working…"
+
+    def _decal_service_fns(self, action, stats, cache_on=True, vmodel=None):
+        """The paid helpers one fix needs (type: the text sweep; Recraft:
+        the vectorizing service, or the vision model without a fal key).
+        Runs on a worker thread: no Tk variable is read here."""
+        out = {}
+        api_cache.set_dir(API_CACHE if cache_on else None)
+        vmodel = vmodel or vector_redraw.DEFAULT_MODEL
+        client = None
+        if action in ("text", "vector") and not vector_redraw.is_local(vmodel) \
+                and vector_redraw.get_api_key():
+            import anthropic
+            client = api_cache.wrap(anthropic.Anthropic(
+                api_key=vector_redraw.get_api_key(), timeout=120.0))
+        if action == "text" and client is not None:
+            out["text_fn"] = vector_redraw.make_text_fn(client, vmodel, 300,
+                                                        stats=stats, log=applog.log)
+        if action == "vector":
+            key = recraft_vectorize.get_key()
+            if key:
+                out["vector_fn"] = recraft_vectorize.make_vector_fn(
+                    key, 300, stats=stats, log=applog.log)
+            elif client is not None:
+                out["vector_fn"] = vector_redraw.make_vector_fn(
+                    client, vmodel, 300, stats=stats, log=applog.log)
+        return out
 
     def _auto_compare_after_job(self, n, err, what="process"):
         """Preview / Process changed the original: show the result beside
@@ -6658,13 +6846,18 @@ class App:
         # the VERIFIED recipe (v2.24.4): the cleanup the whale sheets were
         # tuned and checked by eye with — colour balance on, no solidify, no
         # smoothing — so Redraw gives those results, not a variation of them
-        opts = dict(mode="cleanup", remove_bg=True, denoise=0,
-                    tol=int(self.decal_tol_var.get()),
-                    do_trim=False, size_scale=1.0,
-                    remove_lines=self.decal_lines_var.get(), balance=True,
-                    exact=True, tidy_matte=self.decal_tidy_var.get(),
-                    solidify=False, smooth=False,
-                    fill_holes=self.decal_holes_var.get())
+        # Tk variables are read HERE, on the UI thread (a worker thread may
+        # not touch them: "main thread is not in main loop")
+        judge_on = bool(getattr(self, "decal_judge_var", None) is not None
+                        and self.decal_judge_var.get())
+        batch_on = bool(getattr(self, "decal_batch_var", None) is not None
+                        and self.decal_batch_var.get())
+        cache_on = bool(getattr(self, "decal_cache_var", None) is None
+                        or self.decal_cache_var.get())
+        opts = decals.recipe_opts(tol=int(self.decal_tol_var.get()),
+                                  remove_lines=self.decal_lines_var.get(),
+                                  tidy_matte=self.decal_tidy_var.get(),
+                                  fill_holes=self.decal_holes_var.get())
         try:
             page_sel = decals.parse_pages(self.decal_pages_var.get()
                                           if hasattr(self, "decal_pages_var")
@@ -6749,13 +6942,17 @@ class App:
             refine = diffusion_refine if method == "diffusion" else esrgan_refine
             vector_fn = None
             client = None
+            try:
+                api_cache.set_dir(API_CACHE if cache_on else None)
+            except Exception:
+                api_cache.set_dir(None)
             if method == "vision":
                 if vector_redraw.is_local(vmodel):
                     client = vector_redraw.OllamaVision(timeout=900.0)
                 else:
                     import anthropic
-                    client = anthropic.Anthropic(
-                        api_key=vector_redraw.get_api_key(), timeout=180.0)
+                    client = api_cache.wrap(anthropic.Anthropic(
+                        api_key=vector_redraw.get_api_key(), timeout=180.0))
                 vector_fn = vector_redraw.make_vector_fn(
                     client, vmodel, tgt_dpi, hint=hint, stats=stats,
                     cancelled=CANCEL.is_set, log=applog.log)
@@ -6773,11 +6970,25 @@ class App:
                         client = vector_redraw.OllamaVision(timeout=600.0)
                     else:
                         import anthropic
-                        client = anthropic.Anthropic(
-                            api_key=vector_redraw.get_api_key(), timeout=120.0)
+                        client = api_cache.wrap(anthropic.Anthropic(
+                            api_key=vector_redraw.get_api_key(), timeout=120.0))
                 text_fn = vector_redraw.make_text_fn(
                     client, vmodel, tgt_dpi, stats=stats,
                     cancelled=CANCEL.is_set, log=applog.log)
+            judge_fn = None
+            if (judge_on
+                    and (vector_redraw.is_local(vmodel)
+                         or vector_redraw.get_api_key())):
+                if client is None:
+                    if vector_redraw.is_local(vmodel):
+                        client = vector_redraw.OllamaVision(timeout=600.0)
+                    else:
+                        import anthropic
+                        client = api_cache.wrap(anthropic.Anthropic(
+                            api_key=vector_redraw.get_api_key(), timeout=120.0))
+                judge_fn = vector_redraw.make_judge_fn(
+                    client, vmodel, stats=stats, cancelled=CANCEL.is_set,
+                    log=applog.log)
 
             try:
                 white_paper = []
@@ -6822,8 +7033,7 @@ class App:
                                  photo=photo, carrier=prep.get("paper"))
                         res = decals.process_image(img, **o)
                         # at least the verified 16 px (1.35 mm) at 300 dpi
-                        gap = max(int(round(gap_mm / 25.4 * src_dpi)),
-                                  int(round(16 * src_dpi / 300.0)))
+                        gap = decals.recipe_gap(gap_mm, src_dpi)
                         count = len(decals.segment_decals(res["rgba"], gap=gap))
                         if preview:
                             count = min(1, count)
@@ -6858,6 +7068,44 @@ class App:
                                  else "")
                     return count_text, cost_text
 
+                # batch mode: the lettering readings of every page, sent as
+                # one half-price batch first; the redraw then finds them in
+                # the answer cache
+                if (not err and batch_on and text_fn is not None
+                        and api_cache.get_dir() is not None and client is not None
+                        and not vector_redraw.is_local(vmodel)):
+                    try:
+                        rec = vector_redraw.RecordingClient()
+                        dry = vector_redraw.make_text_fn(rec, vmodel, tgt_dpi,
+                                                         stats={})
+                        for pg_ in pages:
+                            decals.redraw_sheet(
+                                pg_["res"]["rgba"], None,
+                                native_dpi=pg_["src_dpi"], target_dpi=tgt_dpi,
+                                gap=pg_["gap"], text_fn=dry,
+                                reuse_copies=reuse, dry_text=True,
+                                cancelled=CANCEL.is_set)
+                        ui_q.put(("decal_status",
+                                  f"Batch: {len(rec.requests)} lettering "
+                                  "reading(s) sent at half price — waiting "
+                                  "for the answers (usually minutes)…"))
+
+                        def _bp(done, n, secs):
+                            ui_q.put(("decal_status",
+                                      f"Batch: {done} of {n} answered "
+                                      f"({int(secs // 60)} min) — Cancel stops it"))
+                        sent, stored, bcost = vector_redraw.batch_prefetch(
+                            client, rec.requests, cancelled=CANCEL.is_set,
+                            progress=_bp)
+                        stats["cost"] = stats.get("cost", 0.0) + bcost
+                        applog.log(f"batch: {sent} sent, {stored} stored, "
+                                   f"${bcost:.2f}")
+                    except vector_redraw.Cancelled:
+                        err = "cancelled"
+                    except Exception as e:
+                        applog.exception("batch failed; readings go one by one")
+                        ui_q.put(("decal_status", f"Batch failed ({e}) — the "
+                                  "readings go one by one instead."))
                 if not err:
                     ui_q.put(("decal_progress", 0.0) + figures(0))
                 # pass 2 — the redraw itself, decal by decal
@@ -6888,7 +7136,7 @@ class App:
                         gap=pg["gap"],
                         vector_fn=vector_fn, text_fn=text_fn,
                         limit=1 if preview else None,
-                        reuse_copies=reuse, stats=stats)
+                        reuse_copies=reuse, stats=stats, judge_fn=judge_fn)
                     total_done = before + pg["count"]
                     if out is not None:
                         ui_q.put(("decal_progress",
@@ -6938,6 +7186,24 @@ class App:
                                         dpi=(tgt_dpi, tgt_dpi))
                         (base / f"decal_{j:02d}.svg").write_text(
                             it["svg"], encoding="utf-8")
+                    # what a single-decal fix from the Compare window needs:
+                    # the cleaned page the redraw used and every decal's box
+                    try:
+                        res["rgba"].save(base / "_scan.png")
+                        Wp, Hp = res["rgba"].size
+                        (base / "decals.json").write_text(json.dumps({
+                            "W": Wp, "H": Hp, "src_dpi": src_dpi,
+                            "tgt_dpi": tgt_dpi, "size_scale": size_scale,
+                            "k": size_scale * tgt_dpi / float(src_dpi),
+                            "sheet_in": [Wp / float(src_dpi) * size_scale,
+                                         Hp / float(src_dpi) * size_scale],
+                            "items": [{"box": [int(v) for v in it["box"]],
+                                       "file": f"decal_{j:02d}",
+                                       "source": it.get("source", "")}
+                                      for j, it in enumerate(out["items"], start=1)],
+                        }), encoding="utf-8")
+                    except Exception:
+                        applog.exception("could not save the fix index")
                     prev = _on_film(out["rgba"], carrier)
                     ui_q.put(("decal_add", prev,
                               {"model": "decal", "seed": label + "_redraw",
@@ -6949,7 +7215,8 @@ class App:
                                "size_in": (out["rgba"].width / float(tgt_dpi),
                                            out["rgba"].height / float(tgt_dpi)),
                                "src": str(pg["src"]), "page": label,
-                               "kind": "redraw", "src_dpi": src_dpi},
+                               "kind": "redraw", "src_dpi": src_dpi,
+                               "fix_index": str(base / "decals.json")},
                               str(base) + ".svg"))
                     done += 1
             except Exception as e:
@@ -11316,6 +11583,16 @@ class App:
                         self.decal_pull_btn.state(["!disabled"])
                     except Exception:
                         pass
+                elif kind == "decal_fixed":
+                    p_, note_ = msg[1], msg[2]
+                    self.decal_status_var.set(note_)
+                    win = getattr(self, "_compare_win", None)
+                    try:
+                        if win is not None and win.winfo_exists():
+                            right = self._compare_result_pane(p_, win.left, win.crop_box)
+                            win.set_right(right, note_)
+                    except Exception:
+                        applog.exception("could not refresh Compare")
                 elif kind == "decal_print_done":
                     res, perr = msg[1], msg[2]
                     if perr:
@@ -13374,6 +13651,17 @@ def main():
             ok["text_to_paths"] = ("<path" in _o and "<text" not in _o)
         except Exception as _e:
             ok["text_to_paths"] = f"FAILED: {_e}"
+        try:
+            # the bundled OFL fonts are in the frozen build and load
+            _miss = [f for f in vector_redraw.DISPLAY_FACES + vector_redraw.DECORATIVE_FACES
+                     if f.split()[0].lower() in ("anton", "bebas", "oswald",
+                                                  "allerta", "righteous")
+                     and vector_redraw._find_font(f) is None]
+            ok["bundled_fonts"] = not _miss and (
+                vector_redraw._bundled_dir() / "LICENSES.txt").exists()
+            ok["api_cache"] = hasattr(api_cache, "CachingClient")
+        except Exception as _e:
+            ok["bundled_fonts"] = f"FAILED: {_e}"
         print("DECALS-SELFTEST", ok)
         sys.exit(0 if ok.get("pymupdf") is True and ok.get("cleanup") is True
                  and ok.get("text_to_paths") is True else 1)

@@ -607,6 +607,58 @@ check("a failed call falls back (None) and is counted",
 check("a missing target reads as None", vr.cred_read("AIImageGeneratorSuite/_nope") is None)
 
 print()
+# ---- AI quality check (v2.25.0) ----------------------------------------------
+import decals as _dq
+from PIL import Image as _Iq, ImageDraw as _Dq
+_sq = _Iq.new("RGBA", (260, 160), (0, 0, 0, 0))
+_Dq.Draw(_sq).rectangle((30, 30, 230, 130), fill=(200, 30, 40, 255))
+_seen = []
+
+
+def _judge_low_geo(crop, svg):
+    _seen.append(svg)
+    return (3, "edges") if len(_seen) == 1 else (9, "none")
+
+
+_stq = {}
+_oq = _dq.redraw_sheet(_sq, None, native_dpi=300, target_dpi=300, stats=_stq,
+                       judge_fn=_judge_low_geo, reuse_copies=False)
+check("the quality check retries a low-scored decal with another method and keeps the better one",
+      len(_seen) == 2 and _oq["items"][0]["source"] == "trace"
+      and _stq.get("judge_improved") == 1, (_oq["items"][0]["source"], _stq))
+_seen2 = []
+_oq2 = _dq.redraw_sheet(_sq, None, native_dpi=300, target_dpi=300, stats={},
+                        judge_fn=lambda c, s: (_seen2.append(1) or (9, "none")),
+                        reuse_copies=False)
+check("…a well-scored decal is kept as drawn (one check, no retry)",
+      len(_seen2) == 1 and _oq2["items"][0]["source"] == "geometric",
+      (_seen2, _oq2["items"][0]["source"]))
+
+
+class _JudgeClient:
+    class messages:
+        @staticmethod
+        def create(**kw):
+            class R:
+                class _B:
+                    type = "text"
+                    text = '{"score": 4, "issue": "a letter is missing"}'
+                content = [_B()]
+                stop_reason = "end_turn"
+                model = "claude-opus-5-5"
+
+                class usage:
+                    input_tokens = 1000
+                    output_tokens = 20
+            return R()
+
+
+_sc = vr.judge_decal(_sq, '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 160">'
+                     '<rect x="30" y="30" width="200" height="100" fill="#c81e28"/></svg>',
+                     client=_JudgeClient())
+check("judge_decal reads the score and the issue (and its cost)",
+      _sc[0] == 4 and "missing" in _sc[1] and _sc[2] > 0, _sc)
+
 print("%d passed, %d failed" % (len(PASS), len(FAIL)))
 for f in FAIL:
     print("  FAILED: " + f)

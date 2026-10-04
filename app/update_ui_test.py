@@ -66,6 +66,7 @@ from tkinter import Tk
 root = Tk()
 root.withdraw()
 ui = app.App(root)
+check("the AI quality check is on by default (the verified recipe)", ui.decal_judge_var.get() is True)
 root.update()
 
 print("the app window")
@@ -2080,6 +2081,7 @@ try:
     ui.decal_sources = [str(_pdf3)]
     ui.decal_method_var.set("trace")
     ui.decal_text_var.set(False)
+    ui.decal_judge_var.set(False)   # never a paid call from a test
     ui.decal_pages_var.set("2")
     _n0 = len(ui.session)
     ui._redraw_decals()
@@ -2092,6 +2094,30 @@ try:
     check("Redraw with Pages = 2 makes page 2 only",
           len(_new) == 1 and str(_new[0].get("page", "")).endswith("_p2"),
           [p.get("page") for p in _new])
+    # a single decal fixed from the Compare window (v2.25.0)
+    _pf = _new[0] if _new else {}
+    _meta = json.loads(app.Path(_pf["fix_index"]).read_text(encoding="utf-8")) \
+        if _pf.get("fix_index") else None
+    check("a redraw saves the fix index (boxes) and its cleaned page",
+          _meta is not None and _meta["items"]
+          and (app.Path(_pf["fix_index"]).parent / "_scan.png").exists(), _pf)
+    if _meta:
+        _b = _meta["items"][0]["box"]
+        _xi = (_b[0] + _b[2]) / 2.0 / _meta["src_dpi"]
+        _yi = (_b[1] + _b[3]) / 2.0 / _meta["src_dpi"]
+        _svg_before = app.Path(_pf["svg"]).read_text(encoding="utf-8")
+        ui._decal_fix(_pf, "trace", _xi, _yi, sync=True)
+        ui._poll_queue(); root.update()
+        check("right-click 'clean trace' redraws that decal and rebuilds the sheet",
+              ui.decal_status_var.get().startswith("Decal 1: a clean trace")
+              and app.Path(_pf["svg"]).exists()
+              and "<svg" in app.Path(_pf["svg"]).read_text(encoding="utf-8"),
+              ui.decal_status_var.get())
+        _m = ui._decal_fix(_pf, "fill", 0.001, 0.001, sync=True)
+        check("a click away from every decal is answered, nothing changes",
+              _m and "No decal under the cursor" in _m, _m)
+    check("the answer cache is on by default; the quality-check switch exists",
+          ui.decal_cache_var.get() is True and hasattr(ui, "decal_judge_var"))
     ui.decal_pages_var.set("7")
     ui._redraw_decals()
     for _ in range(200):

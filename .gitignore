@@ -45,3 +45,7 @@ __pycache__/
 *.png
 *.jpg
 stall.log
+
+# --- local quality gate (tools/golden_gate.py) and paid-answer cache ---
+golden/
+cache/

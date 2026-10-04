@@ -56,6 +56,23 @@ def scale_factor(source_n, target_n):
 WORKING_DPI = 300
 
 
+def recipe_opts(tol=52, remove_lines=True, tidy_matte=True, fill_holes=True):
+    """The VERIFIED cleanup for Redraw (checked by eye on the whale sheets):
+    colour balance on, no solidify, no smoothing. Shared by the app and the
+    quality gate (tools/golden_gate.py) so the two cannot drift apart."""
+    return dict(mode="cleanup", remove_bg=True, denoise=0, tol=int(tol),
+                do_trim=False, size_scale=1.0, remove_lines=bool(remove_lines),
+                balance=True, exact=True, tidy_matte=bool(tidy_matte),
+                solidify=False, smooth=False, fill_holes=bool(fill_holes))
+
+
+def recipe_gap(gap_mm, dpi):
+    """The grouping distance in px: the user's mm, at least the verified
+    16 px at 300 dpi (1.35 mm)."""
+    return max(int(round(float(gap_mm) / 25.4 * dpi)),
+               int(round(16 * dpi / 300.0)))
+
+
 def to_working_dpi(img, dpi, working=WORKING_DPI):
     """A page scanned finer than the working resolution, resampled to it
     (Lanczos: a 600 dpi scan comes out cleaner than a native 300 one).
@@ -2429,6 +2446,94 @@ def straight_bars(rgba, min_elong=6.0, min_len=12):
     return parts, used
 
 
+def rebuild_sheet(items, W, H, sheet_w_in, sheet_h_in, k):
+    """A sheet put together again from its decals (after one was redrawn):
+    items = [{"box": (x0, y0, x1, y1), "svg": own svg in box px,
+    "rgba": raster at print size}] in scan px of a W x H page, k = print px
+    per scan px. Returns (sheet svg, sheet raster)."""
+    parts = []
+    sheet = Image.new("RGBA", (max(1, int(round(W * k))), max(1, int(round(H * k)))),
+                      (0, 0, 0, 0))
+    for it in items:
+        x0, y0 = int(it["box"][0]), int(it["box"][1])
+        parts.append(f'<g transform="translate({x0} {y0})">{svg_inner(it["svg"])}</g>')
+        ras = it.get("rgba")
+        if ras is not None:
+            px, py = int(round(x0 * k)), int(round(y0 * k))
+            part = ras.convert("RGBA")
+            if px + part.width > sheet.width or py + part.height > sheet.height:
+                part = part.crop((0, 0, max(1, min(part.width, sheet.width - px)),
+                                  max(1, min(part.height, sheet.height - py))))
+            if px < sheet.width and py < sheet.height:
+                sheet.alpha_composite(part, (px, py))
+    svg = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+           '<svg xmlns="http://www.w3.org/2000/svg" version="1.1" '
+           f'width="{sheet_w_in:.4f}in" height="{sheet_h_in:.4f}in" '
+           f'viewBox="0 0 {W} {H}">\n' + "\n".join(parts) + "\n</svg>\n")
+    return svg, sheet
+
+
+def edit_spot(item_svg, box_w, box_h, x, y, mode, palette=None, scale=4):
+    """A decal's drawing with the spot at (x, y) (box px) filled with the
+    colour around it (mode 'fill': a pin-hole or a gap the drawing left
+    clear) or made clear (mode 'clear': a speck of ink that should not be
+    there). Re-traced from a 4x render (shapes with holes, no masks), so
+    it stays vector. Returns the new SVG in box px, or None when there is
+    nothing to change at that spot."""
+    import vector_redraw
+    W, H = max(1, int(round(box_w * scale))), max(1, int(round(box_h * scale)))
+    r = vector_redraw.render_svg(item_svg, W).convert("RGBA")
+    if r.size != (W, H):
+        r = r.resize((W, H), Image.LANCZOS)
+    a = np.array(r)
+    px = min(W - 1, max(0, int(round(x * scale))))
+    py = min(H - 1, max(0, int(round(y * scale))))
+    ink = a[..., 3] > 128
+    if mode == "fill":
+        if ink[py, px]:
+            return None                       # already inked here
+        lab, st = _label_runs(~ink, diag=False)
+        lid = int(lab[py, px])
+        edge = set(np.unique(np.concatenate([lab[0], lab[-1], lab[:, 0],
+                                             lab[:, -1]])).tolist())
+        if lid == 0 or lid in edge:
+            return None                       # that is the outside, not a hole
+        sub = lab == lid
+        ring = dilate_mask(sub, 2) & ~sub & ink
+        if not ring.any():
+            return None
+        cols, cnt = np.unique(a[..., :3][ring].reshape(-1, 3), axis=0,
+                              return_counts=True)
+        a[..., :3][sub] = cols[cnt.argmax()]
+        a[..., 3][sub] = 255
+    elif mode == "clear":
+        if not ink[py, px]:
+            return None
+        c = a[py, px, :3].astype(np.int32)
+        same = ink & (np.abs(a[..., :3].astype(np.int32) - c).sum(2) <= 60)
+        lab, st = _label_runs(same, diag=True)
+        lid = int(lab[py, px])
+        if lid == 0:
+            return None
+        sub = lab == lid
+        if sub.sum() > 0.5 * ink.sum():
+            return None                       # that is most of the decal
+        a[..., 3][sub] = 0
+    else:
+        return None
+    svg2, _ras = vectorize(Image.fromarray(a, "RGBA"), target_px=W,
+                           quantize_colors=0, presmooth=False, drop_halo=False,
+                           filter_speckle=2, hierarchical="cutout")
+    vb = re.search(r'viewBox="\s*[-\d.]+\s+[-\d.]+\s+([\d.]+)\s+([\d.]+)', svg2)
+    vw, vh = (float(vb.group(1)), float(vb.group(2))) if vb else (float(W), float(H))
+    m = re.search(r'width="([\d.]+in)" height="([\d.]+in)"', item_svg)
+    size = (f'width="{m.group(1)}" height="{m.group(2)}" ' if m else "")
+    return ('<svg xmlns="http://www.w3.org/2000/svg" version="1.1" '
+            f'{size}viewBox="0 0 {box_w} {box_h}">'
+            f'<g transform="scale({box_w / vw:.6f} {box_h / vh:.6f})">'
+            f'{svg_inner(svg2)}</g></svg>')
+
+
 def decal_owner_map(rgba, boxes, down=4):
     """Which decal every opaque pixel belongs to: the sheet's ink pieces
     (labelled on the `down`x reduced mask, like segment_decals) each go to
@@ -2490,7 +2595,8 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
                  keep_palette=True, palette_colors=16, work_px=1024,
                  min_work_px=640, progress=None, cancelled=None, gap=16,
                  min_side=24, vector_fn=None, limit=None, text_fn=None,
-                 reuse_copies=True, stats=None):
+                 reuse_copies=True, stats=None, judge_fn=None, judge_min=7,
+                 methods=None, boxes=None, dry_text=False):
     """AI-redraw every decal on a cleaned sheet and rebuild the sheet as
     vector art at its correct physical size.
 
@@ -2522,9 +2628,15 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
              height in inches (size_scale applied), so it prints at size
       rgba   the sheet rasterised at target_dpi (transparent)
       items  one dict per decal: box (in scan px), svg, rgba, size_in"""
-    boxes = segment_decals(rgba, gap=gap, min_side=min_side)
+    if boxes is None:
+        boxes = segment_decals(rgba, gap=gap, min_side=min_side)
+    else:
+        boxes = [tuple(int(v) for v in b) for b in boxes]
     if not boxes:
         return {"svg": None, "rgba": None, "items": []}
+    # methods allowed (a single decal redrawn "as type / straight lines /
+    # Recraft / clean trace" from the Compare window); None = all, in order
+    allowed = set(methods) if methods else {"text", "geometric", "vector", "trace"}
     if limit:
         boxes = boxes[:int(limit)]
     W, H = rgba.size
@@ -2600,13 +2712,17 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
             return svg_t, mask, bool(g["text"])
         return None
 
-    def _draw_one(box, crop=None, allow_text=True):
+    def _draw_one(box, crop=None, allow_text=True, skip=()):
         """One decal drawn by the chosen method. Returns (svg in crop-pixel
-        coordinates, raster, source) or None when cancelled."""
+        coordinates, raster, source) or None when cancelled. `skip` leaves
+        out methods ("text", "geometric", "vector") — the quality check's
+        retries."""
         x0, y0, x1, y1 = box
         crop = _own(box) if crop is None else crop
         cw, ch, w_in, h_in, px_w, px_h = _geom(box)
-        if text_fn is not None and allow_text:
+        skip = tuple(skip) + tuple(m for m in ("text", "geometric", "vector")
+                                   if m not in allowed)
+        if text_fn is not None and allow_text and "text" not in skip:
             import vector_redraw
             tx = _try_text(crop, w_in, h_in)
             if tx == "cancel":
@@ -2646,26 +2762,33 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
                        f'viewBox="0 0 {crop.width} {crop.height}">'
                        + inner + '</svg>')
                 return svg, vector_redraw.render_svg(svg, px_w), "text"
+        if dry_text:
+            # a dry pass (batch mode): only the lettering asks are wanted —
+            # nothing is drawn
+            return ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>',
+                    Image.new("RGBA", (max(1, px_w), max(1, px_h))), "dry")
         # straight-line art (a GI JOE banner: block letters, a striped
         # flag) is rebuilt from straightened outlines — no service traces
         # a ragged scan edge straight (v2.24.3, user: "no straight lines
         # on the letters or flag")
+        geo = None
         try:
             # the clustered palette (one entry per ink; palette_of split
             # the banner's red and navy into near-twins)
             import recraft_vectorize
-            gpal = recraft_vectorize.decal_palette(crop)
-            if gpal is None or len(gpal) == 0:
-                gpal = palette_of(crop, colors=palette_colors)
-            geo = geometric_svg(crop, gpal, float(native_dpi) / 25.4,
-                                w_in, h_in)
+            if "geometric" not in skip:
+                gpal = recraft_vectorize.decal_palette(crop)
+                if gpal is None or len(gpal) == 0:
+                    gpal = palette_of(crop, colors=palette_colors)
+                geo = geometric_svg(crop, gpal, float(native_dpi) / 25.4,
+                                    w_in, h_in)
         except Exception:
             geo = None
         if geo is not None:
             import vector_redraw
             st["geometric"] = st.get("geometric", 0) + 1
             return geo, vector_redraw.render_svg(geo, px_w), "geometric"
-        if vector_fn is not None:
+        if vector_fn is not None and "vector" not in skip:
             # a drawing from a description or a vectorizing service
             got = vector_fn(crop, palette_of(crop, colors=palette_colors),
                             w_in, h_in)
@@ -2730,6 +2853,63 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
                  f'viewBox="0 0 {cw} {ch}"><g transform="scale({cw / wr:.6f} '
                  f'{ch / hr:.6f})">{svg_inner(svg)}</g></svg>')
         return svg_c, ras, "trace"
+
+    def _draw_best(box):
+        """_draw_one, then (with a judge_fn) the AI quality check: the model
+        scores the drawing beside its scan 0-10; under `judge_min` up to two
+        other methods are tried and the best-scored drawing is kept."""
+        drawn = _draw_one(box)
+        if drawn is None or judge_fn is None:
+            return drawn
+        crop = _own(box)
+        try:
+            got = judge_fn(crop, drawn[0])
+        except Exception:
+            got = None
+        if cancelled and cancelled():
+            return None
+        if got is None:
+            return drawn
+        score, issue = got
+        st["judged"] = st.get("judged", 0) + 1
+        best, best_score = drawn, score
+        tried = {drawn[2]}
+        order = [m for m in ("text", "geometric", "vector", "trace")]
+        for _attempt in range(2):
+            if best_score >= judge_min:
+                break
+            skip = tuple(m for m in ("text", "geometric", "vector")
+                         if m in tried)
+            if all(m in skip for m in ("text", "geometric", "vector")) and \
+                    "trace" in tried:
+                break
+            alt = _draw_one(box, skip=skip)
+            if alt is None:
+                if cancelled and cancelled():
+                    return None
+                break
+            if alt[2] in tried:
+                break                         # nothing new left to try
+            tried.add(alt[2])
+            try:
+                got2 = judge_fn(crop, alt[0])
+            except Exception:
+                got2 = None
+            # a retry replaces the first drawing only on a CLEAR win: one
+            # point is the judge's noise (a ragged trace beat Recraft's
+            # SENSOR ACCESS 6 to 5 on straight panel edges, losing its
+            # clean letters)
+            # …except lettering set in type, which wins a tie (real fonts are
+            # what the user asked for: REMOVAL typeset beat its rough trace)
+            if got2 is not None and (got2[0] >= best_score + 2 or (
+                    alt[2] == "text" and got2[0] >= best_score)):
+                best, best_score = alt, got2[0]
+        if best is not drawn:
+            st["judge_improved"] = st.get("judge_improved", 0) + 1
+        if best_score < judge_min:
+            st["judge_low"] = st.get("judge_low", 0) + 1
+        st.setdefault("judge_scores", []).append(best_score)
+        return best
 
     def _fit(drawn, box, how=""):
         """A drawing (svg in its OWN crop-pixel coordinates) made to fit
@@ -2895,7 +3075,7 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
             if progress:
                 progress(step, n_draw)
             step += 1
-            drawn = _draw_one(box)
+            drawn = _draw_best(box)
             if drawn is None:
                 return None
             _place(drawn, box, drawn[2])
@@ -2917,7 +3097,7 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
             if progress:
                 progress(step, n_draw)
             step += 1
-            drawn = _draw_one(boxes[idx])
+            drawn = _draw_best(boxes[idx])
             if drawn is None:
                 return None
             cands[idx] = (drawn, how)
@@ -2954,7 +3134,7 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
                     if progress:
                         progress(step, n_draw)
                     step += 1
-                    drawn = _draw_one(boxes[idx])
+                    drawn = _draw_best(boxes[idx])
                     if drawn is None:
                         return None
                 _place(drawn, boxes[idx], drawn[2])

@@ -1,5 +1,32 @@
 # Changelog — AI Image Generator Suite
 
+## v2.25.0 — 2026-10-03
+- **Reruns are free.** Every answer from Claude and Recraft is remembered
+  (switch "Remember paid answers", on). Redrawing a decal again — a rerun,
+  or after a tweak that did not change it — costs $0. A rerun of the three
+  whale sheets went from $1.44 to $0.00. Only answers are kept, under
+  hashes: no images, no keys.
+- **AI quality check of every decal** (switch, on): the vision model sees
+  each drawing beside its scan and scores it 0-10; under 7 up to two other
+  methods are tried, and one replaces the first only on a clear win (2
+  points) — or when it sets the lettering in type. About $0.01 a decal,
+  free on reruns.
+- **Fix one decal by hand.** In Compare, right-click a decal: redraw it as
+  type, straight lines, Recraft or a clean trace, or fill / clear the spot
+  under the cursor. Only that decal changes; the sheet is put together
+  again.
+- **More fonts for lettering**, shipped with the app (SIL Open Font
+  License): Anton, Bebas Neue, Oswald, Allerta Stencil, and Righteous for
+  rounded display lettering (used only when it fits the scan very closely
+  and passes the spelling check).
+- **White ink for clear decal film.** Export for print can write a
+  separate white-ink layer (the white areas, or an underbase under all
+  ink) beside the colour layer, as PNGs and PDFs. Compare has "Printed on
+  clear film, no white ink" to see what prints without white.
+- **Cheaper text reading** (switch, off): the lettering readings go to
+  Claude as one batch at half price; the run waits for it (about a minute
+  for a sheet).
+
 ## v2.24.5 — 2026-10-03
 - **Typeset lettering keeps its weight on worn print.** Worn letters read
   lighter than they were printed, so a lighter face could "fit" a little

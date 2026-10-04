@@ -20,9 +20,10 @@ from PIL import Image, ImageTk
 
 class Pane:
     def __init__(self, title, image=None, ppi=300.0, offset=(0.0, 0.0),
-                 backing=(235, 235, 235), svg=None):
+                 backing=(235, 235, 235), svg=None, rgba=None):
         self.title = title
         self.image = image.convert("RGB") if image is not None else None
+        self.rgba = rgba            # the transparent result (clear-film preview)
         self.ppi = float(ppi) if ppi else 300.0
         self.offset = (float(offset[0]), float(offset[1]))
         self.backing = tuple(int(v) for v in backing) if backing else (235, 235, 235)
@@ -82,6 +83,23 @@ def render_frame(pane, W, H, s, ox, oy, fill=(60, 60, 60), svg_render=None):
     return frame
 
 
+FILM_RGB = (214, 222, 226)          # clear decal film over light card
+
+
+def clear_film_preview(rgba, film=FILM_RGB, white_min=235, chroma_max=24):
+    """How the decal prints on CLEAR film with no white ink: the white ink
+    is not printed (the film shows through there). Returns RGB."""
+    import numpy as np
+    a = np.asarray(rgba.convert("RGBA")).astype(np.int32)
+    white = (a[..., 3] > 128) & (a[..., :3].min(2) >= white_min) & \
+        ((a[..., :3].max(2) - a[..., :3].min(2)) <= chroma_max)
+    a[..., 3] = np.where(white, 0, a[..., 3])
+    im = Image.fromarray(a.astype(np.uint8), "RGBA")
+    bg = Image.new("RGB", im.size, film)
+    bg.paste(im, mask=im.split()[3])
+    return bg
+
+
 def wipe_frame(left_frame, right_frame, divider_px):
     """One picture: the left pane up to the divider, the right pane past it."""
     W, H = right_frame.size
@@ -97,7 +115,8 @@ class CompareWindow(tk.Toplevel):
     move together), Fit = whole picture, the wipe divider drags."""
 
     def __init__(self, master, left, right, on_rerun=None, colours=None,
-                 title="Compare with the original", svg_render=None):
+                 title="Compare with the original", svg_render=None,
+                 on_decal_action=None):
         super().__init__(master)
         c = colours or {}
         self.bg = c.get("bg", "#1e1e22")
@@ -108,6 +127,7 @@ class CompareWindow(tk.Toplevel):
         self.configure(bg=self.bg)
         self.left, self.right = left, right
         self.on_rerun = on_rerun
+        self.on_decal_action = on_decal_action
         self.svg_render = svg_render
         self.params = None
         self.crop_box = None
@@ -140,13 +160,20 @@ class CompareWindow(tk.Toplevel):
         self.zoom_var = tk.StringVar(value="")
         tk.Label(bar, textvariable=self.zoom_var, bg=self.bg, fg=self.dim,
                  width=9, anchor="w").pack(side="left", padx=(8, 0))
+        self.film_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(bar, text="Printed on clear film, no white ink",
+                        variable=self.film_var,
+                        command=self._film_changed).pack(side="left", padx=(12, 0))
         if self.on_rerun is not None:
             self.rerun_btn = ttk.Button(
                 bar, text="↻ Re-run with the current settings",
                 command=self._rerun)
             self.rerun_btn.pack(side="left", padx=(12, 0))
         tk.Label(bar, text="wheel = zoom · drag = pan · both sides move "
-                           "together", bg=self.bg, fg=self.dim).pack(side="right")
+                           "together"
+                           + (" · right-click a decal to fix it"
+                              if self.on_decal_action else ""),
+                 bg=self.bg, fg=self.dim).pack(side="right")
         self.msg_var = tk.StringVar(value="")
         tk.Label(self, textvariable=self.msg_var, bg=self.bg, fg=self.dim,
                  anchor="w").pack(side="bottom", fill="x", padx=8, pady=(0, 6))
@@ -167,6 +194,7 @@ class CompareWindow(tk.Toplevel):
             cv.bind("<B1-Motion>", self._on_motion)
             cv.bind("<ButtonRelease-1>", lambda e: setattr(self, "_drag", None))
             cv.bind("<Configure>", lambda e: self._schedule())
+            cv.bind("<ButtonPress-3>", self._on_menu)
         self._layout()
 
     def _layout(self):
@@ -252,6 +280,70 @@ class CompareWindow(tk.Toplevel):
             self._centre(W, H, self.s)
         self.ox -= dx_px / self.s
         self.oy -= dy_px / self.s
+        self._schedule()
+
+    DECAL_ACTIONS = (
+        ("text", "Redraw this decal: set its lettering in type"),
+        ("geometric", "Redraw this decal: straight lines (banners, flags)"),
+        ("vector", "Redraw this decal: Recraft drawing"),
+        ("trace", "Redraw this decal: clean trace of the scan"),
+        (None, None),
+        ("fill", "Fill this spot (the colour around it)"),
+        ("clear", "Make this spot clear (no ink)"),
+    )
+
+    def screen_to_inch(self, x, y):
+        """A point on a canvas as inches on the shared grid."""
+        W, H = self._pane_size()
+        s = self.s or self._fit_scale(W, H)
+        return self.ox + x / float(s), self.oy + y / float(s)
+
+    def _on_menu(self, e):
+        """Right-click on a decal: redraw it another way, or fill / clear
+        the spot under the cursor (the app does the work)."""
+        if self.on_decal_action is None:
+            return
+        x_in, y_in = self.screen_to_inch(e.x, e.y)
+        m = tk.Menu(self, tearoff=0)
+        for key, text in self.DECAL_ACTIONS:
+            if key is None:
+                m.add_separator()
+                continue
+            m.add_command(label=text, command=lambda k=key: self._decal_action(
+                k, x_in, y_in))
+        try:
+            m.tk_popup(e.x_root, e.y_root)
+        finally:
+            m.grab_release()
+
+    def _decal_action(self, key, x_in, y_in):
+        try:
+            msg = self.on_decal_action(key, x_in, y_in)
+        except Exception as ex:
+            msg = f"Could not start: {ex}"
+        if msg:
+            self.msg_var.set(msg)
+
+    def _film_changed(self):
+        """Swap the result side between the screen view and the clear-film
+        print preview (white ink not printed)."""
+        pane = self.right
+        if pane is None or getattr(pane, "rgba", None) is None:
+            self.msg_var.set("No transparent result to preview on clear film.")
+            return
+        if not hasattr(pane, "_screen_image"):
+            pane._screen_image = pane.image
+            pane._screen_svg = pane.svg
+        if self.film_var.get():
+            pane.image = clear_film_preview(pane.rgba)
+            pane.svg = None           # the preview is the raster
+            self.msg_var.set("Clear film without white ink: the white parts "
+                             "are not printed. Use a white-ink printer or the "
+                             "white layer in Export for print.")
+        else:
+            pane.image = pane._screen_image
+            pane.svg = pane._screen_svg
+            self.msg_var.set("")
         self._schedule()
 
     def set_right(self, pane, note=""):

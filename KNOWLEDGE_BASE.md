@@ -1003,6 +1003,36 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Cache, gate, judge, fix, fonts, white ink, batch (v2.25.0).** User:
+  "Lets do it all" (the seven recommendations). `api_cache.py`:
+  CachingClient wraps the Anthropic client — key = sha256 of the request
+  (timeout excluded), value = text blocks + stop_reason; hits return zero
+  usage (cost $0); refusals never stored; Recraft cached by the hash of
+  the PNG sent (vectorize_decal.last_cached → no PRICE_PER_IMAGE). Dir
+  <install>/cache/api, switch decal_cache_var. `tools/golden_gate.py`
+  (local, not shipped; golden/ and cache/ gitignored): record / check of
+  the user's 600 dpi whale PDF with the app recipe (decals.recipe_opts /
+  recipe_gap shared with the app); per-decal IoU >= 0.90, colour <= 40;
+  record $1.44, check from cache $0.00 (379 hits). Judge
+  (vector_redraw.judge_decal / make_judge_fn, redraw_sheet judge_fn,
+  _draw_best): retries skip methods already tried; a retry replaces the
+  first drawing only at +2 (SENSOR ACCESS: trace 6 beat Recraft 5 and lost
+  the clean letters) or when it is type and ties. Tk variables are read on
+  the UI thread (a worker reading decal_judge_var crashed: "main thread is
+  not in main loop"); UI tests switch the judge off (no paid call from a
+  test). Fix by hand: redraw saves <sheet>_redraw/decals.json (+ _scan.png);
+  CompareWindow right-click → app._decal_fix → redraw_sheet(boxes=[box],
+  methods={action}) or decals.edit_spot (4x render, region fill/clear,
+  cutout re-trace) → decals.rebuild_sheet. Fonts: app/fonts (OFL,
+  LICENSES.txt), BUNDLED_FONTS via sys._MEIPASS, FACE_HEAVINESS for the
+  near-tie rule, DECORATIVE_FACES only for decorative reads with coverage
+  0.90/0.85. White ink: print_export.split_white / underbase /
+  write_white_layers; compare_view.clear_film_preview. Batch: dry pass
+  (redraw_sheet dry_text=True + RecordingClient) → batch_prefetch →
+  answers into the cache; live: 18 readings, 79 s, $0.06. The SDK is
+  anthropic 1.11.0 (messages.batches.create/retrieve/results/cancel).
+  Tests api_cache 17, vector_redraw 65, recraft 14, print_export 24,
+  update_ui 452.
 - **Face weight on worn print (v2.24.5).** Full comparison of the
   user's 600 dpi PDF (app recipe, fonts on, $1.37 for 3 sheets) against
   the verified sheets, zoomed by eye: decals, banners, orcas, title,

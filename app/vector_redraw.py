@@ -457,6 +457,164 @@ def verify_typeset(crop_rgba, svg_text, words, model=DEFAULT_MODEL,
     return text.startswith("YES"), cost
 
 
+JUDGE_SYSTEM = """You check redrawn waterslide decals for a model-kit sheet.
+You see two pictures of one decal: LEFT the scan (worn print, halftone,
+specks), RIGHT the clean redrawn decal. Judge the RIGHT as a print-ready
+replacement of the LEFT: every part present, shapes and proportions the
+same, colours the same, straight edges straight, lettering spelt the same
+and legible, no stray specks, rims or blotches. The scan's own wear does
+not count against the redraw. Reply with JSON only:
+{"score": 0-10, "issue": "the main problem, or none"}"""
+
+
+def judge_decal(crop_rgba, svg_text, model=DEFAULT_MODEL, client=None):
+    """The AI quality check of one redrawn decal. Returns (score 0-10,
+    issue, cost_usd)."""
+    import json as _json
+    crop = crop_rgba.convert("RGBA")
+    r = render_svg(svg_text, crop.width).convert("RGBA")
+    if r.size != crop.size:
+        r = r.resize(crop.size)
+    gap = max(8, crop.width // 10)
+    pair = Image.new("RGBA", (crop.width * 2 + gap, crop.height), (0, 0, 0, 0))
+    pair.alpha_composite(crop, (0, 0))
+    pair.alpha_composite(r, (crop.width + gap, 0))
+    if pair.height > pair.width * 1.5:
+        pair = pair.rotate(-90, expand=True)
+    b64, _s = _crop_png_b64(pair, max_px=1400)
+    resp = client.messages.create(
+        model=model, max_tokens=300, system=JUDGE_SYSTEM,
+        output_config={"effort": "low"},
+        messages=[{"role": "user", "content": [
+            {"type": "image", "source": {"type": "base64",
+                                         "media_type": "image/png", "data": b64}},
+            {"type": "text", "text": "Score the right-hand redraw."}]}])
+    text = "".join(b.text for b in resp.content
+                   if getattr(b, "type", "") == "text")
+    cost = estimate_cost(getattr(resp, "model", model) or model, resp.usage)
+    i, j = text.find("{"), text.rfind("}")
+    score, issue = None, ""
+    if i >= 0 and j > i:
+        try:
+            d = _json.loads(text[i:j + 1])
+            score = max(0, min(10, int(round(float(d.get("score"))))))
+            issue = str(d.get("issue", ""))[:160]
+        except Exception:
+            score = None
+    return score, issue, cost
+
+
+def make_judge_fn(client, model, stats=None, cancelled=None, log=None):
+    """The `judge_fn` for decals.redraw_sheet: (crop, svg) -> (score, issue)
+    or None when the check could not run (the drawing is then kept)."""
+    st = stats if stats is not None else {}
+    st.setdefault("calls", 0)
+    st.setdefault("cost", 0.0)
+
+    def judge_fn(crop, svg):
+        if cancelled and cancelled():
+            return None
+        try:
+            score, issue, cost = call_cancellable(
+                lambda: judge_decal(crop, svg, model=model, client=client),
+                cancelled)
+        except Cancelled:
+            return None
+        except Exception as e:
+            _account_stop(e)
+            if log:
+                log("quality check failed; drawing kept: %r" % (e,))
+            return None
+        st["calls"] += 1
+        st["cost"] += float(cost or 0.0)
+        if score is None:
+            return None
+        if log and score < 7:
+            log("quality check: %d/10 — %s" % (score, issue))
+        return score, issue
+
+    return judge_fn
+
+
+class _Recorded(Exception):
+    """Raised by RecordingClient: the request was noted, not sent."""
+
+
+class RecordingClient:
+    """Notes every messages.create request instead of sending it (the dry
+    pass of batch mode); the caller sees an error and moves on."""
+
+    def __init__(self):
+        self.requests = []
+        self.messages = self
+        self.beta = self
+
+    def create(self, **kw):
+        self.requests.append(kw)
+        raise _Recorded("recorded for the batch")
+
+
+def batch_prefetch(client, requests, cancelled=None, progress=None,
+                   poll_s=10.0, max_wait_s=6 * 3600):
+    """Send `requests` (messages.create keyword sets) as ONE message batch
+    (half the price, answered within minutes to hours) and keep every answer
+    in the answer cache, so the redraw that follows finds them there.
+    Requests already cached are skipped. Returns (sent, stored, cost_usd).
+    Raises Cancelled when cancelled (the batch is cancelled too)."""
+    import time as _time
+    import api_cache
+    if api_cache.get_dir() is None:
+        raise RuntimeError("batch mode needs 'Remember paid answers' on")
+    inner = getattr(client, "_inner", client)
+    todo, seen = [], set()
+    for kw in requests:
+        k = api_cache.request_key(kw)
+        if k in seen or api_cache.load("anthropic", k) is not None:
+            continue
+        seen.add(k)
+        todo.append((k, kw))
+    if not todo:
+        return 0, 0, 0.0
+    reqs = [{"custom_id": "r%d" % i,
+             "params": {x: kw[x] for x in kw if x not in ("timeout",)}}
+            for i, (_k, kw) in enumerate(todo)]
+    batch = inner.messages.batches.create(requests=reqs)
+    t0 = _time.time()
+    while True:
+        if cancelled and cancelled():
+            try:
+                inner.messages.batches.cancel(batch.id)
+            except Exception:
+                pass
+            raise Cancelled()
+        b = inner.messages.batches.retrieve(batch.id)
+        if getattr(b, "processing_status", "") == "ended":
+            break
+        if progress:
+            c = getattr(b, "request_counts", None)
+            done = (getattr(c, "succeeded", 0) + getattr(c, "errored", 0)
+                    + getattr(c, "canceled", 0) + getattr(c, "expired", 0)) if c else 0
+            progress(done, len(reqs), _time.time() - t0)
+        if _time.time() - t0 > max_wait_s:
+            raise RuntimeError("the batch took too long")
+        _time.sleep(poll_s)
+    by_id = {"r%d" % i: (k, kw) for i, (k, kw) in enumerate(todo)}
+    stored, cost = 0, 0.0
+    for entry in inner.messages.batches.results(batch.id):
+        res = getattr(entry, "result", None)
+        if getattr(res, "type", "") != "succeeded":
+            continue
+        msg = res.message
+        k, kw = by_id.get(entry.custom_id, (None, None))
+        if k is None or getattr(msg, "stop_reason", None) == "refusal":
+            continue
+        api_cache.save("anthropic", k, api_cache._to_dict(msg))
+        stored += 1
+        cost += 0.5 * estimate_cost(getattr(msg, "model", kw.get("model")),
+                                    msg.usage)
+    return len(reqs), stored, cost
+
+
 def _extract_svg(text):
     m = re.search(r"<svg\b.*?</svg>", text, re.S | re.I)
     return m.group(0) if m else None
@@ -721,10 +879,7 @@ def read_text_decal(crop_rgba, n_lines, palette=None, model=DEFAULT_MODEL,
     if data.get("decorative"):
         # a display face set in Arial looked nothing like the scan ("Bad
         # Mother Tattoos & Customs"): the drawing path keeps its shapes
-        e = Unsure("decorative lettering: drawn, not typeset")
-        e.cost = estimate_cost(getattr(resp, "model", model) or model,
-                               resp.usage)
-        raise e
+        data["_decorative"] = True        # tried with DECORATIVE_FACES only
     lines = data.get("lines") or []
     if not isinstance(lines, list) or not lines:
         raise Unsure("the model returned no lines")
@@ -742,6 +897,7 @@ def read_text_decal(crop_rgba, n_lines, palette=None, model=DEFAULT_MODEL,
     if not out:
         raise Unsure("the model returned no readable line")
     return {"lines": out, "align": str(data.get("align", "center")).lower(),
+            "decorative": bool(data.get("_decorative")),
             "upside_down": bool(data.get("upside_down", False)),
             "usage": resp.usage,
             "cost_usd": estimate_cost(getattr(resp, "model", model) or model,
@@ -1054,8 +1210,9 @@ def make_text_fn(client, model, target_dpi, stats=None, cancelled=None,
         ref_a = decals.erode_mask(decals.dilate_mask(ref_a, _cr), _cr)
         best_svg, best_sc = None, -1.0
         scored = []                     # (score, heaviness, svg)
-        for serif in (bool(read["lines"][0].get("serif")),
-                      not read["lines"][0].get("serif")):
+        deco = bool(read.get("decorative"))
+        for serif in (() if deco else (bool(read["lines"][0].get("serif")),
+                                       not read["lines"][0].get("serif"))):
             for weight in ("regular", "bold", "black"):
                 if serif and weight == "black":
                     continue
@@ -1076,7 +1233,7 @@ def make_text_fn(client, model, target_dpi, stats=None, cancelled=None,
                 scored.append((sc, {"regular": 1, "bold": 2, "black": 3}[weight], cand))
                 if sc > best_sc:
                     best_svg, best_sc = cand, sc
-        for face in DISPLAY_FACES:
+        for face in (DECORATIVE_FACES if deco else DISPLAY_FACES):
             if _find_font(face) is None:
                 continue
             var = dict(read, lines=[dict(ln, face=face) for ln in read["lines"]])
@@ -1092,7 +1249,7 @@ def make_text_fn(client, model, target_dpi, stats=None, cancelled=None,
                 sc = (m & ref_a).sum() / float(max(1, (m | ref_a).sum()))
             except Exception:
                 sc = 0.0
-            scored.append((sc, 3 if face in ("Slab Black", "Impact") else 2, cand))
+            scored.append((sc, FACE_HEAVINESS.get(face, 2), cand))
             if sc > best_sc:
                 best_svg, best_sc = cand, sc
         # worn print reads lighter than it was printed: among faces within
@@ -1126,7 +1283,8 @@ def make_text_fn(client, model, target_dpi, stats=None, cancelled=None,
                 rec, prec = _coverage(svg, crop)
                 # worn print fills less of the clean letters: the type may
                 # lie 30% off the (broken) scan, but must cover it
-                if rec < 0.85 or prec < 0.70:
+                need = (0.90, 0.85) if read.get("decorative") else (0.85, 0.70)
+                if rec < need[0] or prec < need[1]:
                     ok = False
                     iou = min(iou, rec, prec)
             except Exception:
@@ -1189,9 +1347,32 @@ _FONT_CANDIDATES = {
     "impact": ["impact.ttf"],
 }
 
+# fonts that ship with the app (SIL Open Font License, app/fonts/LICENSES.txt)
+BUNDLED_FONTS = {
+    "anton": "Anton-Regular.ttf",
+    "bebas": "BebasNeue-Regular.ttf",
+    "oswald": "Oswald-Variable.ttf",
+    "allerta stencil": "AllertaStencil-Regular.ttf",
+    "righteous": "Righteous-Regular.ttf",
+}
+
+
+def _bundled_dir():
+    import sys as _sys
+    base = Path(getattr(_sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base / "fonts"
+
+
 # the extra faces the fit chooser tries, by family name
 DISPLAY_FACES = ["Slab Bold", "Slab Black", "Stencil", "Condensed Bold",
-                 "Impact"]
+                 "Impact", "Anton", "Bebas", "Oswald", "Allerta Stencil"]
+# rounded / display faces tried only for lettering the model calls
+# decorative ("Bad Mother Tattoos & Customs"); else such decals are drawn
+DECORATIVE_FACES = ["Righteous"]
+# stroke weight of each display face, for the near-tie rule (1 light .. 3 heavy)
+FACE_HEAVINESS = {"Slab Black": 3, "Impact": 3, "Anton": 3, "Oswald": 1,
+                  "Slab Bold": 2, "Stencil": 2, "Condensed Bold": 2,
+                  "Bebas": 2, "Allerta Stencil": 2, "Righteous": 2}
 
 
 def _find_font(family=""):
@@ -1201,6 +1382,10 @@ def _find_font(family=""):
     'Arial Bold', 'sans-serif') → bold, as before."""
     base = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
     fam = (family or "").lower()
+    for key, fname in BUNDLED_FONTS.items():
+        if fam.startswith(key):
+            p = _bundled_dir() / fname
+            return p if p.exists() else None
     for key, kind in (("slab black", "slab_black"), ("slab", "slab_bold"),
                       ("stencil", "stencil"), ("condensed", "condensed_bold"),
                       ("impact", "impact")):

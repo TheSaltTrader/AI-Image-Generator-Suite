@@ -489,6 +489,15 @@ def vectorize_decal(crop_rgba, key, timeout=180.0, session=None, dpi=None):
         raise FalError("the decal picture is over 5 MB")
     sent_w = int(round(crop_rgba.width * scale))
     sent_h = int(round(crop_rgba.height * scale))
+    vectorize_decal.last_cached = False
+    import api_cache
+    ckey = api_cache.bytes_key(png, ENDPOINT)
+    hit = api_cache.load("recraft", ckey)
+    if hit is not None and "<svg" in hit.get("svg", ""):
+        # the very same picture was vectorized before: free
+        vectorize_decal.last_cached = True
+        api_cache.STATS["hits"] += 1
+        return _finish(hit["svg"], sent_w, sent_h, scale, pal, crop_rgba, png)
     data_uri = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
     headers = {"Authorization": f"Key {key}",
                "Content-Type": "application/json"}
@@ -537,6 +546,13 @@ def vectorize_decal(crop_rgba, key, timeout=180.0, session=None, dpi=None):
         svg = g.text
     if "<svg" not in svg:
         raise FalError("the result is not an SVG")
+    api_cache.STATS["misses"] += 1
+    api_cache.save("recraft", ckey, {"svg": svg})
+    return _finish(svg, sent_w, sent_h, scale, pal, crop_rgba, png)
+
+
+def _finish(svg, sent_w, sent_h, scale, pal, crop_rgba, png):
+    """Recraft's answer cleaned and checked against the picture sent."""
     sent_im = Image.open(io.BytesIO(png))
     out = finalize(svg, sent_w, sent_h, scale, pal, crop=crop_rgba,
                    sent=sent_im)
@@ -657,7 +673,8 @@ def make_vector_fn(key, target_dpi, stats=None, cancelled=None, log=None,
             st["fallback"] += 1
             return None
         st["calls"] += 1
-        st["cost"] += PRICE_PER_IMAGE
+        if not getattr(vectorize_decal, "last_cached", False):
+            st["cost"] += PRICE_PER_IMAGE
         ok, iou, col = vector_redraw.check_against_scan(svg, crop)
         if not ok:
             if log:

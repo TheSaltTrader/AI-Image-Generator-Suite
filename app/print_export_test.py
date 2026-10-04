@@ -156,5 +156,34 @@ _chk = pe.print_pages(_pages_pr, _size_pr, dpi=50, title="t", check_only=True)
 check("the real print script runs in PowerShell and loads the pages (check mode)",
       _chk == "ok 2", _chk)
 
+
+print("white ink layers")
+from PIL import Image as _Iw, ImageDraw as _Dw
+_pg = _Iw.new("RGBA", (100, 50), (0, 0, 0, 0))
+_d = _Dw.Draw(_pg)
+_d.rectangle((5, 5, 45, 45), fill=(255, 255, 255, 255))     # white ink
+_d.rectangle((55, 5, 95, 45), fill=(200, 30, 40, 255))      # red ink
+_col, _wl = pe.split_white(_pg)
+check("the white layer marks exactly the white ink (black on clear)",
+      _wl.getpixel((20, 20)) == (0, 0, 0, 255) and _wl.getpixel((70, 20))[3] == 0
+      and _wl.getpixel((2, 2))[3] == 0, (_wl.getpixel((20, 20)), _wl.getpixel((70, 20))))
+check("…and the colour layer keeps the red but not the white",
+      _col.getpixel((70, 20))[:3] == (200, 30, 40) and _col.getpixel((20, 20))[3] == 0)
+_ub = pe.underbase(_pg)
+check("the underbase lies under ALL the ink",
+      _ub.getpixel((20, 20))[3] == 255 and _ub.getpixel((70, 20))[3] == 255
+      and _ub.getpixel((50, 25))[3] == 0)
+import tempfile as _tfw, os as _osw
+_tdw = _tfw.mkdtemp()
+_pieces = [pe.Piece("a", 1.0, 0.5, png=_pg)]
+_pages, _pin = pe.layout(_pieces, (4.0, 3.0), margin_in=0.2, gap_in=0.1)
+_files = pe.write_white_layers(_pages, _pin, _tdw, 100, mode="white")
+check("white-ink export writes a colour and a white PNG per page and two PDFs",
+      sum(f.endswith("_colour.png") for f in _files) == 1
+      and sum(f.endswith("_white.png") for f in _files) == 1
+      and any(f.endswith("decals_colour.pdf") for f in _files)
+      and any(f.endswith("decals_white.pdf") for f in _files)
+      and all(_osw.path.exists(f) for f in _files), _files)
+
 print(f"\n{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

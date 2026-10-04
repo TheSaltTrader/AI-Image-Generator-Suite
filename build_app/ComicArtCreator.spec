@@ -2,6 +2,7 @@
 from PyInstaller.utils.hooks import collect_all
 
 datas = [('C:\\users\\renoi\\claudecode\\Comic_book__art_creator\\app\\models_manifest.json', '.'), ('C:\\users\\renoi\\claudecode\\Comic_book__art_creator\\app\\icon.ico', '.')]
+datas += [('C:\\users\\renoi\\claudecode\\Comic_book__art_creator\\app\\fonts', 'fonts')]   # bundled OFL fonts + LICENSES.txt
 binaries = []
 hiddenimports = []
 tmp_ret = collect_all('av')

@@ -363,9 +363,69 @@ def write_svgs(pages, page_in, out_dir, stem="page"):
     return paths
 
 
+WHITE_LAYERS = ("none", "white", "underbase")
+
+
+def split_white(img, white_min=235, chroma_max=24):
+    """A page picture split for printing on clear film with white ink:
+    (colour layer: everything but the white ink, white layer: the white ink
+    as solid black on clear — the usual way to feed a white channel / a
+    second pass). White = opaque, light and colourless."""
+    import numpy as np
+    a = np.asarray(img.convert("RGBA")).astype(np.int32)
+    op = a[..., 3] > 128
+    white = op & (a[..., :3].min(2) >= white_min) & \
+        ((a[..., :3].max(2) - a[..., :3].min(2)) <= chroma_max)
+    col = a.copy()
+    col[..., 3] = np.where(white, 0, a[..., 3])
+    wl = np.zeros_like(a)
+    wl[..., 3] = np.where(white, 255, 0)
+    return (Image.fromarray(col.astype(np.uint8), "RGBA"),
+            Image.fromarray(wl.astype(np.uint8), "RGBA"))
+
+
+def underbase(img):
+    """White under ALL ink (an underbase: colours stay bright on clear
+    film), as solid black on clear."""
+    import numpy as np
+    a = np.asarray(img.convert("RGBA"))
+    out = np.zeros_like(a)
+    out[..., 3] = np.where(a[..., 3] > 128, 255, 0)
+    return Image.fromarray(out, "RGBA")
+
+
+def write_white_layers(pages, page_in, folder, dpi, mode="white", progress=None):
+    """For a printer with white ink (or a second pass on white): per page a
+    COLOUR layer (white ink removed) and a WHITE layer (black = where white
+    ink goes: the white areas, or under all ink for mode='underbase'),
+    as PNGs and as two PDFs at the true size. Returns the files."""
+    files = []
+    col_pages, white_pages = [], []
+    for n, page in enumerate(pages, start=1):
+        if progress:
+            progress(f"white-ink layers, page {n} of {len(pages)}…")
+        img = render_page_png(page, page_in, dpi)
+        col, wl = split_white(img)
+        if mode == "underbase":
+            wl = underbase(img)
+            col = img
+        pc = Path(folder) / f"page_{n:02d}_colour.png"
+        pw_ = Path(folder) / f"page_{n:02d}_white.png"
+        col.save(pc, dpi=(dpi, dpi))
+        wl.save(pw_, dpi=(dpi, dpi))
+        files += [str(pc), str(pw_)]
+        col_pages.append([(Piece("colour", page_in[0], page_in[1], png=col), 0, 0)])
+        white_pages.append([(Piece("white", page_in[0], page_in[1], png=wl), 0, 0)])
+    files.append(write_pdf(col_pages, page_in, Path(folder) / "decals_colour.pdf",
+                           title="Decals — colour layer"))
+    files.append(write_pdf(white_pages, page_in, Path(folder) / "decals_white.pdf",
+                           title="Decals — white ink layer"))
+    return files
+
+
 def export(entries, out_root, paper="Letter 8.5 × 11 in", landscape=False,
            margin_mm=10.0, gap_mm=3.0, formats=("pdf", "png"), dpi=600,
-           progress=None):
+           progress=None, white_layer="none"):
     """The whole job: gallery entries (params dicts) → pieces → pages →
     files under out_root/print_<stamp>/. Returns a dict with folder,
     pages, pieces, tiles, files."""
@@ -399,6 +459,9 @@ def export(entries, out_root, paper="Letter 8.5 × 11 in", landscape=False,
         if progress:
             progress(f"writing {len(pages)} SVG page(s)…")
         files.extend(write_svgs(pages, page_in, folder))
+    if white_layer in ("white", "underbase"):
+        files.extend(write_white_layers(pages, page_in, folder, dpi,
+                                        mode=white_layer, progress=progress))
     (folder / "README.txt").write_text(
         f"Decals for print — {paper}{' landscape' if landscape else ''}, "
         f"margin {margin_mm:g} mm, gap {gap_mm:g} mm.\n"
@@ -407,7 +470,16 @@ def export(entries, out_root, paper="Letter 8.5 × 11 in", landscape=False,
            "(overlap 0.2 in — trim one edge and butt them)" if tiles else "")
         + ".\nEvery decal is at its true size: print at 100% / 'actual "
           "size', never 'fit to page'. The PNG pages are transparent; the "
-          "PDF has no background.\n", encoding="utf-8")
+          "PDF has no background.\n"
+        + ("White-ink layers: decals_colour.pdf / page_NN_colour.png hold the "
+           "colours, decals_white.pdf / page_NN_white.png the white ink "
+           + ("under all the ink (underbase)" if white_layer == "underbase"
+              else "where the art is white")
+           + " — black marks where white ink goes. Print the white layer "
+             "first (white channel or a pass on a white-ink printer), then "
+             "the colour layer on top, both at 100%.\n"
+           if white_layer in ("white", "underbase") else ""),
+        encoding="utf-8")
     return {"folder": str(folder), "pages": len(pages), "pieces": len(pieces),
             "tiles": tiles, "files": files}
 
