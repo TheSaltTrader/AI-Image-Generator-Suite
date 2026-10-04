@@ -530,6 +530,90 @@ _out6 = _dec.redraw_sheet(_sh, None, native_dpi=300, target_dpi=150, gap=6, stat
 check("…and with the switch off every decal is drawn on its own",
       _st6["copies"] == 0 and all(it["source"] != "copy" for it in _out6["items"]))
 
+# a cobra-like sheet: one design in red, the same in white, one turned a
+# quarter, one printed in two halves (user: "17 rewrites, but the stickers
+# are all the same, minus one white and the other one red")
+def _bird(col):
+    im = Image.new("RGBA", (180, 100), (0, 0, 0, 0))
+    d = _ID.Draw(im)
+    d.polygon([(0, 10), (90, 40), (180, 10), (150, 95), (90, 70), (30, 95)], fill=col)
+    d.rectangle([80, 20, 100, 60], fill=(0, 0, 0, 0) if col[0] > 240 and col[1] > 240 else (255, 255, 255, 255))
+    d.ellipse([20, 30, 40, 50], fill=col)
+    d.ellipse([60, 45, 70, 55], fill=(0, 0, 0, 0))
+    return im
+_cs = Image.new("RGBA", (700, 560), (0, 0, 0, 0))
+_red, _wht = _bird((200, 20, 30, 255)), _bird((250, 250, 250, 255))
+_cs.alpha_composite(_red, (20, 20))
+_cs.alpha_composite(_red, (20, 160))
+_cs.alpha_composite(_red, (20, 300))
+_cs.alpha_composite(_red.rotate(-90, expand=True), (300, 20))       # turned clockwise
+_cs.alpha_composite(_wht, (480, 20))
+_cs.alpha_composite(_wht, (480, 160))
+_cs.alpha_composite(_wht, (480, 300))
+_wl, _wr = _wht.crop((0, 0, 86, 100)), _wht.crop((94, 0, 180, 100))  # split down the middle
+_cs.alpha_composite(_wl, (250, 420))
+_cs.alpha_composite(_wr, (250 + 94, 420))
+_cb = _dec.segment_decals(_cs, gap=6)
+_jb = _dec.join_split_decals(_cs, _cb, 6)
+check("a decal printed in two halves is joined again (it matches a whole one)",
+      len(_jb) == len(_cb) - 1 and any(b[0] <= 252 and b[2] >= 250 + 178 for b in _jb), (_cb, _jb))
+_cg = _dec.find_copies(_cs, _jb)
+_hows = sorted(h for g in _cg for _i, h in g)
+check("copies found by shape in any colour and a quarter turn; red and white kept apart",
+      len(_cg) == 2 and sorted(len(g) for g in _cg) == [4, 4]
+      and ("rot90" in _hows or "rot270" in _hows)
+      and not _dec.find_copies.recolour, (_cg, _hows))
+check("orientations compose (a mirror then a half turn is upside down)",
+      _dec.relative_orient("", "rot90") == "rot90" and _dec.relative_orient("rot90", "") == "rot270"
+      and _dec.relative_orient("rot90", "rot270") == "turn"
+      and _dec.relative_orient("mirror", "turn") == "flip"
+      and _dec.relative_orient("mirror", "rot90") in ("transpose", "transverse"))
+_cst = {}
+_n_ai = []
+_cout = _dec.redraw_sheet(_cs, lambda rgb, size: (_n_ai.append(1), rgb.resize(size))[1],
+                          native_dpi=300, target_dpi=300, gap=6, stats=_cst, methods={"trace"})
+check("ONE drawing per design is sent (2 for 8 decals), the rest are copies",
+      len(_n_ai) == 2 and _cst.get("copies") == 6 and _cst.get("joined") == 1, (len(_n_ai), _cst))
+_ca = np.asarray(_cout["rgba"])
+# the turned red copy: its wing tip that was top-left is now top-right
+check("the quarter-turned copy is placed turned",
+      _ca[20 + 5, 300 + 100 - 15, 3] > 200 and _ca[20 + 90, 300 + 100 - 4, 3] < 50,
+      (_ca[25, 385].tolist(), _ca[110, 396].tolist()))
+# all eight flips and turns of one design: each found as such, and the
+# sheet SVG (not only the raster) places every copy the right way
+_ims = [_red, _red.rotate(180), _red.transpose(Image.FLIP_LEFT_RIGHT),
+        _red.transpose(Image.FLIP_TOP_BOTTOM), _red.rotate(-90, expand=True),
+        _red.rotate(90, expand=True), _red.transpose(Image.TRANSPOSE),
+        _red.transpose(Image.TRANSVERSE)]
+_s8 = Image.new("RGBA", (1000, 500), (0, 0, 0, 0))
+for _k, _im in enumerate(_ims):
+    _s8.alpha_composite(_im, ((_k % 4) * 240 + 10, (_k // 4) * 240 + 10))
+_g8 = _dec.find_copies(_s8, _dec.segment_decals(_s8, gap=6))
+_o8 = _dec.redraw_sheet(_s8, lambda rgb, size: rgb.resize(size), native_dpi=300,
+                        target_dpi=300, gap=6, methods={"trace"})
+_r8 = np.asarray(vr.render_svg(_o8["svg"], 1000).convert("RGBA").resize((1000, 500)))[..., 3] > 128
+_a8 = np.asarray(_o8["rgba"])[..., 3] > 128
+_t8 = np.asarray(_s8)[..., 3] > 128
+_iou = lambda p, q: (p & q).sum() / max(1, (p | q).sum())
+check("all eight flips and turns are told apart and placed (raster and SVG)",
+      len(_g8) == 1 and [h for _i, h in _g8[0]] == ["", "turn", "mirror", "flip", "rot90",
+                                                     "rot270", "transpose", "transverse"]
+      and _iou(_a8, _t8) > 0.97 and _iou(_r8, _a8) > 0.95, (_g8, _iou(_a8, _t8), _iou(_r8, _a8)))
+# the same design in another colour only: recoloured from the copy's own scan
+_cs2 = Image.new("RGBA", (420, 140), (0, 0, 0, 0))
+_cs2.alpha_composite(_red, (20, 20))
+_cs2.alpha_composite(_bird((30, 60, 200, 255)), (220, 20))
+_b2 = _dec.segment_decals(_cs2, gap=6)
+_g2 = _dec.find_copies(_cs2, _b2)
+_st2 = {}
+_o2 = _dec.redraw_sheet(_cs2, lambda rgb, size: rgb.resize(size), native_dpi=300,
+                        target_dpi=300, gap=6, stats=_st2, methods={"trace"})
+_a2 = np.asarray(_o2["rgba"])
+check("a copy in another colour is recoloured from its own scan (blue stays blue)",
+      len(_g2) == 1 and _dec.find_copies.recolour and _st2.get("copies") == 1
+      and _a2[20 + 80, 220 + 150, 2] > 150 and _a2[20 + 80, 220 + 150, 0] < 90
+      and _a2[20 + 80, 20 + 150, 0] > 150, (_g2, _st2, _a2[100, 370].tolist()))
+
 print("the key store")
 t = "AIImageGeneratorSuite/_test_vr"
 check("write/read/delete round trip in the Credential Manager",

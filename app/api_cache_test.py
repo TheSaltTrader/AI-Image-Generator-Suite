@@ -62,6 +62,38 @@ c2.messages.create(**kw2)
 c2.messages.create(**kw2)
 check("a refusal is never remembered", inner2.calls == 2, inner2.calls)
 
+class _BetaInner(_Inner):
+    """A client whose messages.create refuses 'betas', like the real SDK."""
+    def __init__(self):
+        super().__init__()
+        outer = self
+        class _M:
+            def create(self_, **kw):
+                if "betas" in kw:
+                    raise TypeError("Messages.create() got an unexpected keyword argument 'betas'")
+                return outer.create(**kw)
+        class _BM:
+            def create(self_, **kw):
+                outer.beta_calls = getattr(outer, "beta_calls", 0) + 1
+                return outer.create(**kw)
+        self.messages = _M()
+        self.beta = type("B", (), {})()
+        self.beta.messages = _BM()
+
+
+bi = _BetaInner()
+bc = api_cache.wrap(bi)
+kwb = dict(model="claude-opus-5-5", max_tokens=50, betas=["server-side-fallback-2026-07-01"],
+           messages=[{"role": "user", "content": "draw"}])
+try:
+    rb1 = bc.beta.messages.create(**kwb)
+    rb2 = bc.beta.messages.create(**kwb)
+    okb = getattr(bi, "beta_calls", 0) == 1 and rb2.content[0].text == rb1.content[0].text
+except TypeError as e:
+    okb = False
+check("a beta request (the vision redraw) goes to beta.messages and is remembered",
+      okb, getattr(bi, "beta_calls", None))
+
 print("recraft answers")
 import recraft_vectorize as rv
 from PIL import Image, ImageDraw

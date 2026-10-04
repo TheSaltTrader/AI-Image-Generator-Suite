@@ -114,26 +114,52 @@ def request_key(kw: dict) -> str:
     return _key(k)
 
 
+class _Endpoint:
+    """client.messages or client.beta.messages, with answers remembered."""
+
+    def __init__(self, owner, beta):
+        self._owner = owner
+        self._beta = beta
+
+    def create(self, **kw):
+        return self._owner._create(kw, self._beta)
+
+    def __getattr__(self, name):          # batches, count_tokens, …
+        src = self._owner._inner.beta if self._beta else self._owner._inner
+        return getattr(src.messages, name)
+
+
 class CachingClient:
     """Wraps an Anthropic client (or the Ollama stand-in): messages.create
-    answers from the disk when the very same request was answered before.
-    A refusal or an error is never remembered."""
+    and beta.messages.create answer from the disk when the very same
+    request was answered before. A refusal or an error is never remembered.
+    (v2.25.0 routed beta requests to messages.create: every vision redraw
+    failed with "unexpected keyword argument 'betas'".)"""
 
     def __init__(self, inner):
         self._inner = inner
-        self.messages = self
-        self.beta = self
+        self.messages = _Endpoint(self, beta=False)
+        self.beta = type("_Beta", (), {})()
+        self.beta.messages = _Endpoint(self, beta=True)
 
     def __getattr__(self, name):          # anything else: the real client
         return getattr(self._inner, name)
 
-    def create(self, **kw):
+    def create(self, **kw):               # old call style
+        return self._create(kw, "betas" in kw)
+
+    def _create(self, kw, beta):
+        # the plain request hash: a beta request carries its own "betas"
+        # field, and the stored answers / batch mode keep matching
         key = request_key(kw)
         got = load("anthropic", key)
         if got is not None:
             STATS["hits"] += 1
             return _from_dict(got)
-        resp = self._inner.messages.create(**kw)
+        if beta:
+            resp = self._inner.beta.messages.create(**kw)
+        else:
+            resp = self._inner.messages.create(**kw)
         STATS["misses"] += 1
         if getattr(resp, "stop_reason", None) != "refusal":
             save("anthropic", key, _to_dict(resp))

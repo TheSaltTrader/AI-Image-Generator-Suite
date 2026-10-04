@@ -1003,6 +1003,40 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **One drawing per design; beta routing (v2.25.1).** User: "do not send
+  them all to be rewritten, just send the best and recreate them on the
+  sheet" / Cobra: "17 rewrites, but the stickers are all the same, minus
+  one white and the other one red". find_copies is TWO-STAGE: first
+  _picture_copies (the old RGB matcher, unchanged — a shape-only matcher
+  regrouped the whale DANGER labels: rectangular outlines are flat, edges
+  alone fell under 0.88 on halftone), orientation re-checked by
+  edges+silhouette on a 0.05 margin; then left-overs matched by SHAPE
+  (_shape_sig: tight ink silhouette, blurred) with the orientation chosen
+  by silhouette + _edge_sig (edges on mid-grey, so red and white ink both
+  show their lines; red vs white cobra 0.6, wrong orientations 0.1-0.2;
+  a flat rectangular outline is judged by edges alone, else a turned
+  label looked unturned). All 8 flips/turns (ORIENTS, _ORIENT_M,
+  relative_orient, _compose_orient; mirror then half turn = "flip"; the
+  old rel table had that wrong). Groups split by ink colour (each colour
+  2+ = own drawing; a lone colour recoloured: _recolour samples the
+  copy's scan under each fill, "none" where the scan has no ink), then
+  groups of one design upright and on its side merged (quarter turns
+  only). join_split_decals (only when redraw_sheet segments itself) joins
+  neighbouring halves (each >= 20% of the union: a small label inside a
+  big decal's box matched the big decal's twin) whose union matches a
+  whole decal (shape >= 0.85), and KEEPS THE BOX ORDER (a re-sort changed
+  which copies are a group's first 3: 20 whale decals drifted). Group
+  drawing: a PICTURE group sends its first copy, kept when its mean fit
+  over all copies >= 0.85; a LETTERING group (typeset, or `text` /
+  `text_fallback` rose while drawing) keeps the verified best-of-3 by own
+  fit + 0.25 for type — one draw per lettering group gave a serif AWAY and
+  a sans STAND (fit cannot tell: serif 0.877 vs sans 0.903) and a refused
+  BEWARE trace on six copies; "most typical copy" ranking was tried and
+  dropped. Gate: 0/118 drifted, $0.00. Cobra: 17 -> 14 boxes, 4 drawings.
+  api_cache: CachingClient.beta was `self`, so beta.messages.create went
+  to messages.create — every 2.25.0 vision redraw failed with "unexpected
+  keyword argument 'betas'" and fell back to the trace; _Endpoint routes
+  both. Tests vector_redraw 72, api_cache 18.
 - **Cache, gate, judge, fix, fonts, white ink, batch (v2.25.0).** User:
   "Lets do it all" (the seven recommendations). `api_cache.py`:
   CachingClient wraps the Anthropic client — key = sha256 of the request

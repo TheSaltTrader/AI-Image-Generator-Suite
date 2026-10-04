@@ -2323,17 +2323,115 @@ def _ncc(a, b):
     return best
 
 
-def find_copies(rgba, boxes, size_tol=0.06, min_ncc=0.80, min_px=12,
-                crop_fn=None):
-    """Groups of decals that look like the SAME design printed several
-    times on a sheet — straight, turned 180 degrees or mirrored: same size
-    within `size_tol`, and blurred pictures correlating at `min_ncc` or
-    more (measured on the user's sheets: real copies 0.86-1.0 through
-    halftone noise, different designs under 0.5 — but different words of
-    one size can reach 0.93, so redraw_sheet checks every placement
-    against the copy's own scan before using it). Groups are formed
-    around one reference (no chaining). Returns [[(index, how), ...]]
-    with how in {"", "turn", "mirror"}, reference first; 2+ members only."""
+def _shape_sig(rgba, box, size, crop_fn=None):
+    """A decal's SHAPE for copy matching: its ink silhouette, cropped tight,
+    shrunk to `size` and blurred — colour left out, so a red decal and the
+    same design printed in white match (0.91-0.93 on a Cobra sheet; the
+    same colour 0.99-1.0)."""
+    c = (crop_fn(box) if crop_fn else rgba.crop(box)).convert("RGBA")
+    a = c.split()[3].point(lambda v: 255 if v > 96 else 0)
+    bb = a.getbbox()
+    if bb:
+        a = a.crop(bb)
+    return np.asarray(a.resize(size, Image.LANCZOS).filter(
+        ImageFilter.GaussianBlur(1.2))).astype(np.float32)
+
+
+def _edge_sig(rgba, box, size, crop_fn=None):
+    """A decal's INNER DRAWING for copy matching: the edges of its picture
+    laid on mid-grey (so white ink and red ink both show their lines),
+    cropped to its ink, shrunk to `size`. The silhouette says "same
+    design"; this says which way round (a plain label's outline is the
+    same turned or not — its arrow is not)."""
+    c = (crop_fn(box) if crop_fn else rgba.crop(box)).convert("RGBA")
+    g = Image.new("RGBA", c.size, (128, 128, 128, 255))
+    g.alpha_composite(c)
+    e = g.convert("L").filter(ImageFilter.FIND_EDGES)
+    bb = c.split()[3].point(lambda v: 255 if v > 96 else 0).getbbox()
+    if bb:
+        e = e.crop(bb)
+    return np.asarray(e.resize(size, Image.BOX).filter(
+        ImageFilter.GaussianBlur(1.0))).astype(np.float32)
+
+
+# orientations of a copy: the transform taking the group's reference to the
+# copy, and how to undo it on the copy's picture (numpy, H x W [x C])
+ORIENTS = {
+    "": lambda b: b,
+    "turn": lambda b: b[::-1, ::-1],
+    "mirror": lambda b: b[:, ::-1],
+    "rot90": lambda b: np.rot90(b, 1),       # copy = reference turned 90 cw
+    "rot270": lambda b: np.rot90(b, -1),     # copy = reference turned 90 ccw
+    "flip": lambda b: b[::-1, :],            # upside down (mirror + half turn)
+    "transpose": lambda b: np.swapaxes(b, 0, 1),
+    "transverse": lambda b: np.swapaxes(b, 0, 1)[::-1, ::-1],
+}
+
+
+def ink_colour(rgba, box, crop_fn=None):
+    """Mean colour of a decal's solid ink."""
+    a = np.asarray((crop_fn(box) if crop_fn else rgba.crop(box)).convert("RGBA"))
+    m = a[..., 3] > 200
+    return a[..., :3][m].mean(0) if m.any() else np.zeros(3)
+
+
+def _shape_match(rgba, bi, bj, size_tol=0.06, crop_fn=None, _cache=None,
+                 min_edge=0.45, keys=None):
+    """(correlation, how) of decal box `bj` as a copy of `bi`, in every
+    orientation its size allows; (-1, "") when sizes differ. The score is
+    the silhouette correlation, valid only where the inner drawing agrees
+    too (edges >= `min_edge`: a red cobra and a white one 0.6, other
+    orientations 0.1-0.2); the orientation is the one where silhouette and
+    edges agree best. A plain outline (a rectangular label: its silhouette
+    is flat) is judged by its edges alone."""
+    wi, hi = bi[2] - bi[0], bi[3] - bi[1]
+    wj, hj = bj[2] - bj[0], bj[3] - bj[1]
+    same = (abs(wi - wj) <= size_tol * max(wi, wj) and
+            abs(hi - hj) <= size_tol * max(hi, hj))
+    quarter = (abs(wi - hj) <= size_tol * max(wi, hj) and
+               abs(hi - wj) <= size_tol * max(hi, wj))
+    if not (same or quarter):
+        return -1.0, ""
+    f = 48.0 / max(wi, hi)
+    size = (max(8, int(round(wi * f))), max(8, int(round(hi * f))))
+    cache = _cache if _cache is not None else {}
+
+    def sig(b, sz, kind):
+        k = (tuple(b), sz, kind)
+        if k not in cache:
+            cache[k] = (_shape_sig if kind == "s" else _edge_sig)(
+                rgba, b, sz, crop_fn)
+        return cache[k]
+    a, ae = sig(bi, size, "s"), sig(bi, size, "e")
+    flat = float(a.std()) < 25.0            # a plain rectangle's outline
+    best_v, best_how, best_key = -1.0, "", -9.0
+    hows = (["", "turn", "mirror", "flip"] if same else []) + \
+        (["rot90", "rot270", "transpose", "transverse"] if quarter else [])
+    for how in hows:
+        sz = (size[1], size[0]) if how in ("rot90", "rot270", "transpose",
+                                          "transverse") else size
+        vs = _ncc(a, ORIENTS[how](sig(bj, sz, "s")).copy())
+        ve = _ncc(ae, ORIENTS[how](sig(bj, sz, "e")).copy())
+        if flat:
+            v = ve if float(sig(bj, sz, "s").std()) < 25.0 else -1.0
+        else:
+            v = vs if ve >= min_edge else -1.0
+        key = (ve if flat else vs + ve)
+        if keys is not None:
+            keys[how] = key
+        if v >= 0 and key > best_key:
+            best_v, best_how, best_key = v, how, key
+    return best_v, best_how
+
+
+def _picture_copies(rgba, boxes, size_tol=0.06, min_ncc=0.80, min_px=12,
+                    crop_fn=None):
+    """Same-colour copies by their PICTURE — straight, turned 180 degrees
+    or mirrored: same size within `size_tol`, blurred pictures correlating
+    at `min_ncc` or more (real copies 0.86-1.0 through halftone noise,
+    different designs under 0.5 — but different words of one size can
+    reach 0.93, so redraw_sheet checks every placement against the copy's
+    own scan). The verified grouping of the whale sheets; unchanged."""
     n = len(boxes)
     sizes = [(b[2] - b[0], b[3] - b[1]) for b in boxes]
     taken = [False] * n
@@ -2365,6 +2463,231 @@ def find_copies(rgba, boxes, size_tol=0.06, min_ncc=0.80, min_px=12,
                 taken[idx] = True
             groups.append(group)
     return groups
+
+
+def find_copies(rgba, boxes, size_tol=0.06, min_ncc=0.88, min_px=12,
+                crop_fn=None):
+    """Groups of decals that are the SAME design printed several times on a
+    sheet. First the picture match (same colour; straight, turned 180 or
+    mirrored — the verified grouping, unchanged). Then what it left over is
+    matched by SHAPE: a copy turned a quarter or flipped any way, or
+    printed in another colour (a white cobra beside red ones) — blurred
+    silhouettes at `min_ncc` or more, the inner drawing agreeing too. A
+    left-over copy joins a group of its own colour when one matches, else
+    forms groups with its look-alikes, else joins a group of another colour
+    and is recoloured from its own scan. Returns [[(index, how), ...]] with
+    how in ORIENTS, reference first; 2+ members. find_copies.recolour holds
+    the indexes in a group of another colour."""
+    n = len(boxes)
+    sizes = [(b[2] - b[0], b[3] - b[1]) for b in boxes]
+    groups = _picture_copies(rgba, boxes, size_tol, 0.80, min_px, crop_fn)
+    cols = {}
+    cache = {}
+    # the picture match tells straight / turned / mirrored only; an upside
+    # down copy of a near-symmetric design passed as "turned". The inner
+    # drawing settles it, changed only on a clear margin.
+    for g in groups:
+        for k in range(1, len(g)):
+            j, how = g[k]
+            keys = {}
+            _shape_match(rgba, boxes[g[0][0]], boxes[j], size_tol, crop_fn,
+                         cache, keys=keys)
+            if keys and how in keys:
+                h2 = max(keys, key=keys.get)
+                if h2 != how and keys[h2] > keys[how] + 0.05:
+                    g[k] = (j, h2)
+
+    def col(k):
+        if k not in cols:
+            cols[k] = ink_colour(rgba, boxes[k], crop_fn)
+        return cols[k]
+
+    def differ(i, j):
+        return float(np.abs(col(i) - col(j)).sum()) > 90
+
+    def match(i, j):
+        return _shape_match(rgba, boxes[i], boxes[j], size_tol, crop_fn, cache)
+    taken = {i for g in groups for i, _h in g}
+    left = [i for i in range(n) if i not in taken and min(sizes[i]) >= min_px]
+    # 1. into a group of the same colour
+    other = {}
+    for j in list(left):
+        for g in groups:
+            v, how = match(g[0][0], j)
+            if v < min_ncc:
+                continue
+            if differ(g[0][0], j):
+                other.setdefault(j, (g, how))
+                continue
+            g.append((j, how))
+            left.remove(j)
+            other.pop(j, None)
+            break
+    # 2. new groups among what is left, one colour each
+    taken_l = set()
+    for k, i in enumerate(left):
+        if i in taken_l:
+            continue
+        group = [(i, "")]
+        for j in left[k + 1:]:
+            if j in taken_l or differ(i, j):
+                continue
+            v, how = match(i, j)
+            if v >= min_ncc:
+                group.append((j, how))
+        if len(group) >= 2:
+            taken_l.update(idx for idx, _h in group)
+            groups.append(group)
+    # 3. alone in its colour: with a group of another colour, recoloured —
+    # or paired with a look-alike in another colour that is alone too
+    recolour = set()
+    for j in left:
+        if j in taken_l:
+            continue
+        if j in other:
+            g, how = other[j]
+            g.append((j, how))
+            recolour.add(j)
+            taken_l.add(j)
+            continue
+        for g in groups:
+            v, how = match(g[0][0], j)
+            if v >= min_ncc:
+                g.append((j, how))
+                recolour.add(j)
+                taken_l.add(j)
+                break
+        else:
+            for i in left:
+                if i == j or i in taken_l:
+                    continue
+                v, how = match(i, j)
+                if v >= min_ncc:
+                    groups.append([(i, ""), (j, how)])
+                    taken_l.update((i, j))
+                    recolour.add(j)
+                    break
+    # 4. one design printed both upright and on its side: two groups the
+    # picture match could not join (it compares same-size pictures only)
+    merged = []
+    for g in groups:
+        for m in merged:
+            if differ(m[0][0], g[0][0]):
+                continue
+            v, h = match(m[0][0], g[0][0])
+            if v >= min_ncc and h in ("rot90", "rot270", "transpose", "transverse"):
+                # g's reference = h after m's reference
+                m.extend((idx, _compose_orient(how, h)) for idx, how in g)
+                break
+        else:
+            merged.append(g)
+    groups = merged
+    find_copies.recolour = recolour
+    find_copies.colours = cols
+    return groups
+
+
+# orientation matrices on (x, y), y down: copy = M @ reference
+_ORIENT_M = {"": ((1, 0), (0, 1)), "turn": ((-1, 0), (0, -1)),
+             "mirror": ((-1, 0), (0, 1)), "rot90": ((0, -1), (1, 0)),
+             "rot270": ((0, 1), (-1, 0)), "flip": ((1, 0), (0, -1)),
+             "transpose": ((0, 1), (1, 0)), "transverse": ((0, -1), (-1, 0))}
+
+
+def _compose_orient(outer, inner):
+    """The single flip/turn doing `inner` and then `outer`."""
+    m = np.array(_ORIENT_M[outer]) @ np.array(_ORIENT_M[inner])
+    for name, mm in _ORIENT_M.items():
+        if (np.array(mm) == m).all():
+            return name
+    return ""
+
+
+def relative_orient(how_from, how_to):
+    """The orientation taking a drawing of a copy placed `how_from` to a
+    copy placed `how_to` (both relative to one reference): one of the eight
+    flips and turns (a mirror then a half turn is upside down, "flip")."""
+    a = np.array(_ORIENT_M[how_to])
+    b = np.array(_ORIENT_M[how_from])
+    m = a @ b.T                    # orthogonal: inverse = transpose
+    for name, mm in _ORIENT_M.items():
+        if (np.array(mm) == m).all():
+            return name
+    return None
+
+
+def join_split_decals(rgba, boxes, gap, crop_fn=None, min_ncc=0.85,
+                      size_tol=0.08):
+    """A decal the print split in two (a white cobra whose two halves have
+    a clear gap down the middle) is joined again when the two neighbouring
+    pieces together match the shape of a WHOLE decal elsewhere on the
+    sheet, in any orientation. Returns the new box list."""
+    boxes = [tuple(b) for b in boxes]
+    changed = True
+    while changed:
+        changed = False
+        n = len(boxes)
+        for i in range(n):
+            for j in range(i + 1, n):
+                a, b = boxes[i], boxes[j]
+                # neighbours: overlapping on one axis, close on the other
+                ox = min(a[2], b[2]) - max(a[0], b[0])
+                oy = min(a[3], b[3]) - max(a[1], b[1])
+                dx = max(a[0], b[0]) - min(a[2], b[2])
+                dy = max(a[1], b[1]) - min(a[3], b[3])
+                if not ((ox > 0.5 * min(a[2] - a[0], b[2] - b[0]) and dy <= 3 * gap)
+                        or (oy > 0.5 * min(a[3] - a[1], b[3] - b[1]) and dx <= 3 * gap)):
+                    continue
+                u = (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
+                uw, uh = u[2] - u[0], u[3] - u[1]
+                # halves: each a real part of the whole (a small label in
+                # a big decal's box made "the big decal" again)
+                ua = float(uw * uh)
+                if min((a[2] - a[0]) * (a[3] - a[1]),
+                       (b[2] - b[0]) * (b[3] - b[1])) < 0.2 * ua:
+                    continue
+                f = 48.0 / max(uw, uh)
+                size = (max(8, int(round(uw * f))), max(8, int(round(uh * f))))
+                su = None
+                for k, c in enumerate(boxes):
+                    if k in (i, j):
+                        continue
+                    cw, ch = c[2] - c[0], c[3] - c[1]
+                    same = abs(cw - uw) <= size_tol * max(cw, uw) and \
+                        abs(ch - uh) <= size_tol * max(ch, uh)
+                    quarter = abs(cw - uh) <= size_tol * max(cw, uh) and \
+                        abs(ch - uw) <= size_tol * max(ch, uw)
+                    if not (same or quarter):
+                        continue
+                    if su is None:
+                        # the union's ink: both pieces, nothing else
+                        img = Image.new("RGBA", rgba.size, (0, 0, 0, 0))
+                        for bb in (a, b):
+                            img.paste(crop_fn(bb) if crop_fn else rgba.crop(bb),
+                                      (bb[0], bb[1]))
+                        su = _shape_sig(img, u, size)
+                    v = -1.0
+                    if same:
+                        sc = _shape_sig(rgba, c, size, crop_fn)
+                        v = max(_ncc(su, ORIENTS[h](sc).copy())
+                                for h in ("", "turn", "mirror"))
+                    if quarter:
+                        sq = _shape_sig(rgba, c, (size[1], size[0]), crop_fn)
+                        v = max(v, max(_ncc(su, ORIENTS[h](sq).copy())
+                                       for h in ("rot90", "rot270")))
+                    if v >= min_ncc:
+                        # the joined decal takes the first half's place: the
+                        # order of the others is kept (it decides which
+                        # copies of a group are drawn)
+                        boxes[i] = u
+                        del boxes[j]
+                        changed = True
+                        break
+                if changed:
+                    break
+            if changed:
+                break
+    return boxes
 
 
 def straight_bars(rgba, min_elong=6.0, min_len=12):
@@ -2630,6 +2953,20 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
       items  one dict per decal: box (in scan px), svg, rgba, size_in"""
     if boxes is None:
         boxes = segment_decals(rgba, gap=gap, min_side=min_side)
+        if reuse_copies and not limit and len(boxes) > 2:
+            # a decal printed in two halves is one decal again when the
+            # halves together match a whole one elsewhere (white cobras)
+            try:
+                own0 = decal_owner_map(rgba, boxes)
+                ix0 = {tuple(b): i for i, b in enumerate(boxes)}
+                nb = join_split_decals(
+                    rgba, boxes, gap,
+                    crop_fn=lambda b: own_crop(rgba, b, own0, ix0.get(tuple(b))))
+                if stats is not None:
+                    stats["joined"] = stats.get("joined", 0) + len(boxes) - len(nb)
+                boxes = nb
+            except Exception:
+                pass
     else:
         boxes = [tuple(int(v) for v in b) for b in boxes]
     if not boxes:
@@ -2911,6 +3248,44 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
         st.setdefault("judge_scores", []).append(best_score)
         return best
 
+    def _recolour(drawn, box, how):
+        """The drawing with each of its fill colours replaced by the ink
+        the scan of `box` has under it (a white cobra drawn from the red
+        one), or made clear where that scan has no ink. None if it fails."""
+        try:
+            import vector_redraw
+            svg, ras, src = drawn
+            own, _i, _r, _sx, _sy = _fit(drawn, box, how)
+            cw, ch = box[2] - box[0], box[3] - box[1]
+            r = vector_redraw.render_svg(own, cw).convert("RGBA").resize(
+                (cw, ch), Image.LANCZOS)
+            ra = np.asarray(r).astype(np.int32)
+            sc = np.asarray(_own(box).convert("RGBA")).astype(np.int32)
+            fills = sorted(set(m.lower() for m in re.findall(
+                r'fill="(#[0-9a-fA-F]{6})"', svg)))
+            out = svg
+            for hx in fills:
+                c = np.array([int(hx[1:3], 16), int(hx[3:5], 16), int(hx[5:7], 16)])
+                m = (ra[..., 3] > 128) & (np.abs(ra[..., :3] - c).sum(2) < 40)
+                if m.sum() < 12:
+                    continue
+                inked = m & (sc[..., 3] > 128)
+                if inked.sum() < 0.3 * m.sum():
+                    new = "none"
+                else:
+                    med = np.median(sc[..., :3][inked], axis=0).astype(int)
+                    new = "#%02x%02x%02x" % tuple(int(v) for v in med)
+                out = re.sub('fill="%s"' % hx, 'fill="%s"' % new, out,
+                             flags=re.IGNORECASE)
+            if out == svg:
+                return None
+            nr = vector_redraw.render_svg(out, ras.width).convert("RGBA")
+            if nr.size != ras.size:
+                nr = nr.resize(ras.size, Image.LANCZOS)
+            return (out, nr, src)
+        except Exception:
+            return None
+
     def _fit(drawn, box, how=""):
         """A drawing (svg in its OWN crop-pixel coordinates) made to fit
         `box`: scaled to it, turned 180 degrees or mirrored for such a
@@ -2927,6 +3302,25 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
         elif how == "mirror":
             inner = f'<g transform="translate({bw:.3f} 0) scale(-1 1)">{inner}</g>'
             ras = ras.transpose(Image.FLIP_LEFT_RIGHT)
+        elif how == "rot90":           # a quarter turn clockwise
+            inner = f'<g transform="translate({bh:.3f} 0) rotate(90)">{inner}</g>'
+            ras = ras.rotate(-90, expand=True)
+            bw, bh = bh, bw
+        elif how == "rot270":          # a quarter turn anticlockwise
+            inner = f'<g transform="translate(0 {bw:.3f}) rotate(-90)">{inner}</g>'
+            ras = ras.rotate(90, expand=True)
+            bw, bh = bh, bw
+        elif how == "flip":            # upside down
+            inner = f'<g transform="translate(0 {bh:.3f}) scale(1 -1)">{inner}</g>'
+            ras = ras.transpose(Image.FLIP_TOP_BOTTOM)
+        elif how == "transpose":       # across the main diagonal
+            inner = f'<g transform="matrix(0 1 1 0 0 0)">{inner}</g>'
+            ras = ras.transpose(Image.TRANSPOSE)
+            bw, bh = bh, bw
+        elif how == "transverse":      # across the other diagonal
+            inner = f'<g transform="matrix(0 -1 -1 0 {bh:.3f} {bw:.3f})">{inner}</g>'
+            ras = ras.transpose(Image.TRANSVERSE)
+            bw, bh = bh, bw
         if ras.size != (px_w, px_h):
             ras = ras.resize((px_w, px_h), Image.LANCZOS)
         sx, sy = cw / bw, ch / bh
@@ -3091,32 +3485,70 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
             except Exception:
                 return 0.0, 0.0, 999.0
 
+        # ONE copy is sent for a picture (user: "do not send them all to be
+        # rewritten, just send the best and recreate them on the sheet"): the
+        # drawing of the group's first copy is tried on every copy and kept
+        # when it fits them all. LETTERING is different: the reader picks
+        # the face per copy and gets it wrong on some (a sans STAND, a serif
+        # AWAY — the fit cannot tell, serifs are thin), so a typeset group,
+        # or one whose type was refused, gets the verified rule: up to 3
+        # copies drawn, the best on its own scan kept, type preferred.
         cands = {}
-        best, best_score, best_how = None, -1e9, ""
-        for idx, how in g[:3]:
+        best, best_how, best_key, idx_b = None, "", -1e9, None
+        order = list(range(len(g)))
+        lettering = False
+        for n_try, pick in enumerate(order[:3]):
+            i_c, how_c = g[pick]
             if progress:
                 progress(step, n_draw)
             step += 1
-            drawn = _draw_best(boxes[idx])
+            # lettering = the reader set words or refused them on this
+            # copy, even when the quality check then kept another drawing
+            t0 = st.get("text", 0) + st.get("text_fallback", 0)
+            drawn = _draw_best(boxes[i_c])
             if drawn is None:
                 return None
-            cands[idx] = (drawn, how)
-            sc = _score(drawn[0], boxes[idx])[0]
-            if drawn[2] == "text":
-                # clean type beats a trace of halftone lettering when it
-                # passed its own check (the group then all reads the same)
-                sc += 0.25
-            if sc > best_score:
-                best, best_score, best_how = drawn, sc, how
-        rel = {"": {"": "", "turn": "turn", "mirror": "mirror"},
-               "turn": {"": "turn", "turn": "", "mirror": "mirror"},
-               "mirror": {"": "mirror", "turn": "mirror", "mirror": ""}}
+            read_words = st.get("text", 0) + st.get("text_fallback", 0) > t0
+            cands[i_c] = (drawn, how_c)
+            if n_try == 0:
+                lettering = drawn[2] == "text" or read_words
+            if lettering:
+                key = _score(drawn[0], boxes[i_c])[0] + \
+                    (0.25 if drawn[2] == "text" else 0.0)
+                if key > best_key:
+                    best, best_how, best_key, idx_b = drawn, how_c, key, i_c
+                continue
+            fits = []
+            for idx, how in g:
+                try:
+                    own, _inner, _ras, _sx, _sy = _fit(
+                        drawn, boxes[idx], relative_orient(how_c, how))
+                    fits.append(_score(own, boxes[idx])[1])
+                except Exception:
+                    fits.append(0.0)
+            mean_iou = float(np.mean(fits)) if fits else 0.0
+            st.setdefault("group_fit", []).append(round(mean_iou, 3))
+            if mean_iou > best_key:
+                best, best_how, best_key, idx_b = drawn, how_c, mean_iou, i_c
+            if mean_iou >= 0.85:
+                break
+        st["copy_draws"] = st.get("copy_draws", 0) + len(cands)
         reused = 0
+        col_b = ink_colour(rgba, boxes[idx_b], _own)
         for idx, how in g:
             # the best drawing turned/mirrored from ITS orientation to this one's
-            t = rel[best_how][how] if best_how in rel and how in rel[best_how] else ""
-            own, _inner, _ras, _sx, _sy = _fit(best, boxes[idx], t)
-            _sc, iou, col = _score(own, boxes[idx])
+            t = relative_orient(best_how, how)
+            use = best
+            if t is None:
+                iou, col = 0.0, 999.0
+            else:
+                if idx != idx_b and float(np.abs(
+                        ink_colour(rgba, boxes[idx], _own) - col_b).sum()) > 90:
+                    # same design, other colour: the drawing in THIS copy's
+                    # inks, sampled from its own scan
+                    use = _recolour(best, boxes[idx], t) or best
+                own, _inner, _ras, _sx, _sy = _fit(use, boxes[idx], t)
+                _sc, iou, col = _score(own, boxes[idx])
             # never swap in a different design: the best drawing must sit on
             # THIS copy's scan as well as a drawing should (else its own)
             # a typeset word is accepted at the text sweep's own level (the
@@ -3125,7 +3557,7 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
             need_iou, max_col = (0.65, 110) if best[2] == "text" else (0.75, 90)
             if best is not None and iou >= need_iou and col <= max_col:
                 is_self = cands.get(idx, (None,))[0] is best
-                _place(best, boxes[idx], best[2] if is_self else "copy", how=t)
+                _place(use, boxes[idx], best[2] if is_self else "copy", how=t)
                 if not is_self:
                     reused += 1
             else:
@@ -3139,7 +3571,7 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
                         return None
                 _place(drawn, boxes[idx], drawn[2])
             done.add(idx)
-        step += max(0, len(g) - 3)
+        step += max(0, len(g) - len(cands))
         st["copy_groups"] += 1
         st["copies"] += reused
     try:

@@ -109,7 +109,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.25.0"
+APP_VERSION = "2.25.1"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -5375,12 +5375,14 @@ class App:
                               variable=self.decal_reuse_var)
         _rc.grid(row=r, sticky=W); r += 1
         self._tip(_rc, "A decal printed several times on a sheet (four "
-                       "banners, ten DANGER!s) is recognised as copies — "
-                       "straight, turned or mirrored. A few copies are "
-                       "redrawn, the one that matches its scan best is "
-                       "placed at every copy's spot and size, so all copies "
-                       "come out equally good — and the vision model or "
-                       "Recraft is paid for 3 per group, not every copy. "
+                       "banners, ten cobras) is recognised as copies — "
+                       "turned, on its side, mirrored, even in another "
+                       "colour, or printed in two halves. A picture is sent "
+                       "to the vision model or Recraft ONCE; its drawing is "
+                       "placed at every copy's spot and size (recoloured "
+                       "for a copy in another colour), so all copies come "
+                       "out the same. Lettering reads up to 3 copies and "
+                       "keeps the best (one read can pick the wrong face). "
                        "Every placement is checked against that copy's own "
                        "scan first, so a look-alike different word is never "
                        "swapped in.")

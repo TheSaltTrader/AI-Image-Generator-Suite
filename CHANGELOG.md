@@ -1,5 +1,21 @@
 # Changelog — AI Image Generator Suite
 
+## v2.25.1 — 2026-10-03
+- **Vision redraw works again.** In 2.25.0 every vision-model redraw
+  failed ("unexpected keyword argument 'betas'") and fell back to the
+  plain trace — the answer cache sent the request to the wrong endpoint.
+  Fixed.
+- **One drawing per design.** A picture printed several times is sent
+  once and that drawing is placed on all the copies, like the original
+  sheet. Copies are also found when turned on their side or flipped any
+  way, and in another colour: each colour printed twice or more gets its
+  own drawing, a colour printed once is recoloured from its own scan. A
+  decal printed in two halves is joined again when it matches a whole one.
+  The Cobra sheet: 17 drawings before, 4 now (red cobra, white cobra, the
+  text, one edge piece). Lettering keeps the verified rule (up to 3 copies
+  read, the best kept): the face is judged per copy and one read can pick
+  the wrong one — the whale sheets still come out exactly as verified.
+
 ## v2.25.0 — 2026-10-03
 - **Reruns are free.** Every answer from Claude and Recraft is remembered
   (switch "Remember paid answers", on). Redrawing a decal again — a rerun,
