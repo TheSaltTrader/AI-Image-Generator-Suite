@@ -1871,7 +1871,13 @@ check("photo handling is automatic: only the sheet width is an input, plus the r
 try:
     import numpy as _np6
     # a "photo": dark table, a white sheet lying slightly askew, a red decal on it
-    _ph = _np6.full((400, 500, 3), (70, 40, 30), _np6.uint8)
+    # (a real table: sensor noise and uneven light — a perfectly flat
+    # fill is a digital backdrop, not a photo)
+    _rng6 = _np6.random.default_rng(6)
+    _ph = (_np6.full((400, 500, 3), (70, 40, 30), _np6.float32)
+           + _np6.linspace(-15, 15, 500)[None, :, None]
+           + _rng6.normal(0, 6, (400, 500, 3)))
+    _ph = _np6.clip(_ph, 0, 255).astype(_np6.uint8)
     _sheet_img = app.Image.fromarray(_ph, "RGB")
     _d = app.ImageDraw.Draw(_sheet_img)
     _quad = [(90, 60), (420, 75), (410, 345), (80, 330)]       # TL TR BR BL
@@ -1925,6 +1931,52 @@ try:
     check("the photographed sheet comes out white, its decal still red",
           _a5[5, 5].min() >= 236 and _a5[-6, -6].min() >= 236
           and ((_a5[..., 0] > 150) & (_a5[..., 1] < 80)).sum() > 5000, (_a5[5, 5], _a5[-6, -6]))
+    # digital art on a flat backdrop (a logo on black, a sheet rendered on
+    # navy) is no photo: no crop, no "lighting flattened", no colour blow-up
+    _lg = app.Image.new("RGB", (400, 200), (0, 0, 0))
+    _ld6 = app.ImageDraw.Draw(_lg)
+    _ld6.ellipse([-40, 40, 200, 260], fill=(230, 10, 10))        # runs off the edges
+    _ld6.rectangle([250, 60, 330, 140], fill=(255, 255, 255))
+    check("a logo on flat black is digital art, not a photo",
+          not _dec.looks_like_photo(_lg) and _dec.solid_backdrop(_lg) == (0, 0, 0))
+    _r6 = _np6.asarray(_dec.process_image(_lg, **dict(_dec.recipe_opts(), native_dpi=300,
+                                                      target_dpi=300))["rgba"])
+    check("…its black is lifted, its red stays red (no colour balance against black), its white stays",
+          _r6[10, 390, 3] == 0 and _r6[150, 60, 3] == 255
+          and _r6[150, 60, 0] > 200 and _r6[150, 60, 1] < 40
+          and _r6[100, 290, 3] == 255 and _r6[100, 290, :3].min() > 240,
+          (_r6[10, 390].tolist(), _r6[150, 60].tolist(), _r6[100, 290].tolist()))
+    _nv = app.Image.new("RGB", (400, 200), (32, 46, 64))
+    _nd6 = app.ImageDraw.Draw(_nv)
+    _nd6.rectangle([60, 40, 200, 160], outline=(250, 250, 250), width=3)
+    _nd6.rectangle([240, 40, 340, 160], fill=(200, 30, 40))
+    _rn = _np6.asarray(_dec.process_image(_nv, **dict(_dec.recipe_opts(), native_dpi=300,
+                                                      target_dpi=300))["rgba"])
+    check("on a navy backdrop a thin white outline stays (white is background only on white)",
+          _rn[41, 130, 3] == 255 and _rn[41, 130, :3].min() > 230 and _rn[100, 130, 3] == 0,
+          (_rn[41, 130].tolist(), _rn[100, 130].tolist()))
+    # a PNG on a TRANSPARENT background: the hidden colours under its clear
+    # pixels never reach the pipeline
+    _tp = app.Image.new("RGBA", (300, 150), (0, 0, 0, 0))
+    _ta = _np6.array(_tp)
+    _ta[..., 1] = _rng6.integers(0, 255, _ta.shape[:2])         # junk under the clear
+    _tp = app.Image.fromarray(_ta, "RGBA")
+    _td6 = app.ImageDraw.Draw(_tp)
+    _td6.ellipse([20, 20, 130, 130], fill=(220, 20, 30, 255))
+    _td6.rectangle([160, 30, 280, 120], fill=(255, 255, 255, 255))
+    _td6.rectangle([200, 60, 240, 90], fill=(0, 0, 0, 255))
+    _tdir = Path(tempfile.mkdtemp())
+    _tp.save(_tdir / "clear.png")
+    _tsrc = list(_dec.iter_sources(_tdir / "clear.png"))[0][1]
+    _rt = _np6.asarray(_dec.process_image(_tsrc, **dict(_dec.recipe_opts(), native_dpi=300,
+                                                        target_dpi=300))["rgba"])
+    check("a transparent background is detected and comes out clear; red, white and black kept",
+          _dec.has_transparency(_tp) and not _dec.looks_like_photo(_tsrc)
+          and _rt[5, 5, 3] == 0 and _rt[140, 150, 3] == 0
+          and _rt[75, 75, 3] == 255 and _rt[75, 75, 0] > 200
+          and _rt[40, 170, 3] == 255 and _rt[40, 170, :3].min() > 240
+          and _rt[75, 220, 3] == 255 and _rt[75, 220, :3].max() < 30,
+          (_rt[5, 5].tolist(), _rt[75, 75].tolist(), _rt[40, 170].tolist(), _rt[75, 220].tolist()))
     # the resolution comes from the file: a PDF page's drawn size, an
     # image's DPI tag (72/96 = unknown)
     import pymupdf as _mu, io as _io6

@@ -1,5 +1,21 @@
 # Changelog — AI Image Generator Suite
 
+## v2.25.3 — 2026-10-05
+- **Pictures with a transparent background work.** A PNG on a clear
+  background was read without its transparency: the hidden colours under
+  the clear pixels (black, streaks) became a fake backdrop, and the winged
+  cobra came out with blown colours. The transparency is now detected and
+  the clear area stays clear.
+- **Digital art on a flat backdrop is no longer taken for a photo.** A
+  logo on black or a sheet rendered on navy (the HasLab Rattler sheets)
+  went through the photo steps — cropped, "lighting flattened", colours
+  shifted to cyan and magenta, the whole sheet one decal. Now the backdrop
+  is lifted and every sticker found (151 on Rattler 2).
+- **White stays white unless the background is white.** On a navy, black
+  or tinted backdrop, white ink and white outlines are never removed.
+- A dark backdrop is never colour-balanced against, and a uniform strip
+  along an edge (a white bar above a screenshot) is dropped.
+
 ## v2.25.2 — 2026-10-03
 - **A worn colour is drawn from the clean one.** When the same design is
   printed in two colours (red cobras and white cobras), it is drawn once

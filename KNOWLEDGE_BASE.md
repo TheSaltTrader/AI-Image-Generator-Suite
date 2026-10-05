@@ -1003,6 +1003,26 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Transparent PNGs, digital backdrops, white rule (v2.25.3).** User: the
+  winged cobra "giving me weird results"; "Add a detection when the image
+  is on a transparent background"; Rattler "white outlines were removed,
+  the background color was not white". ROOT CAUSE: iter_sources did
+  im.convert("RGB") on an RGBA PNG -> the RGB hidden under alpha=0 (black
+  + streaks) became a "backdrop"; looks_like_photo (border dark) -> photo
+  path (crop, normalize to white); white_balance against black blew red to
+  magenta/yellow. Fixes: has_transparency (>= 1% alpha<16) ->
+  flatten_transparency onto the KEY_COLOURS entry farthest (1st
+  percentile) from the art; solid_backdrop (>= 35% of the border within 6
+  of one exact colour = digital fill; sensor noise never repeats a value)
+  -> not a photo; white_balance skipped for carriers with mean < 150;
+  process_image uses solid_backdrop's exact colour for dark carriers;
+  fill_holes skipped on dark carriers (it painted the black backdrop
+  white); edge_strips (uniform full-length edge lines) cleared; near-white
+  (min > 215, chroma < 30) always kept when the carrier mean < 200. The
+  Rattler sheets were photo-path victims too (old: 99.8% opaque, 1
+  decal; new 151 / 36 decals). Sticker bodies on Rattler = backdrop navy
+  (distance 3-26): clear, correct. UI photo test now has noise + lighting
+  gradient (a flat synthetic table is a digital fill). Gate 0/118.
 - **Cross-colour recolour (v2.25.2).** User: "the white icon is the same
   as the red, but its quality is bad … take the best red icon and color
   its white version". find_copies step 5 (cross_colour=True): groups of

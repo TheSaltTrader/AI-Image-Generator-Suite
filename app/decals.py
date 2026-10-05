@@ -88,6 +88,62 @@ def to_working_dpi(img, dpi, working=WORKING_DPI):
     return img.resize(size, Image.LANCZOS), working
 
 
+# flat dark colours a transparent background is filled with (the one
+# farthest from every colour of the art is used)
+KEY_COLOURS = [(0, 0, 0), (0, 0, 110), (0, 90, 0), (90, 0, 90), (70, 45, 0),
+               (0, 70, 70)]
+
+
+def has_transparency(im, share=0.01):
+    """True when a picture really has a transparent background: an alpha
+    channel (or a transparent palette entry) with at least `share` of the
+    pixels fully clear."""
+    try:
+        if im.mode == "P" and "transparency" in im.info:
+            im = im.convert("RGBA")
+        if im.mode not in ("RGBA", "LA", "PA"):
+            return False
+        a = np.asarray(im.getchannel("A"))
+        return float((a < 16).mean()) >= share
+    except Exception:
+        return False
+
+
+def flatten_transparency(im):
+    """A picture on a TRANSPARENT background as RGB on a flat dark key
+    colour — the one farthest from the art's own colours. Read as plain RGB,
+    a PNG's clear pixels showed whatever colour hides under them (often
+    black, sometimes junk), which the app took for a backdrop, a table or
+    ink. On a flat dark key every later step sees digital art on a backdrop
+    (not a photo, no colour balance, the key lifted to transparent; white
+    ink kept). Returns (rgb image, key colour)."""
+    rgba = im.convert("RGBA")
+    arr = np.asarray(rgba)
+    ink = arr[..., :3][arr[..., 3] > 200].astype(np.int32)
+    if len(ink) > 200000:
+        ink = ink[np.linspace(0, len(ink) - 1, 200000).astype(int)]
+    best, best_d = KEY_COLOURS[0], -1.0
+    for k in KEY_COLOURS:
+        if len(ink) == 0:
+            break
+        d = np.abs(ink - np.array(k)).sum(1)
+        # the colour's distance from (nearly) all the art: 1st percentile
+        dk = float(np.percentile(d, 1))
+        if dk > best_d:
+            best, best_d = k, dk
+    bg = Image.new("RGBA", rgba.size, best + (255,))
+    bg.alpha_composite(rgba)
+    return bg.convert("RGB"), best
+
+
+def _rgb_source(im):
+    """A source picture as RGB — a transparent background flattened onto a
+    key colour (see flatten_transparency)."""
+    if has_transparency(im):
+        return flatten_transparency(im)[0]
+    return im.convert("RGB")
+
+
 def iter_sources(path):
     """Yield (label, PIL.Image RGB, dpi) for every page/image in a source
     file — the resolution comes from the FILE, never from a setting: a PDF
@@ -110,7 +166,7 @@ def iter_sources(path):
                 best = max(imgs, key=lambda im: doc.extract_image(im[0])["width"]
                            * doc.extract_image(im[0])["height"])
                 info = doc.extract_image(best[0])
-                got = Image.open(io.BytesIO(info["image"])).convert("RGB")
+                got = _rgb_source(Image.open(io.BytesIO(info["image"])))
                 try:
                     rects = page.get_image_rects(best[0])
                     if rects and rects[0].width > 0:
@@ -133,7 +189,7 @@ def iter_sources(path):
                 dpi = int(round(float(d[0])))
         except Exception:
             dpi = None
-        yield path.stem, im.convert("RGB"), dpi
+        yield path.stem, _rgb_source(im), dpi
 
 
 def parse_pages(text):
@@ -170,10 +226,61 @@ def iter_source_images(path):
 
 
 # ---------------------------------------------------------------- photos
+def solid_backdrop(img, border=0.06, share=0.35):
+    """The backdrop colour when the picture is DIGITAL art on a flat fill (a
+    logo on black, a sheet rendered on navy), else None: at least `share`
+    of the border is one exact colour (within 6). A photographed table or
+    cloth never repeats one value like that — sensor noise and shading —
+    while a file's fill does, even where the art runs off the edges (the
+    winged cobra: 42% of its border is pure black)."""
+    a = np.asarray(img.convert("RGB")).astype(np.int32)
+    h, w = a.shape[:2]
+    bw = max(2, int(min(h, w) * border))
+    frame = np.concatenate([
+        a[:bw].reshape(-1, 3), a[-bw:].reshape(-1, 3),
+        a[:, :bw].reshape(-1, 3), a[:, -bw:].reshape(-1, 3)])
+    q = frame // 8
+    keys, counts = np.unique(q, axis=0, return_counts=True)
+    mode = frame[(q == keys[counts.argmax()]).all(1)].mean(0)
+    if (np.abs(frame - mode).max(1) <= 6).mean() < share:
+        return None
+    return tuple(int(round(v)) for v in mode)
+
+
+def edge_strips(rgb, share=0.98):
+    """Boolean mask of the uniform strips along the picture's edges: rows /
+    columns, from each edge inward, that are one colour (within 6) across
+    `share` of their length — a screenshot's white bar, a crop's frame. No
+    art spans a whole edge in one flat colour."""
+    a = np.asarray(rgb).astype(np.int32)
+    h, w = a.shape[:2]
+    m = np.zeros((h, w), bool)
+
+    def flat(line):
+        med = np.median(line, axis=0)
+        return (np.abs(line - med).max(1) <= 6).mean() >= share
+    for rng, get, put in (
+            (range(h), lambda k: a[k], lambda k: m.__setitem__((k, slice(None)), True)),
+            (range(h - 1, -1, -1), lambda k: a[k], lambda k: m.__setitem__((k, slice(None)), True)),
+            (range(w), lambda k: a[:, k], lambda k: m.__setitem__((slice(None), k), True)),
+            (range(w - 1, -1, -1), lambda k: a[:, k], lambda k: m.__setitem__((slice(None), k), True))):
+        n = 0
+        for k in rng:
+            if n > 0.1 * max(h, w) or not flat(get(k)):
+                break
+            put(k)
+            n += 1
+    return m
+
+
 def looks_like_photo(img):
     """True when the picture's border is NOT the sheet: a scan's border is
     the carrier/paper (bright, near-neutral); a photo's border is a table,
-    a cloth, a floor (dark or coloured)."""
+    a cloth, a floor (dark or coloured). A border of ONE flat colour is a
+    digital picture's backdrop, not a table (a logo on black was taken for
+    a photo: cropped, 'lighting flattened', colours blown)."""
+    if solid_backdrop(img) is not None:
+        return False
     c = detect_carrier(img)
     gray = sum(c) / 3.0
     chroma = max(c) - min(c)
@@ -697,6 +804,10 @@ def white_balance(img, carrier=None, amount=1.0):
     if carrier is None:
         carrier = detect_carrier(rgb)
     C = np.array(carrier, np.float32)
+    if float(C.mean()) < 150:
+        # a dark backdrop is not a tinted film: scaling every channel to
+        # make black "white" blew a red logo into magenta and yellow
+        return rgb
     C[C < 1] = 1
     target = float(C.mean())
     gain = 1.0 + amount * (target / C - 1.0)          # neutralise the tint
@@ -3770,6 +3881,12 @@ def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
     orig = _auto_orient(img).convert("RGB")
     if carrier is None:
         carrier = PHOTO_WHITE if photo else detect_carrier(orig)
+        if not photo and sum(carrier) / 3.0 < 90:
+            # a dark digital backdrop (or a transparent background filled
+            # with a dark key): its exact fill colour, not the border median
+            sb = solid_backdrop(orig)
+            if sb is not None:
+                carrier = sb
     if exact:
         cleaned = destripe(orig) if remove_lines else orig
     else:
@@ -3784,6 +3901,18 @@ def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
         # applied to the (possibly colour-processed) RGB — otherwise white-balance
         # erases the very tint the keyer uses to find the carrier film
         alpha = _carrier_alpha(np.asarray(orig), carrier, tol=tol)
+        # a uniform strip along an edge (a screenshot's white bar above a
+        # logo on black) is no art
+        strips = edge_strips(orig)
+        alpha = np.where(strips, 0, alpha).astype(np.uint8)
+        if sum(carrier) / 3.0 < 200:
+            # white is never background unless the background is white
+            # (user: "the background color was not white, so white should
+            # remain intact"): on a navy / black / tinted backdrop, white
+            # ink and white outlines stay whatever the key decided
+            o_ = np.asarray(orig).astype(np.int32)
+            white = (o_.min(2) > 215) & ((o_.max(2) - o_.min(2)) < 30)
+            alpha = np.where(white & ~strips, 255, alpha).astype(np.uint8)
         if is_neutral_carrier(carrier):
             # white paper: the faint grey shadows along the cut edges of
             # white stickers survive the distance key but are not art —
@@ -3797,7 +3926,10 @@ def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
             np.dstack([np.asarray(cleaned.convert("RGB")), alpha]), "RGBA")
         if tidy_matte:
             rgba = clean_matte(rgba)   # drop the faint carrier halo + speckle
-        if fill_holes:
+        if fill_holes and sum(carrier) / 3.0 >= 90:
+            # (not on a black / dark backdrop: what it shows through the
+            # art is backdrop, not white ink — the winged cobra's black
+            # came back as white)
             # on a white-keyed sheet, a clear region shut inside a decal
             # was white ink/backing: make it white again (down to 0.3 mm —
             # the dashes on a gauge; letter counters are told apart by
