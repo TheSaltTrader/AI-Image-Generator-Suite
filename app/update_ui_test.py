@@ -703,12 +703,15 @@ try:
           and _geo_st.get("geometric") == 2
           and "<path" in _gout["items"][0]["svg"], (_calls, _geo_st))
     _orig_geo = _dec.geometric_svg
+    _orig_flat = _dec.flat_colour_art
     _dec.geometric_svg = lambda *a, **k: None
+    _dec.flat_colour_art = lambda *a, **k: None       # flat shapes: else the smooth trace
     try:
         _out = _dec.redraw_sheet(_sheet, _fake_refine, native_dpi=100,
                                  size_scale=1.5, target_dpi=100)
     finally:
         _dec.geometric_svg = _orig_geo
+        _dec.flat_colour_art = _orig_flat
     check("redraw_sheet redraws every decal once",
           len(_calls) == 2 and len(_out["items"]) == 2, (_calls, len(_out["items"])))
     # thin WHITE ink on its own (a white label on the film) must survive the
@@ -1955,6 +1958,18 @@ try:
     check("on a navy backdrop a thin white outline stays (white is background only on white)",
           _rn[41, 130, 3] == 255 and _rn[41, 130, :3].min() > 230 and _rn[100, 130, 3] == 0,
           (_rn[41, 130].tolist(), _rn[100, 130].tolist()))
+    # a digital sheet's die-cut line (a thin teal ring round each sticker)
+    # is no print: it goes with the backdrop; the sticker's ink stays
+    _cs6 = app.Image.new("RGB", (500, 260), (32, 46, 64))
+    _cd6 = app.ImageDraw.Draw(_cs6)
+    for _x0 in (30, 270):
+        _cd6.rounded_rectangle([_x0, 30, _x0 + 200, 230], radius=30, outline=(20, 110, 140), width=3)
+        _cd6.rectangle([_x0 + 30, 60, _x0 + 170, 200], fill=(180, 10, 40))
+    _rc6 = _np6.asarray(_dec.process_image(_cs6, **dict(_dec.recipe_opts(), native_dpi=300,
+                                                        target_dpi=300))["rgba"])
+    check("a digital sheet's thin cut lines are removed, the sticker ink kept",
+          _rc6[31, 130, 3] == 0 and _rc6[130, 31, 3] == 0 and _rc6[130, 130, 3] == 255,
+          (_rc6[31, 130].tolist(), _rc6[130, 130].tolist()))
     # a PNG on a TRANSPARENT background: the hidden colours under its clear
     # pixels never reach the pipeline
     _tp = app.Image.new("RGBA", (300, 150), (0, 0, 0, 0))
@@ -2226,7 +2241,11 @@ try:
     app.recraft_vectorize.get_key = lambda: "fal-test-key-not-real"
     app.recraft_vectorize.make_vector_fn = _fake_mk
     _orig_geo12 = app.decals.geometric_svg
+    _orig_flat12 = app.decals.flat_colour_art
+    _orig_sb12 = app.decals.solid_backdrop
     app.decals.geometric_svg = lambda *a, **k: None   # rectangles: else no call
+    app.decals.flat_colour_art = lambda *a, **k: None  # flat shapes: else the smooth trace
+    app.decals.solid_backdrop = lambda *a, **k: None   # flat test sheet: else the detailed trace
     try:
         _n1 = len(ui.session)
         ui._redraw_decals()
@@ -2239,6 +2258,8 @@ try:
         app.recraft_vectorize.get_key = _orig_gk
         app.recraft_vectorize.make_vector_fn = _orig_mk
         app.decals.geometric_svg = _orig_geo12
+        app.decals.flat_colour_art = _orig_flat12
+        app.decals.solid_backdrop = _orig_sb12
     check("a Recraft run calls the service per decal with the key and finishes "
           "(cost in red, Recraft named in the note)",
           _calls_rc and _calls_rc[0][0] == "fal-test-key-not-real"
@@ -2472,13 +2493,26 @@ try:
     ui._set_decal_buttons(False)
     check("the Decals Cancel is live only while a job runs",
           "disabled" not in ui.decal_cancel_btn.state() and "disabled" in ui.decal_btn.state())
+    check("Redraw and Generate have their own Cancel right under them, live while a job runs",
+          "disabled" not in ui.decal_vec_cancel_btn.state()
+          and "disabled" not in ui.decal_gen_cancel_btn.state()
+          and int(ui.decal_vec_cancel_btn.grid_info()["row"]) == int(ui.decal_vec_btn.grid_info()["row"]) + 1
+          and int(ui.decal_gen_cancel_btn.grid_info()["row"]) == int(ui.decal_gen_btn.grid_info()["row"]) + 1)
     ui._cancel_decals()
     check("Cancel raises the shared flag and says so",
           app.CANCEL.is_set() and "ancel" in ui.decal_status_var.get())
     app.CANCEL.clear()
     ui._decals_busy = False
     ui._set_decal_buttons(True)
-    check("…and goes grey again when the job is over", "disabled" in ui.decal_cancel_btn.state())
+    check("…and goes grey again when the job is over",
+          "disabled" in ui.decal_cancel_btn.state()
+          and "disabled" in ui.decal_vec_cancel_btn.state()
+          and "disabled" in ui.decal_gen_cancel_btn.state())
+    ui.busy = True                      # Generate → SVG runs on the image generator
+    _gl = "disabled" not in ui.decal_gen_cancel_btn.state()
+    ui.busy = False
+    check("…the Generate Cancel also follows the image generator, which Generate → SVG uses",
+          _gl and "disabled" in ui.decal_gen_cancel_btn.state())
 except Exception as _e:
     import traceback
     traceback.print_exc()

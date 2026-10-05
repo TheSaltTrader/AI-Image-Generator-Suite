@@ -109,7 +109,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.25.3"
+APP_VERSION = "2.26.0"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -3556,6 +3556,25 @@ class TabStrip(ttk.Frame):
 
 
 class App:
+    # the image generator's busy flag; setting it also wakes or greys the
+    # Decals tab's "Cancel the generation" (Generate → SVG runs on it)
+    @property
+    def busy(self):
+        return getattr(self, "_busy_flag", False)
+
+    @busy.setter
+    def busy(self, value):
+        self._busy_flag = bool(value)
+        if threading.current_thread() is not threading.main_thread():
+            return                      # Tk only from the UI thread
+        b = getattr(self, "decal_gen_cancel_btn", None)
+        if b is not None:
+            try:
+                live = self._busy_flag or getattr(self, "_decals_busy", False)
+                b.state(["!disabled"] if live else ["disabled"])
+            except Exception:
+                pass
+
     def __init__(self, root):
         self.root = root
         # the window carries the app's taskbar identity itself, so the
@@ -5703,7 +5722,14 @@ class App:
         self.decal_vec_btn = ttk.Button(
             left, text="🖊 Redraw to vector (SVG)", style="Go.TButton",
             command=self._redraw_decals)
-        self.decal_vec_btn.grid(row=r, sticky="ew", pady=(0, 4)); r += 1
+        self.decal_vec_btn.grid(row=r, sticky="ew", pady=(0, 2)); r += 1
+        self.decal_vec_cancel_btn = ttk.Button(left, text="✕ Cancel the redraw",
+                                               command=self._cancel_generation)
+        self.decal_vec_cancel_btn.grid(row=r, sticky="ew", pady=(0, 4)); r += 1
+        self.decal_vec_cancel_btn.state(["disabled"])
+        self._tip(self.decal_vec_cancel_btn,
+                  "Stops the running redraw at once (a model call in flight is "
+                  "abandoned). Decals already finished stay saved.")
         self._tip(self.decal_vec_btn,
                   "Redraws the queued scan(s) decal by decal with the chosen "
                   "method. For each sheet it writes one SVG + PNG of the whole "
@@ -5724,7 +5750,14 @@ class App:
         self.decal_gen_btn = ttk.Button(left, text="🖊 Generate → SVG",
                                         style="Go.TButton",
                                         command=self._generate_decal)
-        self.decal_gen_btn.grid(row=r, sticky="ew", pady=(0, 6)); r += 1
+        self.decal_gen_btn.grid(row=r, sticky="ew", pady=(0, 2)); r += 1
+        self.decal_gen_cancel_btn = ttk.Button(left, text="✕ Cancel the generation",
+                                               command=self._cancel_generation)
+        self.decal_gen_cancel_btn.grid(row=r, sticky="ew", pady=(0, 6)); r += 1
+        self.decal_gen_cancel_btn.state(["disabled"])
+        self._tip(self.decal_gen_cancel_btn,
+                  "Stops the running generation at once (the engine step is "
+                  "interrupted).")
         ttk.Button(left, text="📁 Open decals output folder",
                    command=lambda: os.startfile(DECALS_OUT)
                    if DECALS_OUT.exists() else
@@ -6575,6 +6608,7 @@ class App:
             vmodel_fix = vector_redraw.DEFAULT_MODEL
         label = {"text": "set in type", "geometric": "straight lines",
                  "vector": "Recraft", "trace": "a clean trace",
+                 "smooth": "a smooth trace", "detail": "a detailed trace",
                  "fill": "spot filled", "clear": "spot cleared"}[action]
 
         def work():
@@ -6753,12 +6787,15 @@ class App:
                     b.state(["!disabled"] if enabled else ["disabled"])
                 except Exception:
                     pass
-        c = getattr(self, "decal_cancel_btn", None)
-        if c is not None:
-            try:
-                c.state(["disabled"] if enabled else ["!disabled"])
-            except Exception:
-                pass
+        # every Cancel (the job's own one under Redraw and Generate too)
+        for name in ("decal_cancel_btn", "decal_vec_cancel_btn",
+                     "decal_gen_cancel_btn"):
+            c = getattr(self, name, None)
+            if c is not None:
+                try:
+                    c.state(["disabled"] if enabled else ["!disabled"])
+                except Exception:
+                    pass
 
     def _cancel_decals(self):
         """✕ on the Decals tab: raise the shared cancel flag (every worker
@@ -7039,9 +7076,14 @@ class App:
                         count = len(decals.segment_decals(res["rgba"], gap=gap))
                         if preview:
                             count = min(1, count)
+                        # digital artwork (a file's flat backdrop, a clear
+                        # background) — its stickers are traced from the clean
+                        # original, not re-imagined
+                        digital = (not photo and
+                                   decals.solid_backdrop(img) is not None)
                         pages.append(dict(src=src, label=label, src_dpi=src_dpi,
                                           carrier=carrier, res=res, gap=gap,
-                                          count=count))
+                                          count=count, digital=digital))
                         if preview and count:
                             break
                     if err or (preview and pages and pages[-1]["count"]):
@@ -7138,7 +7180,8 @@ class App:
                         gap=pg["gap"],
                         vector_fn=vector_fn, text_fn=text_fn,
                         limit=1 if preview else None,
-                        reuse_copies=reuse, stats=stats, judge_fn=judge_fn)
+                        reuse_copies=reuse, stats=stats, judge_fn=judge_fn,
+                        digital=pg.get("digital", False))
                     total_done = before + pg["count"]
                     if out is not None:
                         ui_q.put(("decal_progress",

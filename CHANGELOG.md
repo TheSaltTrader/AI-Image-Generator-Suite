@@ -1,5 +1,22 @@
 # Changelog — AI Image Generator Suite
 
+## v2.26.0 — 2026-10-05
+- **Smooth trace for flat-colour artwork** (on by default). A logo or
+  sticker of a few clean inks is traced from its own outline into smooth
+  curves: round edges stay round, sharp points stay sharp, the shape is
+  exact — and it costs nothing. The winged cobra's wings were drawn by the
+  vision model as straight facets and its head as a box; now they match
+  the original.
+- **Detailed trace for digital sheets** (on by default). A shaded sticker
+  on a digital sheet (the HasLab Rattler fangs, tusks and fur) is traced
+  from the clean original with all its colour layers, instead of being
+  simplified by an AI redraw.
+- **Die-cut lines removed.** The thin coloured ring drawn round each
+  sticker on a digital sheet (the Rattler's teal line) is not printed.
+- **Right-click in Compare:** "smooth trace" and "detailed trace" for one
+  decal.
+- **Cancel right under Redraw and under Generate → SVG.**
+
 ## v2.25.3 — 2026-10-05
 - **Pictures with a transparent background work.** A PNG on a clear
   background was read without its transparency: the hidden colours under

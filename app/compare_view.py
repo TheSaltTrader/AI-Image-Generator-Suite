@@ -287,6 +287,8 @@ class CompareWindow(tk.Toplevel):
         ("geometric", "Redraw this decal: straight lines (banners, flags)"),
         ("vector", "Redraw this decal: Recraft drawing"),
         ("trace", "Redraw this decal: clean trace of the scan"),
+        ("smooth", "Redraw this decal: smooth trace (rounded edges, sharp points)"),
+        ("detail", "Redraw this decal: detailed trace (keeps shading and fine detail)"),
         (None, None),
         ("fill", "Fill this spot (the colour around it)"),
         ("clear", "Make this spot clear (no ink)"),

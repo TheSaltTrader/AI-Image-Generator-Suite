@@ -618,6 +618,44 @@ check("a copy in another colour is recoloured from its own scan (blue stays blue
       and _a2[20 + 80, 220 + 150, 2] > 150 and _a2[20 + 80, 220 + 150, 0] < 90
       and _a2[20 + 80, 20 + 150, 0] > 150, (_g2, _st2, _a2[100, 370].tolist()))
 
+# flat-colour artwork (a logo): traced from its own outline into smooth
+# curves — a vision model drew the winged cobra's wings as straight facets
+_fl = Image.new("RGBA", (400, 240), (0, 0, 0, 0))
+_ID.Draw(_fl).ellipse([20, 20, 380, 220], fill=(240, 10, 10, 255))
+_ID.Draw(_fl).polygon([(200, 40), (230, 120), (170, 120)], fill=(0, 0, 0, 0))
+check("a flat-colour logo is recognised as such (one ink)",
+      _dec.flat_colour_art(_fl) is not None and len(_dec.flat_colour_art(_fl)) == 1)
+_hs = Image.new("RGBA", (400, 240), (0, 0, 0, 0))
+_hsa = np.array(_hs)
+_hsa[20:220, 20:380] = (220, 30, 40, 255)
+_hsa[20:220:3, 20:380:3, :3] = (250, 250, 250)                  # halftone dots
+_hsa[21:220:5, 22:380:4, :3] = (120, 20, 30)
+check("…a printed halftone scan is not",
+      _dec.flat_colour_art(Image.fromarray(_hsa, "RGBA")) is None)
+_fst = {}
+_fo = _dec.redraw_sheet(_fl, None, native_dpi=300, target_dpi=300, stats=_fst)
+_fsvg = _fo["items"][0]["svg"]
+_fr = np.asarray(_fo["rgba"].resize((400, 240)))
+_fa = np.asarray(_fl)
+_fiou = ((_fr[..., 3] > 128) & (_fa[..., 3] > 128)).sum() / max(1, ((_fr[..., 3] > 128) | (_fa[..., 3] > 128)).sum())
+check("…drawn by the smooth trace, free: curves (C), the shape exact, the hole kept",
+      _fo["items"][0]["source"] == "smooth" and " C" in _fsvg.replace("C", " C")
+      and _fiou > 0.97 and _fr[90, 200, 3] < 50, (_fo["items"][0]["source"], round(_fiou, 3)))
+
+# a shaded sticker on a DIGITAL sheet is traced as it is (every stroke
+# kept) — an AI redraw simplified the HasLab fangs' shading away
+_sh2 = np.zeros((200, 300, 4), np.uint8)
+for _x in range(20, 280):
+    _sh2[30:170, _x, :3] = (40 + _x // 2, 40 + _x // 2, 45 + _x // 2)   # a grey ramp
+_yy, _xx = np.mgrid[0:200, 0:300]
+_sh2[..., 3] = np.where(((_xx - 150) / 130.0) ** 2 + ((_yy - 100) / 70.0) ** 2 <= 1, 255, 0)
+_sh2[80:120, 100:200, :3] = (240, 240, 235)                            # a tusk
+_shi = Image.fromarray(_sh2, "RGBA")
+_dst = {}
+_dout = _dec.redraw_sheet(_shi, None, native_dpi=300, target_dpi=300, stats=_dst, digital=True)
+check("a shaded sticker on a digital sheet gets the detailed trace (no AI)",
+      _dout["items"][0]["source"] == "detail" and _dst.get("detail") == 1, _dst)
+
 print("the key store")
 t = "AIImageGeneratorSuite/_test_vr"
 check("write/read/delete round trip in the Credential Manager",
@@ -712,7 +750,7 @@ _stq = {}
 _oq = _dq.redraw_sheet(_sq, None, native_dpi=300, target_dpi=300, stats=_stq,
                        judge_fn=_judge_low_geo, reuse_copies=False)
 check("the quality check retries a low-scored decal with another method and keeps the better one",
-      len(_seen) == 2 and _oq["items"][0]["source"] == "trace"
+      len(_seen) == 2 and _oq["items"][0]["source"] == "smooth"     # flat art: next in line
       and _stq.get("judge_improved") == 1, (_oq["items"][0]["source"], _stq))
 _seen2 = []
 _oq2 = _dq.redraw_sheet(_sq, None, native_dpi=300, target_dpi=300, stats={},

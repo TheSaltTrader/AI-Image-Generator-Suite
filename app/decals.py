@@ -273,6 +273,46 @@ def edge_strips(rgb, share=0.98):
     return m
 
 
+def cut_lines(rgba, width=7, share=0.5, tol=70):
+    """The die-cut lines drawn round each sticker on a DIGITAL sheet (the
+    HasLab sheets' thin teal ring): the hairlines (strokes thinner than
+    `width` px) of the one colour that makes at least `share` of all the
+    sheet's hairlines. Returns a boolean mask (empty when no colour
+    dominates — a sheet without cut lines). They are not print."""
+    a = np.asarray(rgba)
+    m = a[..., 3] > 128
+    if not m.any():
+        return np.zeros(m.shape, bool)
+    M = Image.fromarray((m * 255).astype(np.uint8))
+    opened = np.asarray(M.filter(ImageFilter.MinFilter(width))
+                        .filter(ImageFilter.MaxFilter(width))) > 0
+    thin = m & ~opened
+    px = a[..., :3][thin].astype(np.int32)
+    if len(px) < 500:
+        return np.zeros(m.shape, bool)
+    q = px // 32
+    keys, counts = np.unique(q, axis=0, return_counts=True)
+    c = px[(q == keys[counts.argmax()]).all(1)].mean(0)
+    near = np.abs(px - c).sum(1) < tol
+    if near.mean() < share or (c.max() - c.min()) < 40:
+        # no one colour rules the hairlines, or it is a grey / black / white
+        # (outlines of the art itself, not a cut line)
+        return np.zeros(m.shape, bool)
+    # a cut line's colour is (almost) absent from the art's solid parts; a
+    # logo's main ink is not (the winged cobra's thin red wing tips are
+    # hairlines too — they are art)
+    thick = a[..., :3][opened].astype(np.int32)
+    if len(thick) and (np.abs(thick - c).sum(1) < tol).mean() > 0.05:
+        return np.zeros(m.shape, bool)
+    out = np.zeros(m.shape, bool)
+    out[thin] = near
+    # the line's soft edge too: one pixel round it, same colour family
+    grow = np.asarray(Image.fromarray((out * 255).astype(np.uint8))
+                      .filter(ImageFilter.MaxFilter(3))) > 0
+    fam = np.abs(a[..., :3].astype(np.int32) - c).sum(2) < tol
+    return out | (grow & fam & ~opened)
+
+
 def looks_like_photo(img):
     """True when the picture's border is NOT the sheet: a scan's border is
     the carrier/paper (bright, near-neutral); a photo's border is a table,
@@ -1066,6 +1106,110 @@ def svg_set_physical_size(svg_text, w_in, h_in):
         new = re.sub(r'\sheight="[^"]*"', "", new, count=1)
     new = new[:-1] + size + ">"
     return svg_text[:m.start()] + new + svg_text[m.end():]
+
+
+def flat_colour_art(crop, max_colors=6, share=0.93, tol=60, noise=22.0):
+    """The palette of a decal that is FLAT-COLOUR artwork (a logo, a digital
+    sticker: a few clean inks, each one even), else None. A printed scan
+    (halftone dots, wear, paper texture) spreads its colours and fails."""
+    try:
+        import recraft_vectorize
+        pal = recraft_vectorize.decal_palette(crop)
+    except Exception:
+        pal = None
+    if pal is None or len(pal) == 0:
+        pal = palette_of(crop, colors=max_colors)
+    if pal is None or len(pal) == 0 or len(pal) > max_colors:
+        return None
+    a = np.asarray(crop.convert("RGBA"))
+    op = a[..., 3] >= 250
+    # inside the silhouette (edge blends are not inks)
+    op = np.asarray(Image.fromarray(op.astype(np.uint8) * 255)
+                    .filter(ImageFilter.MinFilter(5))) > 0
+    px = a[..., :3][op].astype(np.int32)
+    if len(px) < 200:
+        return None
+    if len(px) > 200000:
+        px = px[np.linspace(0, len(px) - 1, 200000).astype(int)]
+    P = np.asarray(pal, np.int32)
+    d = np.abs(px[:, None, :] - P[None, :, :]).sum(2).min(1)
+    if (d <= tol).mean() < share or float(d.mean()) > noise:
+        return None
+    if share > 0 and len(P) > 1:
+        # a logo's inks change only at its outlines; a halftone's change
+        # pixel to pixel all over (dots of a few exact colours look "flat")
+        rgb = a[..., :3].astype(np.int32)
+        lab = np.abs(rgb[:, :, None, :] - P[None, None, :, :]).sum(3).argmin(2)
+        diff = np.zeros(lab.shape, bool)
+        diff[:, 1:] |= lab[:, 1:] != lab[:, :-1]
+        diff[1:, :] |= lab[1:, :] != lab[:-1, :]
+        if float(diff[op].mean()) > 0.08:
+            return None
+    return np.asarray(pal, np.uint8)
+
+
+def smooth_trace_svg(crop, pal, w_in=None, h_in=None, long_px=3000):
+    """Flat-colour artwork traced into smooth curves from its OWN outlines:
+    every pixel to its nearest ink, each ink's mask enlarged and softened
+    (the pixel stair-steps of the edge go), the inks re-assigned, and the
+    result traced with curve fitting — round edges stay round, sharp points
+    stay sharp (a vision model drew the winged cobra's wings as straight
+    facets and its head as a box). Returns an SVG in crop-pixel
+    coordinates."""
+    import io as _io
+    import vtracer
+    a = np.asarray(crop.convert("RGBA"))
+    h, w = a.shape[:2]
+    P = np.asarray(pal, np.int32)
+    rgb = a[..., :3].astype(np.int32)
+    lab = np.abs(rgb[:, :, None, :] - P[None, None, :, :]).sum(3).argmin(2)
+    lab = np.where(a[..., 3] >= 128, lab, -1)
+    k = max(1.0, min(4.0, float(long_px) / max(w, h)))
+    W2, H2 = int(round(w * k)), int(round(h * k))
+    blur = max(1.0, 0.75 * k)
+    best = None
+    score = None
+    for c in range(-1, len(P)):
+        m = Image.fromarray(((lab == c) * 255).astype(np.uint8))
+        m = m.resize((W2, H2), Image.BILINEAR).filter(ImageFilter.GaussianBlur(blur))
+        v = np.asarray(m)
+        if best is None:
+            best, score = np.full(v.shape, c, np.int16), v
+        else:
+            better = v > score
+            best = np.where(better, c, best)
+            score = np.where(better, v, score)
+    out = np.full((H2, W2, 3), 255, np.uint8)
+    # transparent -> a colour no ink has (traced, then dropped)
+    key = np.array([255, 0, 255], np.uint8)
+    for c in range(len(P)):
+        if np.abs(P[c] - key.astype(np.int32)).sum() < 60:
+            key = np.array([0, 255, 0], np.uint8)
+    out[best == -1] = key
+    for c in range(len(P)):
+        out[best == c] = P[c]
+    buf = _io.BytesIO()
+    Image.fromarray(out, "RGB").save(buf, format="PNG")
+    svg = vtracer.convert_raw_image_to_svg(
+        buf.getvalue(), img_format="png", colormode="color",
+        hierarchical="cutout", mode="spline", filter_speckle=int(4 * k),
+        color_precision=8, layer_difference=8, corner_threshold=60,
+        length_threshold=4.0, splice_threshold=45, path_precision=2)
+    # drop the key's paths by DISTANCE: the tracer shifts colours a little
+    # (an exact match left magenta behind the whale sheet's orcas)
+    paths = []
+    for t in re.findall(r"<path\b[^>]*/>", svg):
+        fm = re.search(r'fill="#([0-9a-fA-F]{6})"', t)
+        if fm:
+            c = np.array([int(fm.group(1)[j:j + 2], 16) for j in (0, 2, 4)])
+            if np.abs(c - key.astype(np.int32)).sum() < 90:
+                continue
+        paths.append(t)
+    size = (f'width="{w_in:.4f}in" height="{h_in:.4f}in" '
+            if w_in and h_in else '')
+    return ('<svg xmlns="http://www.w3.org/2000/svg" version="1.1" ' + size +
+            f'viewBox="0 0 {w} {h}"><g transform="scale({1.0 / k:.6f})">'
+            + "".join(paths) + '</g></svg>')
 
 
 def svg_inner(svg_text):
@@ -3063,7 +3207,7 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
                  min_work_px=640, progress=None, cancelled=None, gap=16,
                  min_side=24, vector_fn=None, limit=None, text_fn=None,
                  reuse_copies=True, stats=None, judge_fn=None, judge_min=7,
-                 methods=None, boxes=None, dry_text=False):
+                 methods=None, boxes=None, dry_text=False, digital=False):
     """AI-redraw every decal on a cleaned sheet and rebuild the sheet as
     vector art at its correct physical size.
 
@@ -3117,7 +3261,8 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
         return {"svg": None, "rgba": None, "items": []}
     # methods allowed (a single decal redrawn "as type / straight lines /
     # Recraft / clean trace" from the Compare window); None = all, in order
-    allowed = set(methods) if methods else {"text", "geometric", "vector", "trace"}
+    allowed = set(methods) if methods else {"text", "geometric", "smooth",
+                                            "detail", "vector", "trace"}
     if limit:
         boxes = boxes[:int(limit)]
     W, H = rgba.size
@@ -3201,7 +3346,8 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
         x0, y0, x1, y1 = box
         crop = _own(box) if crop is None else crop
         cw, ch, w_in, h_in, px_w, px_h = _geom(box)
-        skip = tuple(skip) + tuple(m for m in ("text", "geometric", "vector")
+        skip = tuple(skip) + tuple(m for m in ("text", "geometric", "smooth", "detail",
+                                                "vector")
                                    if m not in allowed)
         if text_fn is not None and allow_text and "text" not in skip:
             import vector_redraw
@@ -3269,6 +3415,47 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
             import vector_redraw
             st["geometric"] = st.get("geometric", 0) + 1
             return geo, vector_redraw.render_svg(geo, px_w), "geometric"
+        if "smooth" not in skip:
+            # flat-colour artwork (a logo, a digital sticker): its own
+            # outlines traced into smooth curves — exact shape, no service
+            # (user: "the wings … appear jagged, the original were … more
+            # rounded")
+            try:
+                # asked for by hand (Compare's right-click): any decal of a
+                # few inks, flat or not
+                forced = methods is not None and set(methods) == {"smooth"}
+                fpal = (flat_colour_art(crop, max_colors=12, share=0.0, noise=1e9)
+                        if forced else flat_colour_art(crop))
+                if fpal is not None:
+                    import vector_redraw
+                    w_s = smooth_trace_svg(crop, fpal, w_in, h_in)
+                    st["smooth"] = st.get("smooth", 0) + 1
+                    return w_s, vector_redraw.render_svg(w_s, px_w), "smooth"
+            except Exception:
+                pass
+        if "detail" not in skip and (digital or (
+                methods is not None and set(methods) == {"detail"})):
+            # a shaded sticker on a DIGITAL sheet: the original is already
+            # clean, so it is traced as it is — many colour layers, every
+            # fang and fur stroke kept (user: "lots definition lost from the
+            # original fangs"); an AI redraw simplifies shading away
+            try:
+                import vector_redraw
+                k_d = max(1.0, min(3.0, 3000.0 / max(cw, ch)))
+                svg_d, _ras = vectorize(crop, target_px=int(round(cw * k_d)),
+                                        quantize_colors=0, presmooth=False,
+                                        drop_halo=False, hierarchical="cutout")
+                vb = re.search(r'viewBox="\s*[-\d.]+\s+[-\d.]+\s+([\d.]+)\s+([\d.]+)',
+                               svg_d)
+                bw_d, bh_d = (float(vb.group(1)), float(vb.group(2))) if vb else (cw, ch)
+                svg_c = ('<svg xmlns="http://www.w3.org/2000/svg" version="1.1" '
+                         f'width="{w_in:.4f}in" height="{h_in:.4f}in" '
+                         f'viewBox="0 0 {cw} {ch}"><g transform="scale({cw / bw_d:.6f} '
+                         f'{ch / bh_d:.6f})">{svg_inner(svg_d)}</g></svg>')
+                st["detail"] = st.get("detail", 0) + 1
+                return svg_c, vector_redraw.render_svg(svg_c, px_w), "detail"
+            except Exception:
+                pass
         if vector_fn is not None and "vector" not in skip:
             # a drawing from a description or a vectorizing service
             got = vector_fn(crop, palette_of(crop, colors=palette_colors),
@@ -3355,13 +3542,13 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
         st["judged"] = st.get("judged", 0) + 1
         best, best_score = drawn, score
         tried = {drawn[2]}
-        order = [m for m in ("text", "geometric", "vector", "trace")]
         for _attempt in range(2):
             if best_score >= judge_min:
                 break
-            skip = tuple(m for m in ("text", "geometric", "vector")
+            skip = tuple(m for m in ("text", "geometric", "smooth", "detail", "vector")
                          if m in tried)
-            if all(m in skip for m in ("text", "geometric", "vector")) and \
+            if all(m in skip for m in ("text", "geometric", "smooth", "detail",
+                                       "vector")) and \
                     "trace" in tried:
                 break
             alt = _draw_one(box, skip=skip)
@@ -3905,6 +4092,12 @@ def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
         # logo on black) is no art
         strips = edge_strips(orig)
         alpha = np.where(strips, 0, alpha).astype(np.uint8)
+        if not photo and solid_backdrop(orig) is not None:
+            # a digital sheet: the die-cut line round each sticker is no
+            # print (user: "image is ALSO using a blue background, it should
+            # be transparent")
+            cl = cut_lines(np.dstack([np.asarray(orig), alpha]))
+            alpha = np.where(cl, 0, alpha).astype(np.uint8)
         if sum(carrier) / 3.0 < 200:
             # white is never background unless the background is white
             # (user: "the background color was not white, so white should

@@ -1003,6 +1003,26 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Smooth / detailed trace, cut lines, Cancels (v2.26.0).** User: wings
+  "appear jagged … original … more rounded"; fangs "lots definition lost";
+  "blue background … should be transparent"; "always default to the best
+  settings and add a cancel under redraw and generate". flat_colour_art:
+  decal_palette <= 6 inks, >= 93% of interior pixels within 60, mean
+  distance <= 22, label-change density <= 0.08 (halftone dots of exact
+  colours look flat otherwise). smooth_trace_svg: per-ink masks enlarged
+  (long side ~3000), Gaussian-softened, re-assigned by max, vtracer spline
+  (corner 60); transparent = a key colour dropped BY DISTANCE (vtracer
+  writes UPPER-case hex; the lower-case exact match left magenta behind
+  the whale orcas — gate caught it). Method order: text, geometric,
+  smooth, detail (only digital=True: page has solid_backdrop and is no
+  photo; vectorize at up to 3x, quantize 0), vector, trace; judge retries
+  know both. cut_lines (digital only): hairlines (removed by a 7 px
+  opening) of the one colour making >= 50% of them, chroma >= 40, and
+  < 5% of the thick ink (else the winged cobra's thin red tips counted).
+  Cancel buttons decal_vec_cancel_btn / decal_gen_cancel_btn ->
+  _cancel_generation; App.busy is a property that greys/wakes the
+  Generate Cancel (UI thread only). Tests that exercise the AI/Recraft
+  path stub flat_colour_art / solid_backdrop. Gate 0/118.
 - **Transparent PNGs, digital backdrops, white rule (v2.25.3).** User: the
   winged cobra "giving me weird results"; "Add a detection when the image
   is on a transparent background"; Rattler "white outlines were removed,
