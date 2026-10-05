@@ -109,7 +109,7 @@ from variations_db import VariationsDB
 import tkinter.messagebox as _tk_messagebox
 from tkinter import simpledialog
 
-APP_VERSION = "2.26.0"
+APP_VERSION = "2.26.1"
 
 if getattr(sys, "frozen", False):
     # packaged onefile exe lives in the project root, next to Setup.exe
@@ -6143,7 +6143,9 @@ class App:
                         final_factor = size_scale * max(1.0, tgt_dpi / float(src_dpi))
                         o = dict(opts, native_dpi=src_dpi,
                                  target_dpi=(src_dpi if ai else tgt_dpi),
-                                 photo=photo, carrier=prep.get("paper"))
+                                 photo=photo, carrier=prep.get("paper"),
+                                 digital=(not photo and decals.is_digital_art(
+                                     img, from_scan=str(src).lower().endswith(".pdf"))))
                         res = decals.process_image(img, **o)
                         rgba = res["rgba"]
                         dpi_out = tgt_dpi
@@ -6648,7 +6650,8 @@ class App:
                         size_scale=meta["size_scale"], target_dpi=tgt_dpi,
                         boxes=[tuple(box)], methods={action},
                         vector_fn=fns.get("vector_fn"), text_fn=fns.get("text_fn"),
-                        reuse_copies=False, stats=stats)
+                        reuse_copies=False, stats=stats,
+                        digital=bool(meta.get("digital", False)))
                     if not out or not out["items"]:
                         ui_q.put(("decal_fixed", params, "The redraw gave nothing."))
                         return
@@ -7068,19 +7071,21 @@ class App:
                                     else decals.detect_carrier(img)))
                         if decals.is_neutral_carrier(carrier):
                             white_paper.append(label)
+                        # digital artwork (a file's flat backdrop and smooth
+                        # ink) — its stickers are traced from the clean
+                        # original, not re-imagined; a PDF scan must be
+                        # grain-free to count
+                        digital = (not photo and decals.is_digital_art(
+                            img, from_scan=str(src).lower().endswith(".pdf")))
                         o = dict(opts, native_dpi=src_dpi, target_dpi=src_dpi,
-                                 photo=photo, carrier=prep.get("paper"))
+                                 photo=photo, carrier=prep.get("paper"),
+                                 digital=digital)
                         res = decals.process_image(img, **o)
                         # at least the verified 16 px (1.35 mm) at 300 dpi
                         gap = decals.recipe_gap(gap_mm, src_dpi)
                         count = len(decals.segment_decals(res["rgba"], gap=gap))
                         if preview:
                             count = min(1, count)
-                        # digital artwork (a file's flat backdrop, a clear
-                        # background) — its stickers are traced from the clean
-                        # original, not re-imagined
-                        digital = (not photo and
-                                   decals.solid_backdrop(img) is not None)
                         pages.append(dict(src=src, label=label, src_dpi=src_dpi,
                                           carrier=carrier, res=res, gap=gap,
                                           count=count, digital=digital))
@@ -7239,6 +7244,7 @@ class App:
                         (base / "decals.json").write_text(json.dumps({
                             "W": Wp, "H": Hp, "src_dpi": src_dpi,
                             "tgt_dpi": tgt_dpi, "size_scale": size_scale,
+                            "digital": bool(pg.get("digital", False)),
                             "k": size_scale * tgt_dpi / float(src_dpi),
                             "sheet_in": [Wp / float(src_dpi) * size_scale,
                                          Hp / float(src_dpi) * size_scale],

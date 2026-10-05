@@ -1,5 +1,24 @@
 # Changelog — AI Image Generator Suite
 
+## v2.26.1 — 2026-10-05
+- **Digital sticker sheets recreated faithfully** (the HasLab Rattler
+  sheets): each sticker whole with its body inside its outline, only the
+  sheet around it clear; outlines taken from the original, kept exactly and
+  closed where broken, in one even colour; openings with their own outline
+  (a snake's mouth) clear; white specks filled with the neighbouring ink and
+  seams between shapes sealed; the original's artwork traced as it is,
+  never swapped for an AI redraw; small lettering kept.
+- **Scans and digital files told apart** by where the page comes from and
+  how grainy its ink is — scans keep the verified scan recipe, digital
+  artwork the exact trace. Checked on 16 user pages and 52 decals of every
+  kind in the sticker LoRA's library (art kept >= 99.1%, background leak
+  <= 0.5%).
+- White inside a digital sticker's outline stays white (the small GI JOE
+  logo lost its white letters).
+- A sticker with lettering is never placed mirrored.
+- Compare's right-click fix uses the same rules as the sheet.
+- The cut-line removal of 2.26.0 is gone: outlines stay.
+
 ## v2.26.0 — 2026-10-05
 - **Smooth trace for flat-colour artwork** (on by default). A logo or
   sticker of a few clean inks is traced from its own outline into smooth

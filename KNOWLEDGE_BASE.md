@@ -1003,6 +1003,27 @@ the run.
   /sigclip_vision_384. update_ui asserts Flux->StyleModelApply/no-IPAdapter and
   SDXL->IPAdapter/no-Redux (165). SD3.5 (the other half of the user's ask)
   shipped in v2.6.0 — see the next bullet.
+- **Digital sticker sheets (v2.26.1).** is_digital_art = solid_backdrop
+  AND ink_grain (|px - median3| on flat ink) < 0.5 (< 0.15 for a PDF's
+  embedded scan): user scans 0.36-1.83, renders 0.00-0.34. process_image
+  takes digital= (app passes it). Digital + dark carrier + outline_colour
+  -> sticker_bodies: line found in the ORIGINAL (dC<dB, dB>25, dC<120),
+  bridged 3 px, enclosed() = body; fragments dropped by SIZE (>=400 px; an
+  opening rounded points and cut the fang's neck); _outlined_holes
+  (walls = bridged line, >= 4000 px, >= 70% of its ring on line) minus a
+  9 px margin round art = clear holes; ring + band recoloured to ONE line
+  colour (95th-percentile saturation of line px) and the exact backdrop
+  navy. Digital on white: enclosed white = white ink. Exact trace
+  ("detail") on digital only: unmix_backdrop in a 3 px edge band only,
+  fill_specks (<= 60 px holes take the neighbour ink), filter_speckle 4,
+  seal_seams (stroke 2 px in each fill's colour; the regex had a literal
+  BACKSPACE from a bash heredoc — write  via Python/Edit). Judge never
+  replaces detail/smooth on digital (Recraft dropped the navy bodies).
+  Smooth trace automatic only when digital (RAMP ISNTR drifted on the
+  whale gate). enclosed(): Image.fromarray(...).copy() — floodfill on an
+  array-backed image is a silent no-op (Pillow 12). Mirrored copies need
+  evidence; lettering never placed mirrored. Gate 0/118; LoRA-library
+  census 52 decals kept >= 0.991.
 - **Smooth / detailed trace, cut lines, Cancels (v2.26.0).** User: wings
   "appear jagged … original … more rounded"; fangs "lots definition lost";
   "blue background … should be transparent"; "always default to the best

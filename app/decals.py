@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageFilter, ImageOps
+from PIL import Image, ImageDraw, ImageFilter, ImageOps
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
 PDF_EXTS = {".pdf"}
@@ -273,44 +273,185 @@ def edge_strips(rgb, share=0.98):
     return m
 
 
-def cut_lines(rgba, width=7, share=0.5, tol=70):
-    """The die-cut lines drawn round each sticker on a DIGITAL sheet (the
-    HasLab sheets' thin teal ring): the hairlines (strokes thinner than
-    `width` px) of the one colour that makes at least `share` of all the
-    sheet's hairlines. Returns a boolean mask (empty when no colour
-    dominates — a sheet without cut lines). They are not print."""
+def outline_colour(rgba, width=7, share=0.5, tol=70):
+    """The colour of the outline drawn round each sticker on a digital sheet
+    (the HasLab sheets' thin blue line), or None: the one colour that makes
+    at least `share` of the sheet's hairlines (strokes thinner than `width`
+    px) and is (almost) absent from the art's solid parts — a logo's thin
+    red tips are its main ink, not an outline."""
     a = np.asarray(rgba)
     m = a[..., 3] > 128
     if not m.any():
-        return np.zeros(m.shape, bool)
+        return None
     M = Image.fromarray((m * 255).astype(np.uint8))
     opened = np.asarray(M.filter(ImageFilter.MinFilter(width))
                         .filter(ImageFilter.MaxFilter(width))) > 0
     thin = m & ~opened
     px = a[..., :3][thin].astype(np.int32)
     if len(px) < 500:
-        return np.zeros(m.shape, bool)
+        return None
     q = px // 32
     keys, counts = np.unique(q, axis=0, return_counts=True)
     c = px[(q == keys[counts.argmax()]).all(1)].mean(0)
-    near = np.abs(px - c).sum(1) < tol
-    if near.mean() < share or (c.max() - c.min()) < 40:
-        # no one colour rules the hairlines, or it is a grey / black / white
-        # (outlines of the art itself, not a cut line)
-        return np.zeros(m.shape, bool)
-    # a cut line's colour is (almost) absent from the art's solid parts; a
-    # logo's main ink is not (the winged cobra's thin red wing tips are
-    # hairlines too — they are art)
+    if (np.abs(px - c).sum(1) < tol).mean() < share or (c.max() - c.min()) < 40:
+        return None
     thick = a[..., :3][opened].astype(np.int32)
     if len(thick) and (np.abs(thick - c).sum(1) < tol).mean() > 0.05:
-        return np.zeros(m.shape, bool)
-    out = np.zeros(m.shape, bool)
-    out[thin] = near
-    # the line's soft edge too: one pixel round it, same colour family
-    grow = np.asarray(Image.fromarray((out * 255).astype(np.uint8))
-                      .filter(ImageFilter.MaxFilter(3))) > 0
-    fam = np.abs(a[..., :3].astype(np.int32) - c).sum(2) < tol
-    return out | (grow & fam & ~opened)
+        return None
+    return tuple(int(v) for v in c)
+
+
+def enclosed(mask):
+    """Pixels NOT in `mask` that cannot reach the picture's edge without
+    crossing it (inside closed outlines)."""
+    h, w = mask.shape
+    pad = np.zeros((h + 2, w + 2), np.uint8)
+    pad[1:-1, 1:-1] = np.where(mask, 255, 0)
+    # .copy(): a flood fill on an image made straight from a numpy array
+    # does nothing (Pillow 12, shared read-only buffer)
+    im = Image.fromarray(pad, "L").copy()
+    ImageDraw.floodfill(im, (0, 0), 128)
+    outside = (np.asarray(im) == 128)[1:-1, 1:-1]
+    return ~outside & ~mask
+
+
+def _outlined_holes(region, line, alpha, share=0.7, min_area=4000):
+    """Backdrop-coloured areas inside `region` whose whole border is outline
+    (`line`), not art: the holes of a sticker. Returns a boolean mask."""
+    cand = region & (alpha < 128) & ~line
+    if not cand.any():
+        return np.zeros(region.shape, bool)
+    labels, info = _label_runs(cand, diag=False)
+    lab = labels.copy()
+    for _ in range(3):                      # a 3 px ring round each area
+        nxt = lab.copy()
+        for sh in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+            r = np.roll(lab, sh, axis=(0, 1))
+            nxt = np.where(nxt == 0, r, nxt)
+        lab = nxt
+    ring = (lab > 0) & (labels == 0)
+    n = int(labels.max()) + 1
+    near_line = np.asarray(Image.fromarray((line * 255).astype(np.uint8))
+                           .filter(ImageFilter.MaxFilter(5))) > 0
+    ink = (alpha >= 128) & ~near_line
+    on_line = np.bincount(lab[ring & near_line], minlength=n)
+    on_ink = np.bincount(lab[ring & ink], minlength=n)
+    area = np.bincount(labels.ravel(), minlength=n)
+    tot = on_line + on_ink
+    keep = np.zeros(n, bool)
+    ok = (tot > 0) & (area >= min_area)
+    keep[ok] = on_line[ok] >= share * tot[ok]
+    keep[0] = False
+    return keep[labels]
+
+
+def sticker_bodies(orig_arr, alpha, carrier, line_colour, bridge=3, width=None):
+    """A digital sticker sheet whose stickers each have an outline. Each
+    sticker becomes whole — everything inside its outline (its body: the
+    HasLab stickers' navy, the same colour as the sheet, carries white
+    lettering; user's choice "Navy body") — and its outline is REDRAWN as
+    one unbroken line (user: "if outlines appear broken they are corrected
+    and redrawn so no outline has gaps"). The outline is found in the
+    ORIGINAL picture, where it is continuous (keying the backdrop broke its
+    faint stretches); breaks still left are bridged. Only the sheet outside
+    the outlines is clear. Returns (rgb, alpha)."""
+    o = orig_arr.astype(np.int32)
+    C = np.asarray(line_colour, np.int32)
+    B = np.asarray(carrier, np.int32)
+    dC = np.abs(o - C).sum(2)
+    dB = np.abs(o - B).sum(2)
+    line = (dC < dB) & (dB > 25) & (dC < 120)
+    lb = np.asarray(Image.fromarray((line * 255).astype(np.uint8))
+                    .filter(ImageFilter.MaxFilter(2 * bridge + 1))
+                    .filter(ImageFilter.MinFilter(2 * bridge + 1))) > 0
+    inside = enclosed(lb)
+    region = inside | (lb & np.asarray(Image.fromarray((inside * 255).astype(np.uint8))
+                                       .filter(ImageFilter.MaxFilter(2 * bridge + 3))) > 0)
+    # no loose fragments (backdrop noise that looked like line) — dropped by
+    # SIZE, never by a morphological opening: an opening rounded the
+    # outline's points and cut the narrow neck beside a snake's fang
+    labs, _inf = _label_runs(region, diag=True)
+    big = np.bincount(labs.ravel()) >= 400
+    big[0] = False
+    region = big[labs]
+    # no holes: a glint inside a letter is part of the sticker
+    region = region | enclosed(region)
+    # a gap with its OWN outline all round (a snake's open mouth) is a hole
+    # in the sticker: clear film (user: "It should be clear")
+    # (walls = the line with its breaks bridged: where a fang touches the
+    # line, the hole leaked into the navy band beside it)
+    holes = _outlined_holes(region, lb, alpha)
+    # …and like the outer edge, a hole keeps the navy band and the line
+    # between itself and the art (a fang tip poked into the mouth hole)
+    art = (alpha >= 128) & ~np.asarray(Image.fromarray((line * 255).astype(np.uint8))
+                                       .filter(ImageFilter.MaxFilter(5))) > 0
+    margin = np.asarray(Image.fromarray((art * 255).astype(np.uint8))
+                        .filter(ImageFilter.MaxFilter(2 * 9 + 1))) > 0
+    region &= ~(holes & ~margin)
+    # the line as the original draws it: its bright CORE colour (the
+    # brightest half of the line pixels; an average with the soft edges was
+    # dull) at its own thickness
+    # (the most saturated fifth: the line's own blue, not its glow)
+    sat = o.max(2) - o.min(2)
+    core_px = o[line & (sat >= np.percentile(sat[line], 95))] if line.any() else None
+    core = (np.median(core_px, axis=0) if core_px is not None and len(core_px)
+            else C).astype(np.uint8)
+    if width is None:
+        width = 3
+    er = np.asarray(Image.fromarray((region * 255).astype(np.uint8))
+                    .filter(ImageFilter.MinFilter(2 * width + 1))) > 0
+    ring = region & ~er
+    rgb = orig_arr.copy()
+    # ONE colour for the outline and ONE for the body (user: "the internal
+    # colours like the outline are very blotchy, it should colour uniform"):
+    # the original's soft glow made blue-to-teal shades. In the band along
+    # the edge, line-ish pixels become the line's core colour, the rest of
+    # the band and every near-navy body pixel the sheet's exact navy.
+    band = region & ~(np.asarray(Image.fromarray((region * 255).astype(np.uint8))
+                                 .filter(ImageFilter.MinFilter(2 * (width + 4) + 1))) > 0)
+    near_line = (dC < dB) | ring
+    rgb[ring] = core
+    rgb[band & ~ring & near_line & (dC < 160)] = core
+    navyish = region & ~ring & (dB < 45) & ~(band & near_line)
+    rgb[navyish] = B.astype(np.uint8)
+    # the band's left-over glow (between line and navy)
+    rgb[band & ~ring & ~near_line & (dB < 90)] = B.astype(np.uint8)
+    al = np.where(region, 255, alpha).astype(np.uint8)
+    return rgb, al
+
+
+def ink_grain(img, backdrop=None):
+    """Fine grain inside a picture's ink: the mean difference between each
+    pixel and its 3x3 median, over flat ink areas away from edges. Printed
+    and scanned stickers carry halftone dots and wear (0.36-1.83 on the
+    user's scans); rendered artwork is smooth (0.00-0.34)."""
+    rgb = img.convert("RGB")
+    g = rgb.convert("L")
+    a = np.asarray(g).astype(np.float32)
+    med = np.asarray(g.filter(ImageFilter.MedianFilter(3))).astype(np.float32)
+    sb = np.asarray(backdrop if backdrop is not None else
+                    (solid_backdrop(rgb) or detect_carrier(rgb)), np.int32)
+    ink = np.abs(np.asarray(rgb).astype(np.int32) - sb).max(2) > 60
+    edge = np.asarray(g.filter(ImageFilter.FIND_EDGES)) > 40
+    near_edge = np.asarray(Image.fromarray((edge * 255).astype(np.uint8))
+                           .filter(ImageFilter.MaxFilter(5))) > 0
+    flat = ink & ~near_edge
+    if flat.sum() < 500:
+        return 0.0
+    return float(np.abs(a - med)[flat].mean())
+
+
+def is_digital_art(img, from_scan=False):
+    """True for a sheet that is DIGITAL artwork (a rendered sticker sheet, a
+    logo file): a flat backdrop AND smooth ink. Its stickers are traced from
+    the original exactly. A scan of real print (halftone, wear) is not —
+    it is cleaned up and redrawn. `from_scan`: the page is a scanned image
+    (a PDF's embedded scan), which must be nearly grain-free to count."""
+    rgb = img.convert("RGB")
+    sb = solid_backdrop(rgb)
+    if sb is None:
+        return False
+    return ink_grain(rgb, sb) < (0.15 if from_scan else 0.5)
 
 
 def looks_like_photo(img):
@@ -1210,6 +1351,105 @@ def smooth_trace_svg(crop, pal, w_in=None, h_in=None, long_px=3000):
     return ('<svg xmlns="http://www.w3.org/2000/svg" version="1.1" ' + size +
             f'viewBox="0 0 {w} {h}"><g transform="scale({1.0 / k:.6f})">'
             + "".join(paths) + '</g></svg>')
+
+
+def unmix_backdrop(crop, colors=12, max_res=40.0):
+    """A digital sticker's soft edges are its inks BLENDED with the sheet's
+    backdrop (grey fur over navy reads purple once the navy is lifted). Each
+    opaque pixel is explained as t x ink + (1 - t) x backdrop with the
+    sticker's own inks; where that fits, the pixel becomes the pure ink (or
+    clear, when it is mostly backdrop). The backdrop colour is what the
+    cleared pixels still hold. Returns a new RGBA (the crop unchanged when
+    there is no backdrop to unmix)."""
+    a = np.array(crop.convert("RGBA"))
+    clear = a[..., 3] < 16
+    # only the thin band where the ink meets the clear backdrop: a sticker
+    # BODY in the backdrop's own colour (the HasLab navy) is ink, not blend
+    near = np.asarray(Image.fromarray((clear * 255).astype(np.uint8))
+                      .filter(ImageFilter.MaxFilter(7))) > 0
+    op = (a[..., 3] >= 128) & near
+    if clear.sum() < 50 or op.sum() < 50:
+        return crop
+    B = np.median(a[..., :3][clear].astype(np.float32), axis=0)
+    pal = palette_of(crop, colors=colors)
+    if pal is None or len(pal) == 0:
+        return crop
+    inks = np.asarray(pal, np.float32)
+    inks = inks[np.abs(inks - B).sum(1) > 60]          # not the backdrop itself
+    if len(inks) == 0:
+        return crop
+    px = a[..., :3][op].astype(np.float32)
+    d = inks - B                                         # (K,3)
+    q = px - B                                           # (N,3)
+    dd = (d * d).sum(1) + 1e-6
+    t = np.clip((q @ d.T) / dd, 0.0, 1.0)                # (N,K)
+    fit = B + t[..., None] * d[None]                     # (N,K,3)
+    res = np.abs(fit - px[:, None, :]).sum(2)            # (N,K)
+    k = res.argmin(1)
+    r = res[np.arange(len(px)), k]
+    tk = t[np.arange(len(px)), k]
+    # only real blends: the pure ink itself (t ~ 1) stays as it is
+    blend = (r < max_res) & (tk < 0.9)
+    out = a.copy()
+    sub = out[..., :3][op]
+    sub_a = out[..., 3][op]
+    sub[blend] = inks[k[blend]].astype(np.uint8)
+    sub_a[blend] = np.where(tk[blend] >= 0.5, 255, 0).astype(np.uint8)
+    out[..., :3][op] = sub
+    out[..., 3][op] = sub_a
+    return Image.fromarray(out, "RGBA")
+
+
+def fill_specks(crop, max_area=60):
+    """Tiny clear specks INSIDE a decal (a pixel or a few the key left in the
+    art) filled with the colour of the ink next to them (user: "narrow down
+    the colour that is next to it that is not transparent and apply that
+    colour to the speck"). Real holes — a snake's open mouth — are far
+    bigger and stay clear."""
+    a = np.array(crop.convert("RGBA"))
+    op = a[..., 3] >= 128
+    holes = enclosed(op)
+    if not holes.any():
+        return crop
+    labels, _info = _label_runs(holes, diag=False)
+    area = np.bincount(labels.ravel())
+    small = (area <= max_area)
+    small[0] = False
+    speck = small[labels]
+    if not speck.any():
+        return crop
+    rgb = a[..., :3].copy()
+    have = op.copy()
+    todo = speck.copy()
+    for _ in range(12):                       # grow the inks into the specks
+        if not todo.any():
+            break
+        for sh in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+            src_have = np.roll(have, sh, axis=(0, 1))
+            src_rgb = np.roll(rgb, sh, axis=(0, 1))
+            take = todo & src_have
+            rgb[take] = src_rgb[take]
+            have |= take
+            todo &= ~take
+    a[..., :3] = np.where(speck[..., None], rgb, a[..., :3])
+    a[..., 3] = np.where(speck & have, 255, a[..., 3])
+    return Image.fromarray(a, "RGBA")
+
+
+def seal_seams(svg, width=0.8):
+    """Every filled shape gets a hairline edge in its own colour, so shapes
+    that meet edge to edge overlap a fraction and no white seam shows
+    between them when zoomed in (width in the SVG's own units)."""
+    def _one(m):
+        tag = m.group(0)
+        if "stroke=" in tag:
+            return tag
+        fm = re.search(r'fill="(#[0-9a-fA-F]{6})"', tag)
+        if not fm:
+            return tag
+        return tag.replace("<path", f'<path stroke="{fm.group(1)}" stroke-width='
+                           f'"{width}" stroke-linejoin="round"', 1)
+    return re.sub(r"<path\b[^>]*>", _one, svg)
 
 
 def svg_inner(svg_text):
@@ -2749,8 +2989,24 @@ def find_copies(rgba, boxes, size_tol=0.06, min_ncc=0.88, min_px=12,
                          cache, keys=keys)
             if keys and how in keys:
                 h2 = max(keys, key=keys.get)
-                if h2 != how and keys[h2] > keys[how] + 0.05:
+                # straight <-> mirrored only on overwhelming evidence: a
+                # symmetric outline looks alike both ways, and a mirrored
+                # DANGER sign reads backwards (v2.26.0, HasLab Rattler 2)
+                cross = is_reflection(h2) != is_reflection(how)
+                margin = 0.3 if cross else 0.05
+                if h2 != how and keys[h2] > keys[how] + margin:
                     g[k] = (j, h2)
+                elif is_reflection(how):
+                    # a MIRRORED copy needs evidence: when the inner drawing
+                    # matches straight as well, it is straight (the picture
+                    # match called a symmetric DANGER sign mirrored and its
+                    # lettering came out backwards)
+                    straight = {h_: v for h_, v in keys.items()
+                                if not is_reflection(h_)}
+                    if straight:
+                        hs = max(straight, key=straight.get)
+                        if straight[hs] >= keys[how] - 0.02:
+                            g[k] = (j, hs)
 
     def col(k):
         if k not in cols:
@@ -2889,6 +3145,12 @@ def _compose_orient(outer, inner):
         if (np.array(mm) == m).all():
             return name
     return ""
+
+
+def is_reflection(how):
+    """True for the orientations that mirror (lettering never reads mirrored)."""
+    m = np.array(_ORIENT_M.get(how or "", ((1, 0), (0, 1))))
+    return round(float(np.linalg.det(m))) < 0
 
 
 def relative_orient(how_from, how_to):
@@ -3424,11 +3686,14 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
                 # asked for by hand (Compare's right-click): any decal of a
                 # few inks, flat or not
                 forced = methods is not None and set(methods) == {"smooth"}
+                # automatically only on DIGITAL art: a scan's flat-looking
+                # ink keeps the verified scan recipe (RAMP ISNTR drifted)
                 fpal = (flat_colour_art(crop, max_colors=12, share=0.0, noise=1e9)
-                        if forced else flat_colour_art(crop))
+                        if forced else (flat_colour_art(crop) if digital else None))
                 if fpal is not None:
                     import vector_redraw
-                    w_s = smooth_trace_svg(crop, fpal, w_in, h_in)
+                    w_s = seal_seams(smooth_trace_svg(fill_specks(crop), fpal,
+                                                      w_in, h_in), width=2.0 * 3)
                     st["smooth"] = st.get("smooth", 0) + 1
                     return w_s, vector_redraw.render_svg(w_s, px_w), "smooth"
             except Exception:
@@ -3442,12 +3707,16 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
             try:
                 import vector_redraw
                 k_d = max(1.0, min(3.0, 3000.0 / max(cw, ch)))
-                svg_d, _ras = vectorize(crop, target_px=int(round(cw * k_d)),
+                # the soft edges' backdrop blend out first (purple fur)
+                svg_d, _ras = vectorize(fill_specks(unmix_backdrop(crop)),
+                                        target_px=int(round(cw * k_d)),
+                                        filter_speckle=4,     # small letters' pieces
                                         quantize_colors=0, presmooth=False,
                                         drop_halo=False, hierarchical="cutout")
                 vb = re.search(r'viewBox="\s*[-\d.]+\s+[-\d.]+\s+([\d.]+)\s+([\d.]+)',
                                svg_d)
                 bw_d, bh_d = (float(vb.group(1)), float(vb.group(2))) if vb else (cw, ch)
+                svg_d = seal_seams(svg_d, width=round(2.0 * bw_d / max(1, cw), 3))  # 2 px: corners close too
                 svg_c = ('<svg xmlns="http://www.w3.org/2000/svg" version="1.1" '
                          f'width="{w_in:.4f}in" height="{h_in:.4f}in" '
                          f'viewBox="0 0 {cw} {ch}"><g transform="scale({cw / bw_d:.6f} '
@@ -3528,6 +3797,11 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
         other methods are tried and the best-scored drawing is kept."""
         drawn = _draw_one(box)
         if drawn is None or judge_fn is None:
+            return drawn
+        if digital and drawn[2] in ("detail", "smooth"):
+            # a digital sheet's own art, traced as it is: nothing to judge —
+            # a re-imagined "better" drawing lost the HasLab stickers' navy
+            # bodies and turned their grey fur blue
             return drawn
         crop = _own(box)
         try:
@@ -3910,7 +4184,9 @@ def redraw_sheet(rgba, refine, native_dpi=300, size_scale=1.0, target_dpi=300,
             use = best
             other_col = False
             place_box = boxes[idx]
-            if t is None:
+            if t is None or (best[2] == "text" and is_reflection(t)):
+                # (lettering placed mirrored would read backwards: that
+                # copy is drawn on its own)
                 iou, col = 0.0, 999.0
             else:
                 if idx != idx_b and float(np.abs(
@@ -4050,7 +4326,7 @@ def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
                   denoise=2, tol=52, target_dpi=600, native_dpi=300,
                   do_trim=False, size_scale=1.0, remove_lines=True,
                   balance=True, exact=False, tidy_matte=True, solidify=False,
-                  smooth=False, photo=False, fill_holes=False):
+                  smooth=False, photo=False, fill_holes=False, digital=None):
     """Run one image through the pipeline. Returns a dict with 'rgba' (and
     'svg' for vector mode). size_scale rescales the result for a different
     figure scale (e.g. 1.5 to take a 3.75\" decal to 1/12 Classified).
@@ -4066,6 +4342,9 @@ def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
     holds), and thin dark strips along the picture edge — the table the
     crop could not shed — are dropped."""
     orig = _auto_orient(img).convert("RGB")
+    if digital is None:
+        # (the app passes it: a PDF's scan must be grain-free to count)
+        digital = (not photo) and is_digital_art(orig)
     if carrier is None:
         carrier = PHOTO_WHITE if photo else detect_carrier(orig)
         if not photo and sum(carrier) / 3.0 < 90:
@@ -4092,12 +4371,6 @@ def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
         # logo on black) is no art
         strips = edge_strips(orig)
         alpha = np.where(strips, 0, alpha).astype(np.uint8)
-        if not photo and solid_backdrop(orig) is not None:
-            # a digital sheet: the die-cut line round each sticker is no
-            # print (user: "image is ALSO using a blue background, it should
-            # be transparent")
-            cl = cut_lines(np.dstack([np.asarray(orig), alpha]))
-            alpha = np.where(cl, 0, alpha).astype(np.uint8)
         if sum(carrier) / 3.0 < 200:
             # white is never background unless the background is white
             # (user: "the background color was not white, so white should
@@ -4119,7 +4392,29 @@ def process_image(img, mode="cleanup", remove_bg=True, carrier=None,
             np.dstack([np.asarray(cleaned.convert("RGB")), alpha]), "RGBA")
         if tidy_matte:
             rgba = clean_matte(rgba)   # drop the faint carrier halo + speckle
-        if fill_holes and sum(carrier) / 3.0 >= 90:
+        if digital and sum(carrier) / 3.0 < 200:
+            ra = np.asarray(rgba)
+            oc = outline_colour(ra)
+            if oc is not None:
+                # stickers with their own outline on a digital sheet: each
+                # sticker whole (its navy body too), its outline redrawn
+                # unbroken, clear outside
+                b_rgb, b_al = sticker_bodies(np.asarray(orig), ra[..., 3], carrier, oc)
+                keep = ra[..., 3] >= 128
+                b_rgb = np.where((keep & (b_al == 255) & ~(np.asarray(
+                    orig) == b_rgb).all(2))[..., None], b_rgb, np.where(
+                    keep[..., None], ra[..., :3], b_rgb))
+                rgba = Image.fromarray(np.dstack([b_rgb, b_al]), "RGBA")
+        if fill_holes and digital and is_neutral_carrier(carrier):
+            # DIGITAL art on white: white shut inside a sticker's outline is
+            # its white ink, whatever its size (the small GI JOE logo's white
+            # letters were taken for letter counters and made clear)
+            ra = np.array(rgba)
+            inner = enclosed(ra[..., 3] >= 128)
+            ra[inner] = (255, 255, 255, 255)
+            rgba = Image.fromarray(ra, "RGBA")
+            holes = int(_label_runs(inner, diag=False)[0].max()) if inner.any() else 0
+        elif fill_holes and sum(carrier) / 3.0 >= 90:
             # (not on a black / dark backdrop: what it shows through the
             # art is backdrop, not white ink — the winged cobra's black
             # came back as white)

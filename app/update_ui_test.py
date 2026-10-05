@@ -1958,18 +1958,28 @@ try:
     check("on a navy backdrop a thin white outline stays (white is background only on white)",
           _rn[41, 130, 3] == 255 and _rn[41, 130, :3].min() > 230 and _rn[100, 130, 3] == 0,
           (_rn[41, 130].tolist(), _rn[100, 130].tolist()))
-    # a digital sheet's die-cut line (a thin teal ring round each sticker)
-    # is no print: it goes with the backdrop; the sticker's ink stays
-    _cs6 = app.Image.new("RGB", (500, 260), (32, 46, 64))
+    # a digital sheet whose stickers each have an outline: the sticker is
+    # whole (its navy body carries white lettering — user's choice "Navy
+    # body"), its outline redrawn unbroken even where the original's line
+    # has a gap, only the sheet outside the outlines is clear
+    _cs6 = app.Image.new("RGB", (520, 280), (32, 46, 64))
     _cd6 = app.ImageDraw.Draw(_cs6)
-    for _x0 in (30, 270):
-        _cd6.rounded_rectangle([_x0, 30, _x0 + 200, 230], radius=30, outline=(20, 110, 140), width=3)
-        _cd6.rectangle([_x0 + 30, 60, _x0 + 170, 200], fill=(180, 10, 40))
+    for _x0 in (30, 280):
+        _cd6.rounded_rectangle([_x0, 30, _x0 + 210, 240], radius=30, outline=(37, 102, 140), width=3)
+        _cd6.rectangle([_x0 + 40, 70, _x0 + 170, 120], fill=(180, 10, 40))
+        _cd6.rectangle([_x0 + 60, 160, _x0 + 150, 190], fill=(250, 250, 250))     # white lettering
+    _cd6.rectangle([137, 236, 142, 245], fill=(32, 46, 64))                         # a break in one line (6 px)
     _rc6 = _np6.asarray(_dec.process_image(_cs6, **dict(_dec.recipe_opts(), native_dpi=300,
                                                         target_dpi=300))["rgba"])
-    check("a digital sheet's thin cut lines are removed, the sticker ink kept",
-          _rc6[31, 130, 3] == 0 and _rc6[130, 31, 3] == 0 and _rc6[130, 130, 3] == 255,
-          (_rc6[31, 130].tolist(), _rc6[130, 130].tolist()))
+    check("a digital sticker sheet: navy body kept inside the outline, outside clear",
+          _rc6[140, 60, 3] == 255 and _rc6[140, 60, 2] < 100           # navy body
+          and _rc6[175, 100, :3].min() > 230 and _rc6[175, 100, 3] == 255  # white lettering
+          and _rc6[95, 150, 0] > 150                                    # red ink
+          and _rc6[10, 10, 3] == 0 and _rc6[260, 250, 3] == 0,          # sheet outside
+          (_rc6[140, 60].tolist(), _rc6[175, 100].tolist(), _rc6[10, 10].tolist()))
+    check("…and the broken outline is redrawn unbroken (no gap)",
+          _rc6[239, 140, 3] == 255 and _rc6[239, 140, 2] > 100,
+          _rc6[236:243, 140].tolist())
     # a PNG on a TRANSPARENT background: the hidden colours under its clear
     # pixels never reach the pipeline
     _tp = app.Image.new("RGBA", (300, 150), (0, 0, 0, 0))
