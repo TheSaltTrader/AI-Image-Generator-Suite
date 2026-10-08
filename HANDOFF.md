@@ -84,6 +84,12 @@ persistence, batch ETA, "keep model in VRAM" (`--highvram`) pref, self-updater
 
 ## 3. Decals pipeline (`app/decals.py`)
 
+> **Read `docs/DECALS_PIPELINE.md` first** — the current design (scan vs
+> digital, method order, the user's cleanup rules, copies), how to check a
+> change (tests + `tools/golden_gate.py check` + `tools/sticker_census.py`),
+> how to produce finished sheets (`tools/build_sheets.py`) and what is kept
+> only locally (`tools/backup_local.ps1`). This section below is the history.
+
 Turns an imperfect scan (PDF or image) into print-ready art. **Runs in-process**;
 `pymupdf` (PDF read + SVG render) and `vtracer` (trace) are **bundled into the
 exe** via the spec (`collect_all`). Verify in a frozen build with
@@ -280,6 +286,8 @@ venv\Scripts\python.exe -m PyInstaller build_app\ComicArtCreator.spec ^
    `VERSION.txt`).
 2. Add a **CHANGELOG.md** entry (top) and a **KNOWLEDGE_BASE.md** note.
 3. Run the test suites (venv python) — `update_ui_test.py` must be green.
+   For any Decals change also `tools/golden_gate.py check` (GATE PASS) and
+   `tools/sticker_census.py` (see docs/DECALS_PIPELINE.md §5).
 4. Build (§5) and run `--selftest-decals`; confirm the exe version.
 5. Assemble `releases/vX.Y.Z/release/` (copy the previous release/ then overwrite
    both exe names from `dist_app`, the refreshed docs, and `app/*.json`); copy
@@ -353,11 +361,21 @@ on GitHub).
 
 ---
 
-## 10. State at handoff
+## 10. State at handoff (2026-10-07, v2.26.1, tag 26d4558)
 
-- All test suites green (update_ui 452, vector_redraw 65, print_export 24, recraft 14, api_cache 17) + `python tools/golden_gate.py check` (local quality gate, from the answer cache). Frozen build
-  self-test passes (incl. the SDK, fontTools and text outlining frozen).
-- Latest release published to GitHub; dev tree clean (only gitignored build
-  artifacts untracked). `Stickers/_final/` holds the user's cleaned sample
-  output; `Stickers/` holds their source PDFs (user data, not committed).
-- Full chronological history + every fix rationale is in `KNOWLEDGE_BASE.md`.
+- Published: **v2.26.1** (GitHub release + tag); `main` pushed, tree clean.
+- Tests green: update_ui 460, vector_redraw 77, print_export 24, recraft 14,
+  api_cache 18. `tools/golden_gate.py check` → GATE PASS (0/118). Frozen
+  build `--selftest-decals` all True. Secrets gate clean.
+- Census: the user's 16 sheet pages classified correctly (scans vs digital);
+  52 decals from the Decals LoRA library: art kept ≥ 0.991, leak ≤ 0.005.
+- User-approved finals: `Desktop\Stickers\Ready` (Cobra AIR Force, Haslab
+  Rattler, Hasslab Rattler 2), made with `tools/build_sheets.py`.
+- Local-only data (golden/, cache/api, Stickers) backed up with
+  `tools/backup_local.ps1` → `D:\Backups\AI-Image-Generator-Suite\<date>`.
+- Keys: only in the Windows Credential Manager (`AIImageGeneratorSuite/anthropic`,
+  `AIImageGeneratorSuite/fal`). The fal key was once pasted in chat — the
+  user should rotate it.
+- Open items: none blocking. Known limits in docs/DECALS_PIPELINE.md §8.
+- Full chronological history + every fix rationale: `KNOWLEDGE_BASE.md`;
+  per-release summary: `CHANGELOG.md`.
